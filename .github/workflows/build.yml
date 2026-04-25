@@ -3,9 +3,9 @@ name: Build
 on:
   workflow_dispatch:
   push:
-    branches: [ main, feature/masque ]
+    branches: [ main, mqvpn-main, mqvpn-dev ]
   pull_request:
-    branches: [ main ]
+    branches: [ mqvpn-main, mqvpn-dev ]
 
 jobs:
 

@@ -2,9 +2,9 @@ name: CodeQL
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, mqvpn-main, mqvpn-dev ]
   pull_request:
-    branches: [ main ]
+    branches: [ mqvpn-main, mqvpn-dev ]
 
 jobs:
   analyze:
