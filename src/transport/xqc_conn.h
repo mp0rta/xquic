@@ -244,8 +244,6 @@ typedef struct {
     uint64_t                fc_max_streams_bidi_can_recv;
     uint64_t                fc_max_streams_uni_can_send;
     uint64_t                fc_max_streams_uni_can_recv;
-    uint64_t                fc_max_streams_bidi_recv_wind; /* max stream id in window*/
-    uint64_t                fc_max_streams_uni_recv_wind;
 
     uint64_t                fc_recv_windows_size;
     xqc_usec_t              fc_last_window_update_time;
@@ -504,10 +502,6 @@ struct xqc_connection_s {
     xqc_usec_t                      conn_avg_recv_delay;
     xqc_usec_t                      conn_latest_close_delay;
     uint32_t                        conn_calculated_frames;
-
-    /* statistics for passive concurrent bidirectional streams */
-    uint64_t                        passive_bidi_stream_cnt;      /* count of passive concurrent bidi streams */
-    uint64_t                        passive_bidi_stream_max;      /* max count of passive concurrent bidi streams */
 };
 
 extern const xqc_h3_conn_settings_t default_local_h3_conn_settings;

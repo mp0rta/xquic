@@ -24,7 +24,6 @@ typedef enum {
     XQC_SVR_BID = 1,
     XQC_CLI_UNI = 2,
     XQC_SVR_UNI = 3,
-    XQC_STREAM_TYPE_MAX = 4,
 } xqc_stream_type_t;
 
 
