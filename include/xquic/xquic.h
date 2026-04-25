@@ -1540,8 +1540,6 @@ typedef struct xqc_conn_settings_s {
     uint8_t                     specify_client_dcid;
     uint8_t                     client_dcid[XQC_MAX_CID_LEN];
     
-    uint64_t                    max_streams_bidi;
-    uint64_t                    max_streams_uni;
 } xqc_conn_settings_t;
 
 
