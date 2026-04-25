@@ -1,0 +1,93 @@
+# Biweekly sync of fork main with upstream alibaba/xquic, then ensure a PR
+# from main → mqvpn-dev exists for human review.
+name: Sync upstream main and ensure PR to mqvpn-dev
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'      # Every Monday 09:00 JST (00:00 UTC); biweekly via parity gate below
+  workflow_dispatch:          # Manual runs bypass the parity gate
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Biweekly gate (skip odd ISO weeks for scheduled runs)
+        id: parity
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "Manual run — bypassing parity gate."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          week=$(date -u +%V)
+          if [ $((10#$week % 2)) -ne 0 ]; then
+            echo "ISO week $week is odd — biweekly schedule skips this run."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ISO week $week is even — proceeding."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout fork main
+        if: steps.parity.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync fork main with upstream (fast-forward only)
+        if: steps.parity.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Equivalent to clicking "Sync fork" in the GitHub UI.
+          # The next step still reports the gap if this fails (e.g. non-fast-forward).
+          resp=$(gh api -X POST "repos/${{ github.repository }}/merge-upstream" \
+            -f branch=main 2>&1) || true
+          echo "$resp"
+
+      - name: Check whether main has commits not in mqvpn-dev
+        if: steps.parity.outputs.skip != 'true'
+        id: gap
+        run: |
+          git fetch origin main mqvpn-dev
+          if git merge-base --is-ancestor origin/main origin/mqvpn-dev; then
+            echo "has_gap=false" >> "$GITHUB_OUTPUT"
+            echo "main is fully contained in mqvpn-dev — nothing to PR."
+          else
+            echo "has_gap=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ensure a PR main → mqvpn-dev exists
+        if: steps.parity.outputs.skip != 'true' && steps.gap.outputs.has_gap == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Reuse an existing open PR if any; GitHub auto-updates its diff as main advances.
+          existing=$(gh pr list --base mqvpn-dev --head main --state open \
+                      --json number -q '.[0].number')
+          if [ -n "$existing" ]; then
+            echo "PR #$existing already open — it will refresh automatically as main advances."
+            exit 0
+          fi
+          gh pr create \
+            --base mqvpn-dev \
+            --head main \
+            --title "chore(upstream): sync main → mqvpn-dev ($(date -u +%Y-%m-%d))" \
+            --body "$(cat <<'BODY'
+          ## Auto upstream sync
+
+          Brings the latest commits from upstream alibaba/xquic (mirrored on `main`)
+          into `mqvpn-dev`. Triggered biweekly on Monday 09:00 JST by
+          `.github/workflows/sync-upstream.yml`.
+
+          ### Review checklist
+          - [ ] Inspect upstream changes for breaking API / frame / transport-param changes
+          - [ ] Resolve conflicts with mqvpn-specific patches (MASQUE / multipath fixes, etc.)
+          - [ ] Run xquic unit / integration tests
+          - [ ] Verify the mqvpn build against this xquic SHA (bump submodule pin to test)
+          BODY
+          )"
