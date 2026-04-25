@@ -75,7 +75,7 @@ error:
             || ((*path)->path_state >= XQC_PATH_STATE_CLOSING)
             || (*path)->app_path_status == XQC_APP_PATH_STATUS_FROZEN) 
         {
-            po->po_path_flag &= ~(XQC_PATH_SPECIFIED_BY_ACK | XQC_PATH_SPECIFIED_BY_PTO | XQC_PATH_SPECIFIED_BY_REINJ | XQC_PATH_SPECIFIED_BY_FEC);
+            po->po_path_flag &= ~(XQC_PATH_SPECIFIED_BY_ACK | XQC_PATH_SPECIFIED_BY_PTO | XQC_PATH_SPECIFIED_BY_REINJ | XQC_PATH_SPECIFIED_BY_FEC | XQC_PATH_SPECIFIED_BY_DATAGRAM);
 
             if (po->po_path_flag) {
                 if ((*path == NULL) 
@@ -1280,10 +1280,10 @@ xqc_write_stream_frame_to_packet(xqc_connection_t *conn,
     return XQC_OK;
 }
 
-int 
-xqc_write_datagram_frame_to_packet(xqc_connection_t *conn, xqc_pkt_type_t pkt_type, 
+int
+xqc_write_datagram_frame_to_packet(xqc_connection_t *conn, xqc_pkt_type_t pkt_type,
     const unsigned char *data, size_t data_len, uint64_t *dgram_id, xqc_bool_t use_supplied_dgram_id,
-    xqc_data_qos_level_t qos_level)
+    xqc_data_qos_level_t qos_level, uint64_t path_id, xqc_bool_t pin_to_path)
 {
     xqc_packet_out_t *packet_out;
     packet_out = xqc_write_new_packet(conn, pkt_type);
@@ -1328,6 +1328,14 @@ xqc_write_datagram_frame_to_packet(xqc_connection_t *conn, xqc_pkt_type_t pkt_ty
     } else {
         packet_out->po_flag |= XQC_POF_QOS_HIGH;
     }
+
+    if (pin_to_path) {
+        packet_out->po_path_id = path_id;
+        packet_out->po_path_flag |= XQC_PATH_SPECIFIED_BY_DATAGRAM;
+    }
+
+    /* WLB scheduler: copy flow hash from connection for flow-affinity scheduling */
+    packet_out->po_flow_hash = conn->next_dgram_flow_hash;
 
     return XQC_OK;
 }

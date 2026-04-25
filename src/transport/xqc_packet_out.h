@@ -104,8 +104,12 @@ typedef struct xqc_packet_out_s {
     /* only meaningful if it contains a DATAGRAM frame */
     uint64_t                po_dgram_id;
 
+    /* WLB scheduler: flow hash for datagram flow-affinity scheduling.
+     * Set by application via xqc_conn_set_dgram_flow_hash() before send. */
+    uint32_t                po_flow_hash;
+
     /* Multipath */
-    uint8_t                 po_path_flag;
+    uint16_t                po_path_flag;
     uint64_t                po_path_id;
     unsigned int            po_cc_size; /* TODO: check cc size != send size */
 
@@ -194,9 +198,9 @@ int xqc_write_new_token_to_packet(xqc_connection_t *conn);
 int xqc_write_stream_frame_to_packet(xqc_connection_t *conn, xqc_stream_t *stream, xqc_pkt_type_t pkt_type,
     uint8_t fin, const unsigned char *payload, size_t payload_size, size_t *send_data_written);
 
-int xqc_write_datagram_frame_to_packet(xqc_connection_t *conn, xqc_pkt_type_t pkt_type, 
+int xqc_write_datagram_frame_to_packet(xqc_connection_t *conn, xqc_pkt_type_t pkt_type,
     const unsigned char *data, size_t data_len, uint64_t *dgram_id, xqc_bool_t use_supplied_dgram_id,
-    xqc_data_qos_level_t qos_level);
+    xqc_data_qos_level_t qos_level, uint64_t path_id, xqc_bool_t pin_to_path);
 
 int xqc_write_handshake_done_frame_to_packet(xqc_connection_t *conn);
 

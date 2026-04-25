@@ -3757,7 +3757,13 @@ xqc_conn_get_stats(xqc_engine_t *engine, const xqc_cid_t *cid)
     return conn_stats;
 }
 
-xqc_conn_qos_stats_t 
+void
+xqc_conn_set_dgram_flow_hash(xqc_connection_t *conn, uint32_t flow_hash)
+{
+    conn->next_dgram_flow_hash = flow_hash;
+}
+
+xqc_conn_qos_stats_t
 xqc_conn_get_qos_stats(xqc_engine_t *engine, const xqc_cid_t *cid)
 {
     xqc_connection_t *conn;

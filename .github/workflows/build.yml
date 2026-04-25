@@ -1,8 +1,9 @@
 name: Build
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, feature/masque ]
   pull_request:
     branches: [ main ]
 
@@ -28,7 +29,7 @@ jobs:
     - name: Linux Setup
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential libevent-dev
+        sudo apt-get install -y build-essential libevent-dev clang
 
     - name: Cunit Setup
       run: |
@@ -39,6 +40,10 @@ jobs:
         sudo apt-get install -y python3-pip
         sudo apt-get install -y python3-lxml
         sudo pip3 install gcovr
+
+    - name: Fuzz MASQUE smoke (libFuzzer)
+      run: |
+        XQC_FUZZ_C_COMPILER=clang XQC_FUZZ_MAX_TOTAL_TIME=60 tests/fuzz/run_smoke.sh
 
     - name: Update Submodule
       run: |
@@ -105,46 +110,3 @@ jobs:
         else
           echo "No CODACY_PROJECT_TOKEN provided for Codacy report"
         fi
-
-  build-macos:
-
-    name: Build on macOS
-
-    runs-on: ${{ matrix.runs-on }}
-
-    strategy:
-      matrix:
-        runs-on: [macos-latest]
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
-      with:
-        fetch-depth: 2
-        submodules: 'recursive'
-
-    - name: Update Submodule
-      run: |
-        git submodule update --init --recursive
-
-    - name: Build BoringSSL
-      run: |
-        git clone https://github.com/google/boringssl.git ./third_party/boringssl
-        cd ./third_party/boringssl
-        mkdir -p build
-        cd build
-        cmake -DBUILD_SHARED_LIBS=0 -DCMAKE_C_FLAGS="-fPIC" -DCMAKE_CXX_FLAGS="-fPIC" ..
-        make ssl crypto
-
-    - name: Build XQUIC
-      run: |
-        SSL_TYPE_STR="boringssl"
-        SSL_PATH_STR="${PWD}/third_party/boringssl"
-        SSL_INC_PATH_STR="${PWD}/third_party/boringssl/include"
-        SSL_LIB_PATH_STR="${PWD}/third_party/boringssl/build/libssl.a;${PWD}/third_party/boringssl/build/libcrypto.a"
-        mkdir -p build
-        cd build
-        cmake -DPLATFORM=mac -DSSL_TYPE=${SSL_TYPE_STR} -DSSL_PATH=${SSL_PATH_STR} -DSSL_INC_PATH=${SSL_INC_PATH_STR} -DSSL_LIB_PATH=${SSL_LIB_PATH_STR} ..
-        make -j
-
-

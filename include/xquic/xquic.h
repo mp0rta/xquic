@@ -1067,9 +1067,18 @@ XQC_EXPORT_PUBLIC_API XQC_EXTERN const xqc_scheduler_callback_t xqc_minrtt_sched
 XQC_EXPORT_PUBLIC_API XQC_EXTERN const xqc_scheduler_callback_t xqc_backup_scheduler_cb;
 XQC_EXPORT_PUBLIC_API XQC_EXTERN const xqc_scheduler_callback_t xqc_backup_fec_scheduler_cb;
 XQC_EXPORT_PUBLIC_API XQC_EXTERN const xqc_scheduler_callback_t xqc_rap_scheduler_cb;
+XQC_EXPORT_PUBLIC_API XQC_EXTERN const xqc_scheduler_callback_t xqc_wlb_scheduler_cb;
 #ifdef XQC_ENABLE_MP_INTEROP
 XQC_EXPORT_PUBLIC_API XQC_EXTERN const xqc_scheduler_callback_t xqc_interop_scheduler_cb;
 #endif
+
+/**
+ * @brief Set flow hash hint for WLB scheduler before calling datagram_send().
+ * The WLB scheduler uses this hash for flow-affinity path selection.
+ * Must be called before each xqc_h3_ext_datagram_send() call.
+ */
+XQC_EXPORT_PUBLIC_API
+void xqc_conn_set_dgram_flow_hash(xqc_connection_t *conn, uint32_t flow_hash);
 
 typedef enum {
     XQC_REINJ_UNACK_AFTER_SCHED   = 1 << 0,
@@ -1566,6 +1575,15 @@ typedef struct xqc_path_metrics_s {
 
     uint64_t            path_srtt;
     uint8_t             path_app_status;
+
+    /* Extended metrics for multipath scheduling (mpvpn WLB) */
+    uint64_t            path_min_rtt;           /* minimum RTT (usec) */
+    uint64_t            path_cwnd;              /* congestion window (bytes) */
+    uint64_t            path_bytes_in_flight;   /* bytes in flight */
+    uint64_t            path_est_bw;            /* estimated bandwidth (bytes/sec) */
+    uint64_t            path_pacing_rate;       /* pacing rate (bytes/sec) */
+    uint32_t            path_lost_count;        /* packets lost on this path */
+    uint8_t             path_state;             /* XQC_PATH_STATE_* */
 } xqc_path_metrics_t;
 
 /**
@@ -2051,6 +2069,20 @@ XQC_EXPORT_PUBLIC_API
 size_t xqc_datagram_get_mss(xqc_connection_t *conn);
 
 /**
+ * @brief get the path-specific maximum datagram payload size
+ *
+ * In multipath QUIC, different paths may have different MTUs.
+ * This function returns the effective MSS for a specific path,
+ * taking into account the path's max_pkt_out_size.
+ *
+ * @param conn the connection handle
+ * @param path_id the path identifier
+ * @return 0 = path not found or peer does not support datagram, >0 = the max length
+ */
+XQC_EXPORT_PUBLIC_API
+size_t xqc_datagram_get_mss_on_path(xqc_connection_t *conn, uint64_t path_id);
+
+/**
  * Server should set datagram user_data when datagram callbacks
  * @dgram_data: the user_data of all datagram callbacks
  */
@@ -2092,9 +2124,29 @@ xqc_int_t xqc_datagram_send(xqc_connection_t *conn, void *data,
  *         0 success
  */
 XQC_EXPORT_PUBLIC_API
-xqc_int_t xqc_datagram_send_multiple(xqc_connection_t *conn, 
-    struct iovec *iov, uint64_t *dgram_id_list, size_t iov_size, 
+xqc_int_t xqc_datagram_send_multiple(xqc_connection_t *conn,
+    struct iovec *iov, uint64_t *dgram_id_list, size_t iov_size,
     size_t *sent_cnt, size_t *sent_bytes, xqc_data_qos_level_t qos_level);
+
+/**
+ * @brief send a datagram pinned to a specific path (multipath QUIC)
+ *
+ * Same as xqc_datagram_send but the datagram packet is pinned to the
+ * given path_id, bypassing the multipath scheduler.
+ * Use XQC_INITIAL_PATH_ID (0) for the initial path.
+ *
+ * @param conn the connection handle
+ * @param data the data to be sent
+ * @param data_len the length of the data
+ * @param dgram_id pointer to return the id of the datagram
+ * @param qos_level QoS level (must be the values defined in xqc_data_qos_level_t)
+ * @param path_id the path to pin this datagram to
+ * @return <0 = error, 0 = success
+ */
+XQC_EXPORT_PUBLIC_API
+xqc_int_t xqc_datagram_send_on_path(xqc_connection_t *conn, void *data,
+    size_t data_len, uint64_t *dgram_id, xqc_data_qos_level_t qos_level,
+    uint64_t path_id);
 
 
 /**

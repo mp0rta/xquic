@@ -59,6 +59,9 @@ typedef enum {
     H3_REQUEST_INCOMPLETE           = 0x10D,
     H3_CONNECT_ERROR                = 0x10F,
     H3_VERSION_FALLBACK             = 0x110,
+
+    /* RFC 9297: HTTP Datagrams */
+    H3_DATAGRAM_ERROR               = 0x33,
 } xqc_h3_err_code_t;
 
 /**

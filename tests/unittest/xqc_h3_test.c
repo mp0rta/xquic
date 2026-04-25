@@ -56,6 +56,8 @@ xqc_test_frame()
     settings.qpack_blocked_streams = 30;
     settings.qpack_enc_max_table_capacity = 40;
     settings.qpack_dec_max_table_capacity = 40;
+    settings.enable_connect_protocol = 1;
+    settings.h3_datagram = 1;
 
     xqc_list_head_t send_buf;
     xqc_init_list_head(&send_buf);

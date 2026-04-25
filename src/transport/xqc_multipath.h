@@ -72,6 +72,7 @@ typedef enum {
     XQC_PATH_SPECIFIED_BY_KAP       = 1 << 5,  /* Keepalive Probe */
     XQC_PATH_SPECIFIED_BY_PQP       = 1 << 6,  /* Path Quality Probe */
     XQC_PATH_SPECIFIED_BY_FEC       = 1 << 7,  /* FEC repair symbol */
+    XQC_PATH_SPECIFIED_BY_DATAGRAM  = 1 << 8,  /* datagram pinned to path */
 } xqc_path_specified_flag_t;
 
 typedef enum {

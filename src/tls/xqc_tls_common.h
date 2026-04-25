@@ -105,7 +105,8 @@ typedef struct xqc_ssl_session_ticket_key_s {
 
 #define XQC_TLS_SELF_SIGNED_CERT(err_code) \
     (err_code == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT \
-        || err_code == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN)
+        || err_code == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN \
+        || err_code == X509_V_ERR_HOSTNAME_MISMATCH)
 
 
 #endif

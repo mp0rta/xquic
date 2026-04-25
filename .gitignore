@@ -4,3 +4,7 @@ bss/
 third_party/
 .idea/
 cmake-build-debug/
+*.log
+*.pcap
+slog
+skeys.log

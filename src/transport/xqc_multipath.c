@@ -655,6 +655,26 @@ xqc_conn_path_metrics_print(xqc_connection_t *conn, xqc_conn_stats_t *stats)
             stats->paths_info[paths_num].path_recv_bytes = path->path_send_ctl->ctl_app_bytes_recv;
             stats->paths_info[paths_num].path_app_status = path->app_path_status;
 
+            /* Extended scheduler metrics */
+            stats->paths_info[paths_num].path_srtt = path->path_send_ctl->ctl_srtt;
+            stats->paths_info[paths_num].path_min_rtt = path->path_send_ctl->ctl_minrtt;
+            stats->paths_info[paths_num].path_bytes_in_flight =
+                path->path_send_ctl->ctl_bytes_in_flight;
+            stats->paths_info[paths_num].path_est_bw =
+                xqc_send_ctl_get_est_bw(path->path_send_ctl);
+            stats->paths_info[paths_num].path_pacing_rate =
+                xqc_send_ctl_get_pacing_rate(path->path_send_ctl);
+            stats->paths_info[paths_num].path_lost_count =
+                path->path_send_ctl->ctl_lost_count;
+            stats->paths_info[paths_num].path_state = path->path_state;
+            if (path->path_send_ctl->ctl_cong_callback
+                && path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd)
+            {
+                stats->paths_info[paths_num].path_cwnd =
+                    path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(
+                        path->path_send_ctl->ctl_cong);
+            }
+
             if (path->app_path_status == XQC_APP_PATH_STATUS_STANDBY) {
                 stats->standby_path_app_bytes += path->path_send_ctl->ctl_app_bytes_send + path->path_send_ctl->ctl_app_bytes_recv;
             }

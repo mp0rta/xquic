@@ -415,6 +415,24 @@ xqc_h3_frm_write_settings(xqc_list_head_t *send_buf, xqc_h3_conn_settings_t *set
     len += xqc_put_varint_len(settings[count].value.vi);
     ++count;
 
+    /* RFC 9220: SETTINGS_ENABLE_CONNECT_PROTOCOL */
+    if (setting->enable_connect_protocol) {
+        settings[count].identifier.vi = XQC_H3_SETTINGS_ENABLE_CONNECT_PROTOCOL;
+        settings[count].value.vi = 1;
+        len += xqc_put_varint_len(settings[count].identifier.vi);
+        len += xqc_put_varint_len(settings[count].value.vi);
+        ++count;
+    }
+
+    /* RFC 9297: SETTINGS_H3_DATAGRAM */
+    if (setting->h3_datagram) {
+        settings[count].identifier.vi = XQC_H3_SETTINGS_H3_DATAGRAM;
+        settings[count].value.vi = 1;
+        len += xqc_put_varint_len(settings[count].identifier.vi);
+        len += xqc_put_varint_len(settings[count].value.vi);
+        ++count;
+    }
+
     xqc_var_buf_t *buf = xqc_var_buf_create(xqc_put_varint_len(XQC_H3_FRM_SETTINGS)
                                             + xqc_put_varint_len(len)
                                             + len);

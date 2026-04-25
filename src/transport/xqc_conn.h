@@ -424,6 +424,8 @@ struct xqc_connection_s {
 
     /* for datagram */
     uint64_t                        next_dgram_id;
+    /* WLB scheduler: flow hash hint set by app before datagram_send() */
+    uint32_t                        next_dgram_flow_hash;
     xqc_list_head_t                 dgram_0rtt_buffer_list;
     uint16_t                        dgram_mss;
 

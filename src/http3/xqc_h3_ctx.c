@@ -40,6 +40,7 @@ xqc_h3_ctx_init(xqc_engine_t *engine, xqc_h3_callbacks_t *h3_cbs)
     xqc_app_proto_callbacks_t ap_cbs = {
         .conn_cbs       = h3_conn_callbacks,
         .stream_cbs     = h3_stream_callbacks,
+        .dgram_cbs      = h3_ext_datagram_callbacks,
     };
 
     h3_ctx = xqc_h3_ctx_create(h3_cbs);

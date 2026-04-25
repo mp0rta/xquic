@@ -20,6 +20,8 @@ const xqc_h3_conn_settings_t default_local_h3_conn_settings = {
 #ifdef XQC_COMPAT_DUPLICATE
     .qpack_compat_duplicate         = XQC_FALSE,
 #endif
+    .enable_connect_protocol        = 0,
+    .h3_datagram                    = 0,
 };
 
 const xqc_h3_conn_settings_t default_peer_h3_conn_settings = {
@@ -31,6 +33,8 @@ const xqc_h3_conn_settings_t default_peer_h3_conn_settings = {
 #ifdef XQC_COMPAT_DUPLICATE
     .qpack_compat_duplicate         = XQC_FALSE,
 #endif
+    .enable_connect_protocol        = 0,
+    .h3_datagram                    = 0,
 };
 
 
@@ -400,8 +404,11 @@ xqc_h3_conn_init_callbacks(xqc_h3_conn_t *h3c)
     
     if (h3c->flags & XQC_H3_CONN_FLAG_EXT_ENABLED) {
         h3c->h3_ext_bs_callbacks = h3_cbs->h3_ext_bs_cbs;
-        h3c->h3_ext_dgram_callbacks = h3_cbs->h3_ext_dgram_cbs;
     }
+
+    /* datagram callbacks are needed for both "h3" and "h3-ext" ALPNs
+     * when MASQUE / HTTP Datagrams (RFC 9297) are in use */
+    h3c->h3_ext_dgram_callbacks = h3_cbs->h3_ext_dgram_cbs;
 
     return XQC_OK;
 }
@@ -720,6 +727,22 @@ xqc_h3_conn_on_settings_entry_received(uint64_t identifier, uint64_t value, void
             xqc_log(h3c->log, XQC_LOG_ERROR, "|set qpack blocked stream error|ret:%d", ret);
             return ret;
         }
+        break;
+
+    case XQC_H3_SETTINGS_ENABLE_CONNECT_PROTOCOL:
+        h3c->peer_h3_conn_settings.enable_connect_protocol = value;
+        xqc_log(h3c->log, XQC_LOG_DEBUG, "|peer enable_connect_protocol:%ui|", value);
+        break;
+
+    case XQC_H3_SETTINGS_H3_DATAGRAM:
+        if (value > 1) {
+            xqc_log(h3c->log, XQC_LOG_ERROR,
+                    "|SETTINGS_H3_DATAGRAM invalid value:%ui|", value);
+            XQC_H3_CONN_ERR(h3c, H3_SETTINGS_ERROR, -XQC_H3_SETTING_ERROR);
+            return -XQC_H3_SETTING_ERROR;
+        }
+        h3c->peer_h3_conn_settings.h3_datagram = value;
+        xqc_log(h3c->log, XQC_LOG_DEBUG, "|peer h3_datagram:%ui|", value);
         break;
 
     default:

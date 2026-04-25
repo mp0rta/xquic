@@ -161,7 +161,7 @@ typedef enum {
 #endif
 } xqc_bbr_optimization_flag_t;
 
-#define XQC_BBR2_PLUS_ENABLED 0
+#define XQC_BBR2_PLUS_ENABLED 1
 typedef enum {
     XQC_BBR2_FLAG_NONE = 0x00,
 #if XQC_BBR2_PLUS_ENABLED

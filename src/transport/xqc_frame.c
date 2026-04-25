@@ -1553,14 +1553,12 @@ xqc_process_datagram_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
         return ret;
     }
 
-    /* @TODO: datagram read callback */
-    if (data_len > 0) {
-        if (conn->app_proto_cbs.dgram_cbs.datagram_read_notify
-            && (conn->conn_flag & XQC_CONN_FLAG_UPPER_CONN_EXIST))
-        {
-            conn->app_proto_cbs.dgram_cbs.datagram_read_notify(conn, conn->dgram_data, data_buffer, data_len, xqc_monotonic_timestamp() - packet_in->pkt_recv_time);
-            xqc_log(conn->log, XQC_LOG_DEBUG, "|xqc_datagram_read|data_len:%z|", data_len);
-        }
+    /* RFC 9221 §5: zero-length DATAGRAMs are valid and MUST be delivered */
+    if (conn->app_proto_cbs.dgram_cbs.datagram_read_notify
+        && (conn->conn_flag & XQC_CONN_FLAG_UPPER_CONN_EXIST))
+    {
+        conn->app_proto_cbs.dgram_cbs.datagram_read_notify(conn, conn->dgram_data, data_buffer, data_len, xqc_monotonic_timestamp() - packet_in->pkt_recv_time);
+        xqc_log(conn->log, XQC_LOG_DEBUG, "|xqc_datagram_read|data_len:%z|", data_len);
     }
 
     return ret;

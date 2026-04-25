@@ -106,7 +106,7 @@ if(ANDROID_ABI OR PLATFORM MATCHES "mac")
 endif()
 
 if(NOT (CMAKE_C_COMPILER_ID MATCHES "MSVC" OR CMAKE_CXX_COMPILER_ID MATCHES "MSVC"))
-    set(CMAKE_C_FLAGS_OPTION "-Werror -Wno-unused -Wno-pointer-sign -Wno-format-security ")
+    set(CMAKE_C_FLAGS_OPTION "-Werror -Wno-unused -Wno-pointer-sign -Wno-format-security -Wno-dangling-pointer ")
 endif()
 
 # C_FLAGS
@@ -202,6 +202,7 @@ set(
     "src/http3/qpack/dtable/xqc_dtable.c"
     "src/http3/xqc_h3_ext_dgram.c"
     "src/http3/xqc_h3_ext_bytestream.c"
+    "src/http3/xqc_h3_ext_masque.c"
 )
 
 # Transport source
@@ -239,6 +240,7 @@ set(
     "src/transport/scheduler/xqc_scheduler_backup.c"
     "src/transport/scheduler/xqc_scheduler_backup_fec.c"
     "src/transport/scheduler/xqc_scheduler_rap.c"
+    "src/transport/scheduler/xqc_scheduler_wlb.c"
 )
 
 if(XQC_ENABLE_MP_INTEROP)

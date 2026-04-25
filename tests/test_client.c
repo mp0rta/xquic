@@ -159,6 +159,9 @@ typedef struct user_conn_s {
 
     uint64_t            black_hole_start_time;
     int                 tracked_pkt_cnt;
+
+    /* MASQUE client state (test case 800/801) */
+    xqc_h3_request_t   *masque_request;
 } user_conn_t;
 
 #define XQC_DEMO_INTERFACE_MAX_LEN 64
@@ -287,6 +290,17 @@ int g_debug_path = 0;
 char test_long_value[XQC_TEST_LONG_HEADER_LEN] = {'\0'};
 
 int hsk_completed = 0;
+
+/* MASQUE client state */
+int g_masque_mode = 0;
+int g_masque_send_count = 10;    /* total datagrams to echo */
+uint64_t g_masque_stream_id = 0;
+int g_masque_tunnel_ok = 0;      /* 2xx received */
+int g_masque_addr_assigned = 0;  /* ADDRESS_ASSIGN received */
+int g_masque_send_done = 0;
+int g_masque_recv_count = 0;
+int g_masque_sent_count = 0;
+static int xqc_client_masque_send_one_dgram(user_conn_t *user_conn);
 
 
 int g_periodically_request = 0;
@@ -715,6 +729,55 @@ static void
 xqc_client_h3_ext_datagram_read_callback(xqc_h3_conn_t *conn, const void *data, size_t data_len, void *user_data, uint64_t ts)
 {
     user_conn_t *user_conn = (user_conn_t*)user_data;
+
+    /* MASQUE: unframe HTTP Datagram, verify echo, send next */
+    if (g_masque_mode) {
+        uint64_t qsid = 0, ctx_id = 0;
+        const uint8_t *payload = NULL;
+        size_t payload_len = 0;
+        xqc_int_t xret = xqc_h3_ext_masque_unframe_udp(
+            (const uint8_t *)data, data_len, &qsid, &ctx_id, &payload, &payload_len);
+        if (xret != XQC_OK) {
+            printf("[masque-e2e] unframe error: %d\n", xret);
+            return;
+        }
+
+        /* RFC 9297: silently drop datagrams with unknown Context-ID */
+        if (ctx_id != 0) {
+            printf("[masque-e2e] dropping dgram with unknown context_id=%" PRIu64 "\n", ctx_id);
+            return;
+        }
+
+        /* Verify quarter-stream-ID matches our tunnel */
+        uint64_t expected_qsid = g_masque_stream_id / 4;
+        if (qsid != expected_qsid) {
+            printf("[masque-e2e] WARN: qsid mismatch: got %" PRIu64 " expected %" PRIu64 "\n",
+                   qsid, expected_qsid);
+        }
+
+        /* Verify payload content */
+        char expected[32];
+        snprintf(expected, sizeof(expected), "MASQUE_TEST_%04d", g_masque_recv_count);
+        size_t expected_len = strlen(expected);
+        if (payload_len >= expected_len && memcmp(payload, expected, expected_len) == 0) {
+            printf("[masque-e2e] echo #%d verified OK\n", g_masque_recv_count);
+        } else {
+            printf("[masque-e2e] echo #%d payload mismatch (len=%zu)\n",
+                   g_masque_recv_count, payload_len);
+        }
+
+        g_masque_recv_count++;
+
+        /* Send next datagram (ping-pong) or close */
+        if (g_masque_recv_count >= g_masque_send_count) {
+            printf("[masque-e2e] all %d datagrams echoed\n", g_masque_send_count);
+            xqc_h3_conn_close(ctx.engine, &user_conn->cid);
+        } else {
+            xqc_client_masque_send_one_dgram(user_conn);
+        }
+        return;
+    }
+
     if (g_echo_check) {
         memcpy(user_conn->dgram_blk->recv_data + user_conn->dgram_blk->data_recv, data, data_len);
     }
@@ -1872,6 +1935,17 @@ xqc_client_h3_conn_close_notify(xqc_h3_conn_t *conn, const xqc_cid_t *cid, void 
     }
     
 
+    /* MASQUE: print E2E test results */
+    if (g_masque_mode) {
+        printf("[masque-e2e] sent=%d recv=%d\n", g_masque_sent_count, g_masque_recv_count);
+        if (g_masque_recv_count >= g_masque_send_count) {
+            printf("[masque-e2e] PASS\n");
+        } else {
+            printf("[masque-e2e] FAIL (expected %d, got %d)\n",
+                   g_masque_send_count, g_masque_recv_count);
+        }
+    }
+
     if (g_test_qch_mode) {
         if (p_ctx->cur_conn_num == 0) {
             event_base_loopbreak(p_ctx->eb);
@@ -1879,6 +1953,102 @@ xqc_client_h3_conn_close_notify(xqc_h3_conn_t *conn, const xqc_cid_t *cid, void 
     } else {
         event_base_loopbreak(eb);
     }
+    return 0;
+}
+
+/* ── MASQUE client: send one framed test datagram ── */
+static int
+xqc_client_masque_send_one_dgram(user_conn_t *user_conn)
+{
+    if (g_masque_sent_count >= g_masque_send_count) {
+        g_masque_send_done = 1;
+        return 0;
+    }
+
+    /* Build test payload: "MASQUE_TEST_XXXX" */
+    char payload[32];
+    snprintf(payload, sizeof(payload), "MASQUE_TEST_%04d", g_masque_sent_count);
+
+    /* Frame with quarter-stream-ID */
+    uint8_t frame_buf[256];
+    size_t frame_written = 0;
+    xqc_int_t xret = xqc_h3_ext_masque_frame_udp(
+        frame_buf, sizeof(frame_buf), &frame_written,
+        g_masque_stream_id, (const uint8_t *)payload, strlen(payload));
+    if (xret != XQC_OK) {
+        printf("[masque-e2e] frame error: %d\n", xret);
+        return -1;
+    }
+
+    uint64_t dgram_id;
+    xret = xqc_h3_ext_datagram_send(user_conn->h3_conn, frame_buf, frame_written,
+                                     &dgram_id, XQC_DATA_QOS_HIGH);
+    if (xret < 0 && xret != -XQC_EAGAIN) {
+        printf("[masque-e2e] send error: %d\n", xret);
+        return -1;
+    }
+    if (xret == -XQC_EAGAIN) {
+        printf("[masque-e2e] send EAGAIN, will retry\n");
+        return 0;
+    }
+
+    g_masque_sent_count++;
+    printf("[masque-e2e] sent dgram #%d (dgram_id=%" PRIu64 ")\n",
+           g_masque_sent_count, dgram_id);
+    return 0;
+}
+
+/* ── MASQUE client: start Extended CONNECT tunnel ── */
+static int
+xqc_client_masque_start_tunnel(user_conn_t *user_conn)
+{
+    user_stream_t *user_stream = calloc(1, sizeof(user_stream_t));
+    if (!user_stream) return -1;
+    user_stream->user_conn = user_conn;
+
+    xqc_h3_request_t *h3_request = xqc_h3_request_create(ctx.engine,
+        &user_conn->cid, NULL, user_stream);
+    if (!h3_request) {
+        printf("[masque-e2e] xqc_h3_request_create error\n");
+        free(user_stream);
+        return -1;
+    }
+    user_stream->h3_request = h3_request;
+    user_conn->masque_request = h3_request;
+
+    /* Build Extended CONNECT headers */
+    char authority[128];
+    snprintf(authority, sizeof(authority), "%s:%d", g_host, g_server_port);
+    xqc_http_header_t hdrs[] = {
+        { .name  = {.iov_base = ":method",   .iov_len = 7},
+          .value = {.iov_base = "CONNECT",    .iov_len = 7},    .flags = 0 },
+        { .name  = {.iov_base = ":protocol",  .iov_len = 9},
+          .value = {.iov_base = "connect-ip", .iov_len = 10},   .flags = 0 },
+        { .name  = {.iov_base = ":scheme",    .iov_len = 7},
+          .value = {.iov_base = "https",      .iov_len = 5},    .flags = 0 },
+        { .name  = {.iov_base = ":authority", .iov_len = 10},
+          .value = {.iov_base = authority,    .iov_len = strlen(authority)}, .flags = 0 },
+        { .name  = {.iov_base = ":path",      .iov_len = 5},
+          .value = {.iov_base = "/.well-known/masque/ip/*/*/", .iov_len = 27}, .flags = 0 },
+        { .name  = {.iov_base = "capsule-protocol", .iov_len = 16},
+          .value = {.iov_base = "?1",         .iov_len = 2},    .flags = 0 },
+    };
+    xqc_http_headers_t headers = {
+        .headers  = hdrs,
+        .count    = 6,
+        .capacity = 6,
+    };
+
+    ssize_t ret = xqc_h3_request_send_headers(h3_request, &headers, 0);
+    if (ret < 0) {
+        printf("[masque-e2e] send Extended CONNECT headers error: %zd\n", ret);
+        return -1;
+    }
+
+    g_masque_stream_id = xqc_h3_stream_id(h3_request);
+    printf("[masque-e2e] Extended CONNECT sent, stream_id=%" PRIu64 " quarter_id=%" PRIu64 "\n",
+           g_masque_stream_id, g_masque_stream_id / 4);
+
     return 0;
 }
 
@@ -1926,6 +2096,11 @@ xqc_client_h3_conn_handshake_finished(xqc_h3_conn_t *h3_conn, void *user_data)
     
     if (g_send_dgram && user_conn->dgram_retry_in_hs_cb) {
         xqc_client_h3_ext_datagram_send(user_conn);
+    }
+
+    /* MASQUE: start tunnel after handshake */
+    if (g_masque_mode) {
+        xqc_client_masque_start_tunnel(user_conn);
     }
 }
 
@@ -2850,6 +3025,79 @@ xqc_client_request_read_notify(xqc_h3_request_t *h3_request, xqc_request_notify_
     /* stream read notify fail */
     if (g_test_case == 12) {
         return -1;
+    }
+
+    /* MASQUE: handle tunnel response (200 headers + capsules on body) */
+    if (g_masque_mode) {
+        if (flag & XQC_REQ_NOTIFY_READ_HEADER) {
+            xqc_http_headers_t *headers = xqc_h3_request_recv_headers(h3_request, &fin);
+            if (headers) {
+                for (int i = 0; i < headers->count; i++) {
+                    printf("[masque-e2e] hdr: %s = %s\n",
+                           (char *)headers->headers[i].name.iov_base,
+                           (char *)headers->headers[i].value.iov_base);
+                    if (headers->headers[i].name.iov_len == 7
+                        && memcmp(headers->headers[i].name.iov_base, ":status", 7) == 0
+                        && headers->headers[i].value.iov_len == 3
+                        && memcmp(headers->headers[i].value.iov_base, "200", 3) == 0) {
+                        g_masque_tunnel_ok = 1;
+                        printf("[masque-e2e] tunnel 200 OK\n");
+                    }
+                }
+            }
+        }
+        if (flag & XQC_REQ_NOTIFY_READ_BODY) {
+            char buff[4096];
+            ssize_t read;
+            do {
+                read = xqc_h3_request_recv_body(h3_request, buff, sizeof(buff), &fin);
+                if (read <= 0) break;
+
+                /* Parse capsules from body */
+                const uint8_t *p = (const uint8_t *)buff;
+                size_t remain = (size_t)read;
+                while (remain > 0) {
+                    uint64_t cap_type;
+                    const uint8_t *cap_payload;
+                    size_t cap_len, consumed;
+                    xqc_int_t xret = xqc_h3_ext_capsule_decode(
+                        p, remain, &cap_type, &cap_payload, &cap_len, &consumed);
+                    if (xret != XQC_OK) {
+                        printf("[masque-e2e] capsule decode error: %d (remain=%zu)\n", xret, remain);
+                        break;
+                    }
+                    printf("[masque-e2e] capsule type=0x%02" PRIx64 " len=%zu\n", cap_type, cap_len);
+
+                    if (cap_type == XQC_H3_CAPSULE_ADDRESS_ASSIGN) {
+                        uint64_t req_id;
+                        uint8_t ip_ver, ip_addr[16], prefix;
+                        size_t ip_len = 16;
+                        size_t aa_consumed = 0;
+                        xret = xqc_h3_ext_connectip_parse_address_assign(
+                            cap_payload, cap_len, &req_id, &ip_ver, ip_addr, &ip_len, &prefix, &aa_consumed);
+                        if (xret == XQC_OK) {
+                            g_masque_addr_assigned = 1;
+                            printf("[masque-e2e] ADDRESS_ASSIGN: req_id=%" PRIu64
+                                   " ipv%d %d.%d.%d.%d/%d\n",
+                                   req_id, ip_ver, ip_addr[0], ip_addr[1],
+                                   ip_addr[2], ip_addr[3], prefix);
+                        }
+                    } else if (cap_type == XQC_H3_CAPSULE_ROUTE_ADVERTISEMENT) {
+                        printf("[masque-e2e] ROUTE_ADVERTISEMENT received\n");
+                    }
+                    p += consumed;
+                    remain -= consumed;
+                }
+            } while (read > 0 && !fin);
+
+            /* Start sending datagrams once ADDRESS_ASSIGN is received */
+            if (g_masque_addr_assigned && !g_masque_send_done && g_masque_sent_count == 0) {
+                printf("[masque-e2e] starting datagram echo test (%d datagrams)\n", g_masque_send_count);
+                user_conn_t *user_conn = user_stream->user_conn;
+                xqc_client_masque_send_one_dgram(user_conn);
+            }
+        }
+        return 0;
     }
 
     if ((flag & XQC_REQ_NOTIFY_READ_HEADER) || (flag & XQC_REQ_NOTIFY_READ_TRAILER)) {
@@ -4685,6 +4933,18 @@ int main(int argc, char *argv[]) {
         conn_settings.receive_timestamps_exponent = 0;
     }
 
+    /* MASQUE E2E test cases */
+    if (g_test_case == 800 || g_test_case == 801) {
+        g_masque_mode = 1;
+        g_max_dgram_size = 65535;
+        g_send_dgram = 0;  /* we handle datagram send ourselves */
+        if (g_test_case == 801) {
+            g_enable_multipath = 1;
+        }
+        printf("[masque-e2e] test_case=%d masque_mode=%d multipath=%d\n",
+               g_test_case, g_masque_mode, g_enable_multipath);
+    }
+
     conn_settings.pacing_on = pacing_on;
     conn_settings.proto_version = XQC_VERSION_V1;
     conn_settings.max_datagram_frame_size = g_max_dgram_size;
@@ -4865,6 +5125,21 @@ int main(int argc, char *argv[]) {
     if (ret != XQC_OK) {
         printf("init h3 context error, ret: %d\n", ret);
         return ret;
+    }
+
+    /* MASQUE: enable Extended CONNECT + H3 Datagram settings
+     * Must preserve sane defaults for max_field_section_size and qpack params */
+    if (g_masque_mode) {
+        xqc_h3_conn_settings_t h3s = {
+            .max_field_section_size       = 32 * 1024,
+            .qpack_blocked_streams        = 64,
+            .qpack_enc_max_table_capacity = 16 * 1024,
+            .qpack_dec_max_table_capacity = 16 * 1024,
+            .enable_connect_protocol      = 1,
+            .h3_datagram                  = 1,
+        };
+        xqc_h3_engine_set_local_settings(ctx.engine, &h3s);
+        printf("[masque-e2e] H3 settings: enable_connect_protocol=1, h3_datagram=1\n");
     }
 
     if (g_test_case == 18) { /* test h3 settings */
@@ -5139,6 +5414,11 @@ int main(int argc, char *argv[]) {
     }
 
     if (g_test_case == 501) {
+        goto skip_data;
+    }
+
+    /* MASQUE: skip normal request creation; tunnel is started in handshake_finished */
+    if (g_masque_mode) {
         goto skip_data;
     }
 

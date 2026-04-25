@@ -43,6 +43,12 @@ typedef enum {
     /* QPACK settings */
     XQC_H3_SETTINGS_QPACK_MAX_TABLE_CAPACITY    = 0x01,
     XQC_H3_SETTINGS_QPACK_BLOCKED_STREAMS       = 0x07,
+
+    /* RFC 9220: Extended CONNECT */
+    XQC_H3_SETTINGS_ENABLE_CONNECT_PROTOCOL     = 0x08,
+
+    /* RFC 9297: HTTP Datagrams */
+    XQC_H3_SETTINGS_H3_DATAGRAM                 = 0x33,
 } xqc_h3_settings_id;
 
 

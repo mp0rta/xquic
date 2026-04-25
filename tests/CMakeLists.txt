@@ -73,6 +73,13 @@ endif()
 target_link_libraries(test_server ${APP_DEPEND_LIBS})
 target_link_libraries(test_client ${APP_DEPEND_LIBS})
 
+### MASQUE test client ###
+set(MASQUE_CLIENT_SOURCES
+    masque_client.c
+)
+add_executable(masque_client ${MASQUE_CLIENT_SOURCES})
+target_link_libraries(masque_client ${APP_DEPEND_LIBS})
+
 
 # build run_tests
 if(HAVE_CUNIT)
@@ -113,6 +120,7 @@ if(HAVE_CUNIT)
         ${UNIT_TEST_DIR}/xqc_datagram_test.c
         ${UNIT_TEST_DIR}/xqc_h3_ext_test.c
         ${UNIT_TEST_DIR}/xqc_ack_with_timestamp_test.c
+        ${UNIT_TEST_DIR}/xqc_masque_test.c
     )
 
     if(XQC_ENABLE_FEC)

@@ -110,6 +110,9 @@ typedef struct user_conn_s {
 
     xqc_connection_t   *quic_conn;
     xqc_h3_conn_t      *h3_conn;
+
+    /* MASQUE proxy state (test case 800/801) */
+    uint64_t            masque_stream_id;
 } user_conn_t;
 
 typedef struct xqc_server_ctx_s {
@@ -159,6 +162,7 @@ double g_copa_ai = 1.0;
 double g_copa_delta = 0.05;
 int g_enable_h3_ext = 1;
 int g_mp_backup_mode = 0;
+int g_masque_mode = 0;   /* 0=off, 1=connect-ip proxy */
 char g_write_file[256];
 char g_read_file[256];
 char g_log_path[256];
@@ -533,6 +537,48 @@ static void
 xqc_server_h3_ext_datagram_read_callback(xqc_h3_conn_t *conn, const void *data, size_t data_len, void *user_data, uint64_t ts)
 {
     user_conn_t *user_conn = (user_conn_t*)user_data;
+
+    /* MASQUE: unframe HTTP Datagram, echo payload back with same framing */
+    if (g_masque_mode) {
+        uint64_t qsid = 0, ctx_id = 0;
+        const uint8_t *payload = NULL;
+        size_t payload_len = 0;
+        xqc_int_t xret = xqc_h3_ext_masque_unframe_udp(
+            (const uint8_t *)data, data_len, &qsid, &ctx_id, &payload, &payload_len);
+        if (xret != XQC_OK) {
+            printf("[masque-proxy] unframe error: %d (len=%zu)\n", xret, data_len);
+            return;
+        }
+        /* RFC 9297: silently drop datagrams with unknown Context-ID */
+        if (ctx_id != 0) {
+            printf("[masque-proxy] dropping dgram with unknown context_id=%" PRIu64 "\n", ctx_id);
+            return;
+        }
+        printf("[masque-proxy] recv dgram: qsid=%" PRIu64 " ctx=%" PRIu64 " payload=%zu bytes\n",
+               qsid, ctx_id, payload_len);
+
+        /* Re-frame with the same stream_id and echo back */
+        uint8_t frame_buf[4096];
+        size_t frame_written = 0;
+        xret = xqc_h3_ext_masque_frame_udp(
+            frame_buf, sizeof(frame_buf), &frame_written,
+            user_conn->masque_stream_id, payload, payload_len);
+        if (xret != XQC_OK) {
+            printf("[masque-proxy] re-frame error: %d\n", xret);
+            return;
+        }
+
+        uint64_t dgram_id_out;
+        xret = xqc_h3_ext_datagram_send(conn, frame_buf, frame_written,
+                                         &dgram_id_out, g_dgram_qos_level);
+        if (xret < 0 && xret != -XQC_EAGAIN) {
+            printf("[masque-proxy] echo send error: %d\n", xret);
+        } else {
+            printf("[masque-proxy] echoed %zu payload bytes (dgram_id=%" PRIu64 ")\n",
+                   payload_len, dgram_id_out);
+        }
+        return;
+    }
 
     uint8_t dgram_type;
     uint32_t dgram_id;
@@ -1150,6 +1196,110 @@ xqc_client_h3_send_pure_fin(int fd, short what, void *arg)
 
 
 
+/* ── MASQUE proxy: send 200 + ADDRESS_ASSIGN + ROUTE_ADVERTISEMENT capsules ── */
+
+static int
+xqc_server_masque_send_response(xqc_h3_request_t *h3_request, user_stream_t *user_stream)
+{
+    user_conn_t *user_conn = xqc_h3_get_conn_user_data_by_request(h3_request);
+    ssize_t ret;
+
+    /* 1. Send 200 response headers (fin=0 — keep stream open) */
+    xqc_http_header_t resp_hdrs[] = {
+        { .name  = {.iov_base = ":status",           .iov_len = 7},
+          .value = {.iov_base = "200",                .iov_len = 3},
+          .flags = 0 },
+        { .name  = {.iov_base = "capsule-protocol",  .iov_len = 16},
+          .value = {.iov_base = "?1",                 .iov_len = 2},
+          .flags = 0 },
+    };
+    xqc_http_headers_t hdrs = {
+        .headers  = resp_hdrs,
+        .count    = 2,
+        .capacity = 2,
+    };
+
+    ret = xqc_h3_request_send_headers(h3_request, &hdrs, 0);
+    if (ret < 0) {
+        printf("[masque-proxy] send 200 headers error: %zd\n", ret);
+        return -1;
+    }
+    printf("[masque-proxy] Sent 200 response headers\n");
+    user_stream->header_sent = 1;
+
+    /* Store stream_id for datagram framing */
+    user_conn->masque_stream_id = xqc_h3_stream_id(h3_request);
+    printf("[masque-proxy] tunnel stream_id=%" PRIu64 ", quarter_id=%" PRIu64 "\n",
+           user_conn->masque_stream_id, user_conn->masque_stream_id / 4);
+
+    /* 2. Build and send ADDRESS_ASSIGN capsule (10.0.0.2/32, IPv4) */
+    uint8_t addr_payload[64];
+    size_t addr_written = 0;
+    uint8_t assigned_ip[4] = {10, 0, 0, 2};
+    xqc_int_t xret = xqc_h3_ext_connectip_build_address_request(
+        addr_payload, sizeof(addr_payload), &addr_written,
+        1, /* request_id */
+        4, /* ip_version */
+        assigned_ip,
+        32 /* prefix_len */);
+    if (xret != XQC_OK) {
+        printf("[masque-proxy] build ADDRESS_ASSIGN payload error: %d\n", xret);
+        return -1;
+    }
+
+    uint8_t capsule_buf[128];
+    size_t cap_written = 0;
+    xret = xqc_h3_ext_capsule_encode(
+        capsule_buf, sizeof(capsule_buf), &cap_written,
+        0x01, /* ADDRESS_ASSIGN */
+        addr_payload, addr_written);
+    if (xret != XQC_OK) {
+        printf("[masque-proxy] capsule encode ADDRESS_ASSIGN error: %d\n", xret);
+        return -1;
+    }
+
+    ret = xqc_h3_request_send_body(h3_request, capsule_buf, cap_written, 0);
+    if (ret < 0) {
+        printf("[masque-proxy] send ADDRESS_ASSIGN capsule error: %zd\n", ret);
+        return -1;
+    }
+    printf("[masque-proxy] Sent ADDRESS_ASSIGN capsule (%zu bytes)\n", cap_written);
+
+    /* 3. Build and send ROUTE_ADVERTISEMENT capsule (0.0.0.0 → 255.255.255.255) */
+    uint8_t route_payload[32];
+    size_t rp_off = 0;
+    route_payload[rp_off++] = 4; /* ip_version */
+    /* start_ip: 0.0.0.0 */
+    route_payload[rp_off++] = 0; route_payload[rp_off++] = 0;
+    route_payload[rp_off++] = 0; route_payload[rp_off++] = 0;
+    /* end_ip: 255.255.255.255 */
+    route_payload[rp_off++] = 255; route_payload[rp_off++] = 255;
+    route_payload[rp_off++] = 255; route_payload[rp_off++] = 255;
+    /* protocol: 0 (any) */
+    route_payload[rp_off++] = 0;
+
+    uint8_t route_capsule[64];
+    size_t rc_written = 0;
+    xret = xqc_h3_ext_capsule_encode(
+        route_capsule, sizeof(route_capsule), &rc_written,
+        0x03, /* ROUTE_ADVERTISEMENT */
+        route_payload, rp_off);
+    if (xret != XQC_OK) {
+        printf("[masque-proxy] capsule encode ROUTE_ADVERTISEMENT error: %d\n", xret);
+        return -1;
+    }
+
+    ret = xqc_h3_request_send_body(h3_request, route_capsule, rc_written, 0);
+    if (ret < 0) {
+        printf("[masque-proxy] send ROUTE_ADVERTISEMENT capsule error: %zd\n", ret);
+        return -1;
+    }
+    printf("[masque-proxy] Sent ROUTE_ADVERTISEMENT capsule (%zu bytes)\n", rc_written);
+
+    return 0;
+}
+
+
 #define MAX_HEADER 100
 
 int
@@ -1393,6 +1543,30 @@ xqc_server_request_read_notify(xqc_h3_request_t *h3_request, xqc_request_notify_
         }
 
         user_stream->header_recvd++;
+
+        /* MASQUE: detect Extended CONNECT (:method=CONNECT + :protocol=connect-ip) */
+        if (g_masque_mode) {
+            int is_connect = 0, is_connect_ip = 0;
+            for (int j = 0; j < headers->count; j++) {
+                if (headers->headers[j].name.iov_len == 7
+                    && memcmp(headers->headers[j].name.iov_base, ":method", 7) == 0
+                    && headers->headers[j].value.iov_len == 7
+                    && memcmp(headers->headers[j].value.iov_base, "CONNECT", 7) == 0) {
+                    is_connect = 1;
+                }
+                if (headers->headers[j].name.iov_len == 9
+                    && memcmp(headers->headers[j].name.iov_base, ":protocol", 9) == 0
+                    && headers->headers[j].value.iov_len == 10
+                    && memcmp(headers->headers[j].value.iov_base, "connect-ip", 10) == 0) {
+                    is_connect_ip = 1;
+                }
+            }
+            if (is_connect && is_connect_ip) {
+                printf("[masque-proxy] Detected Extended CONNECT for connect-ip\n");
+                xqc_server_masque_send_response(h3_request, user_stream);
+                return 0;
+            }
+        }
 
         if (fin) {
             /* only header. request received, start processing business logic. */
@@ -2604,6 +2778,21 @@ int main(int argc, char *argv[]) {
         conn_settings.receive_timestamps_exponent = 0;
     }
 
+    /* MASQUE E2E test cases */
+    if (g_test_case == 800 || g_test_case == 801) {
+        g_masque_mode = 1;
+        g_echo = 1;
+        g_send_dgram = 1;
+        g_max_dgram_size = 65535;
+        conn_settings.max_datagram_frame_size = 65535;
+        if (g_test_case == 801) {
+            g_enable_multipath = 1;
+            conn_settings.enable_multipath = 1;
+        }
+        printf("[masque-proxy] test_case=%d masque_mode=%d multipath=%d\n",
+               g_test_case, g_masque_mode, g_enable_multipath);
+    }
+
     xqc_config_t config;
     if (xqc_engine_get_default_config(&config, XQC_ENGINE_SERVER) < 0) {
         return -1;
@@ -2729,6 +2918,21 @@ int main(int argc, char *argv[]) {
     if (ret != XQC_OK) {
         printf("init h3 context error, ret: %d\n", ret);
         return ret;
+    }
+
+    /* MASQUE: enable Extended CONNECT + H3 Datagram settings
+     * Must preserve sane defaults for max_field_section_size and qpack params */
+    if (g_masque_mode) {
+        xqc_h3_conn_settings_t h3s = {
+            .max_field_section_size       = 32 * 1024,
+            .qpack_blocked_streams        = 64,
+            .qpack_enc_max_table_capacity = 16 * 1024,
+            .qpack_dec_max_table_capacity = 16 * 1024,
+            .enable_connect_protocol      = 1,
+            .h3_datagram                  = 1,
+        };
+        xqc_h3_engine_set_local_settings(ctx.engine, &h3s);
+        printf("[masque-proxy] H3 settings: enable_connect_protocol=1, h3_datagram=1\n");
     }
 
         /* modify h3 default settings */

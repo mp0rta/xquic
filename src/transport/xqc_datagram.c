@@ -130,16 +130,51 @@ end:
  * @param conn the connection handle 
  * @return 0 = the peer does not support datagram, >0 = the max length
  */
-size_t 
+size_t
 xqc_datagram_get_mss(xqc_connection_t *conn)
 {
     return conn->dgram_mss;
 }
 
+size_t
+xqc_datagram_get_mss_on_path(xqc_connection_t *conn, uint64_t path_id)
+{
+    if (conn == NULL) {
+        return 0;
+    }
+
+    xqc_path_ctx_t *path = xqc_conn_find_path_by_path_id(conn, path_id);
+    if (path == NULL || path->path_state >= XQC_PATH_STATE_CLOSING) {
+        return 0;
+    }
+
+    /* start from connection-level MSS (includes dgram_frame_limit + udp_payload_limit) */
+    size_t mss = conn->dgram_mss;
+
+    /* apply path-specific MTU constraint */
+    if (conn->conn_flag & XQC_CONN_FLAG_CAN_SEND_1RTT) {
+        size_t quic_header_size = xqc_short_packet_header_size(
+            conn->dcid_set.current_dcid.cid_len, XQC_PKTNO_BITS);
+        size_t headroom = quic_header_size + XQC_DATAGRAM_HEADER_BYTES;
+        if (conn->conn_settings.fec_params.fec_encoder_scheme) {
+            headroom += XQC_FEC_SPACE;
+        }
+        size_t path_mtu_limit = 0;
+        if (path->path_max_pkt_out_size >= headroom) {
+            path_mtu_limit = path->path_max_pkt_out_size - headroom;
+        }
+        if (path_mtu_limit < mss) {
+            mss = path_mtu_limit;
+        }
+    }
+
+    return mss;
+}
+
 /*
  * @brief the API to send a datagram over the QUIC connection
- * 
- * @param conn the connection handle 
+ *
+ * @param conn the connection handle
  * @param data the data to be sent
  * @param data_len the length of the data
  * @param *dgram_id the pointer to return the id the datagram
@@ -216,7 +251,7 @@ xqc_int_t xqc_datagram_send(xqc_connection_t *conn, void *data,
 
     xqc_conn_check_app_limit(conn);
 
-    ret = xqc_write_datagram_frame_to_packet(conn, pkt_type, data, data_len, &dg_id, XQC_FALSE, qos_level);
+    ret = xqc_write_datagram_frame_to_packet(conn, pkt_type, data, data_len, &dg_id, XQC_FALSE, qos_level, 0, XQC_FALSE);
 
     if (ret < 0) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|write_datagram_frame_to_packet_error|");
@@ -261,12 +296,133 @@ xqc_int_t xqc_datagram_send(xqc_connection_t *conn, void *data,
 }
 
 /*
+ * @brief send a datagram pinned to a specific path (multipath QUIC)
+ *
+ * Same as xqc_datagram_send but the datagram packet is pinned to the
+ * given path_id, bypassing the multipath scheduler.
+ */
+xqc_int_t
+xqc_datagram_send_on_path(xqc_connection_t *conn, void *data,
+    size_t data_len, uint64_t *dgram_id, xqc_data_qos_level_t qos_level,
+    uint64_t path_id)
+{
+    if (conn == NULL) {
+        return -XQC_EPARAM;
+    }
+
+    if (data == NULL && data_len != 0) {
+        return -XQC_EPARAM;
+    }
+
+    if (conn->conn_state >= XQC_CONN_STATE_CLOSING) {
+        xqc_conn_log(conn, XQC_LOG_INFO,
+                      "|conn closing, cannot send datagram|size:%ud|", data_len);
+        return -XQC_CLOSING;
+    }
+
+    /* path validation */
+    xqc_path_ctx_t *path = xqc_conn_find_path_by_path_id(conn, path_id);
+    if (path == NULL) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|path not found|path_id:%ui|", path_id);
+        return -XQC_EMP_PATH_NOT_FOUND;
+    }
+
+    if (path->path_state >= XQC_PATH_STATE_CLOSING) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|path closing|path_id:%ui|state:%d|", path_id, path->path_state);
+        return -XQC_EMP_PATH_STATE_ERROR;
+    }
+
+    if (conn->remote_settings.max_datagram_frame_size == 0) {
+        if (conn->conn_flag & XQC_CONN_FLAG_CAN_SEND_1RTT) {
+            xqc_conn_log(conn, XQC_LOG_INFO,
+                          "|does not support datagram|size:%ud|", data_len);
+            return -XQC_EDGRAM_NOT_SUPPORTED;
+        } else {
+            xqc_log(conn->log, XQC_LOG_DEBUG,
+                    "|waiting_for_max_datagram_frame_size_from_peer|");
+            conn->conn_flag |= XQC_CONN_FLAG_DGRAM_WAIT_FOR_1RTT;
+            return -XQC_EAGAIN;
+        }
+    }
+
+    size_t path_mss = xqc_datagram_get_mss_on_path(conn, path_id);
+    if (path_mss < data_len) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|datagram_is_too_large|data_len:%ud|path_mss:%ud|path_id:%ui|",
+                data_len, path_mss, path_id);
+        return -XQC_EDGRAM_TOO_LARGE;
+    }
+
+    /* path-pinned datagrams require 1RTT (multipath is post-handshake) */
+    if (!(conn->conn_flag & XQC_CONN_FLAG_CAN_SEND_1RTT)) {
+        xqc_log(conn->log, XQC_LOG_DEBUG,
+                "|path_send_requires_1rtt|path_id:%ui|", path_id);
+        conn->conn_flag |= XQC_CONN_FLAG_DGRAM_WAIT_FOR_1RTT;
+        return -XQC_EAGAIN;
+    }
+
+    if (!xqc_send_queue_can_write(conn->conn_send_queue)) {
+        conn->conn_send_queue->sndq_full = XQC_TRUE;
+        xqc_log(conn->log, XQC_LOG_DEBUG,
+                "|too many packets used|ctl_packets_used:%ud|",
+                conn->conn_send_queue->sndq_packets_used);
+        return -XQC_EAGAIN;
+    }
+
+    xqc_conn_check_app_limit(conn);
+
+    int ret;
+    uint64_t dg_id;
+
+    ret = xqc_write_datagram_frame_to_packet(conn, XQC_PTYPE_SHORT_HEADER,
+                                              data, data_len, &dg_id,
+                                              XQC_FALSE, qos_level,
+                                              path_id, XQC_TRUE);
+    if (ret < 0) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|write_datagram_frame_to_packet_error|path_id:%ui|", path_id);
+        XQC_CONN_ERR(conn, TRA_INTERNAL_ERROR);
+        return ret;
+    }
+
+    if (dgram_id) {
+        *dgram_id = dg_id;
+    }
+
+    xqc_engine_remove_wakeup_queue(conn->engine, conn);
+    xqc_engine_add_active_queue(conn->engine, conn);
+
+    if (conn->conn_settings.datagram_redundant_probe
+        && conn->dgram_probe_timer >= 0
+        && qos_level <= XQC_DATA_QOS_NORMAL
+        && conn->last_dgram
+        && data_len <= conn->last_dgram->buf_len)
+    {
+        xqc_var_buf_clear(conn->last_dgram);
+        xqc_var_buf_save_data(conn->last_dgram, data, data_len);
+        xqc_conn_gp_timer_set(conn, conn->dgram_probe_timer,
+                              xqc_monotonic_timestamp()
+                              + conn->conn_settings.datagram_redundant_probe);
+        xqc_log(conn->log, XQC_LOG_DEBUG,
+                "|start_dgram_probe_timer|data_len:%z|path_id:%ui|",
+                data_len, path_id);
+    }
+
+    /* call main logic to send packets out */
+    xqc_engine_conn_logic(conn->engine, conn);
+
+    return XQC_OK;
+}
+
+/*
  * @brief the API to send a datagram over the QUIC connection
- * 
- * @param conn the connection handle 
- * @param iov multiple data buffers need to be sent 
- * @param *dgram_id the pointer to return the list of dgram_id 
- * @param iov_size the size of iov list 
+ *
+ * @param conn the connection handle
+ * @param iov multiple data buffers need to be sent
+ * @param *dgram_id the pointer to return the list of dgram_id
+ * @param iov_size the size of iov list
  * @param *sent_cnt the number of successfully sent datagrams
  * @param *sent_bytes the total bytes of successfully sent datagrams
  * @return <0 = error (-XQC_EAGAIN, -XQC_CLOSING, -XQC_EDGRAM_NOT_SUPPORTED, -XQC_EDGRAM_TOO_LARGE, ...), 
@@ -382,9 +538,9 @@ xqc_datagram_send_multiple_internal(xqc_connection_t *conn,
             dgram_id = dgram_id_list[i];
         }
 
-        ret = xqc_write_datagram_frame_to_packet(conn, pkt_type, data, data_len, 
-                                                 &dgram_id, use_supplied_dgram_id, 
-                                                 qos_level);
+        ret = xqc_write_datagram_frame_to_packet(conn, pkt_type, data, data_len,
+                                                 &dgram_id, use_supplied_dgram_id,
+                                                 qos_level, 0, XQC_FALSE);
 
         if (ret < 0) {
             xqc_log(conn->log, XQC_LOG_ERROR, "|write_datagram_frame_to_packet_error|");
