@@ -118,15 +118,33 @@ xqc_h3_ext_datagram_get_user_data(xqc_h3_conn_t *conn)
     return xqc_datagram_get_user_data(conn->conn);
 }
 
+/* RFC 9297 §3: MUST NOT send H3 datagrams unless local advertised
+ * SETTINGS_H3_DATAGRAM=1, and MUST NOT send if peer's SETTINGS arrived
+ * without H3_DATAGRAM=1.  Before peer's SETTINGS frame is received
+ * (race window between CAN_SEND_1RTT and h3 control stream delivery)
+ * we pass through to the transport layer, which still gates on the
+ * remote_settings.max_datagram_frame_size transport parameter. */
+static inline xqc_int_t
+xqc_h3_ext_datagram_send_check(xqc_h3_conn_t *conn)
+{
+    if (!conn->local_h3_conn_settings.h3_datagram) {
+        return -XQC_EDGRAM_NOT_SUPPORTED;
+    }
+    if ((conn->flags & XQC_H3_CONN_FLAG_SETTINGS_RECVED)
+        && !conn->peer_h3_conn_settings.h3_datagram)
+    {
+        return -XQC_EDGRAM_NOT_SUPPORTED;
+    }
+    return XQC_OK;
+}
+
 xqc_int_t
 xqc_h3_ext_datagram_send(xqc_h3_conn_t *conn, void *data,
 	size_t data_len, uint64_t *dgram_id, xqc_data_qos_level_t qos_level)
 {
-    /* RFC 9297: MUST NOT send until SETTINGS_H3_DATAGRAM sent and received with value 1 */
-    if (!conn->local_h3_conn_settings.h3_datagram
-        || !conn->peer_h3_conn_settings.h3_datagram)
-    {
-        return -XQC_EDGRAM_NOT_SUPPORTED;
+    xqc_int_t ret = xqc_h3_ext_datagram_send_check(conn);
+    if (ret != XQC_OK) {
+        return ret;
     }
     return xqc_datagram_send(conn->conn, data, data_len, dgram_id, qos_level);
 }
@@ -136,10 +154,9 @@ xqc_h3_ext_datagram_send_multiple(xqc_h3_conn_t *conn,
     struct iovec *iov, uint64_t *dgram_id_list, size_t iov_size,
     size_t *sent_cnt, size_t *sent_bytes, xqc_data_qos_level_t qos_level)
 {
-    if (!conn->local_h3_conn_settings.h3_datagram
-        || !conn->peer_h3_conn_settings.h3_datagram)
-    {
-        return -XQC_EDGRAM_NOT_SUPPORTED;
+    xqc_int_t ret = xqc_h3_ext_datagram_send_check(conn);
+    if (ret != XQC_OK) {
+        return ret;
     }
     return xqc_datagram_send_multiple(conn->conn, iov, dgram_id_list, iov_size,
                                       sent_cnt, sent_bytes, qos_level);
@@ -150,10 +167,9 @@ xqc_h3_ext_datagram_send_on_path(xqc_h3_conn_t *conn, void *data,
     size_t data_len, uint64_t *dgram_id, xqc_data_qos_level_t qos_level,
     uint64_t path_id)
 {
-    if (!conn->local_h3_conn_settings.h3_datagram
-        || !conn->peer_h3_conn_settings.h3_datagram)
-    {
-        return -XQC_EDGRAM_NOT_SUPPORTED;
+    xqc_int_t ret = xqc_h3_ext_datagram_send_check(conn);
+    if (ret != XQC_OK) {
+        return ret;
     }
     return xqc_datagram_send_on_path(conn->conn, data, data_len,
                                       dgram_id, qos_level, path_id);

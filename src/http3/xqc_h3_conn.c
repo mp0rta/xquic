@@ -21,7 +21,7 @@ const xqc_h3_conn_settings_t default_local_h3_conn_settings = {
     .qpack_compat_duplicate         = XQC_FALSE,
 #endif
     .enable_connect_protocol        = 0,
-    .h3_datagram                    = 0,
+    .h3_datagram                    = 1,
 };
 
 const xqc_h3_conn_settings_t default_peer_h3_conn_settings = {
