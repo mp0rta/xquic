@@ -41,7 +41,7 @@ typedef enum {
  * uint64_t macro with a typedef-aliased uint64_t for API stability.
  */
 typedef uint64_t xqc_mp_err_code_t;
-#define TRA_MP_PROTOCOL_VIOLATION ((uint64_t)0x1001d76d3ded42f3ULL)
+#define TRA_MP_PROTOCOL_VIOLATION ((xqc_mp_err_code_t)0x1001d76d3ded42f3ULL)
 
 
 #define TRA_CRYPTO_ERROR_BASE   0x100
