@@ -4353,6 +4353,31 @@ xqc_conn_handshake_complete(xqc_connection_t *conn)
     /* conn's handshake is complete when TLS stack has reported handshake complete */
     conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_COMPLETED;
 
+    /*
+     * draft-21 §3 / §C.1 MUST: when multipath is enabled, the negotiated
+     * 1-RTT AEAD MUST provide a confidentiality nonce of >= 12 bytes (so the
+     * per-packet QUIC packet number can XOR into the low 12 bytes without
+     * cross-path collision). Abort the handshake with TRANSPORT_PARAMETER_ERROR
+     * if the cipher selection would violate this on a multipath connection.
+     * conn->enable_multipath is final by the time TLS signals handshake done
+     * (xqc_conn_try_to_enable_multipath ran during the transport_params cb).
+     */
+    if (conn->enable_multipath) {
+        xqc_int_t mp_aead_ret = xqc_tls_check_mp_aead_nonce_len(conn->tls, 1);
+        if (mp_aead_ret == -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR) {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|mp21|reject handshake: AEAD nonce <12B with multipath|");
+            XQC_CONN_ERR(conn, TRA_TRANSPORT_PARAMETER_ERROR);
+            return -XQC_TLS_INVALID_STATE;
+        } else if (mp_aead_ret != XQC_OK) {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|mp21|mp aead nonce-len check internal error|ret:%d|",
+                    mp_aead_ret);
+            XQC_CONN_ERR(conn, TRA_INTERNAL_ERROR);
+            return mp_aead_ret;
+        }
+    }
+
     if (conn->conn_type == XQC_CONN_TYPE_SERVER) {
         /* the TLS handshake is considered confirmed at the server when the handshake completes */
         xqc_conn_handshake_confirmed(conn);

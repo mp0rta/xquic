@@ -12,6 +12,7 @@
 #include "src/transport/xqc_recv_record.h"
 #include "src/transport/xqc_transport_params.h"
 #include "src/tls/xqc_crypto.h"
+#include "src/tls/xqc_tls.h"
 #include "src/common/xqc_log.h"
 #include "xqc_mp21_compliance_test.h"
 
@@ -801,4 +802,28 @@ void xqc_test_mp21_init_max_path_id_tp_codepoint(void)
     CU_ASSERT_EQUAL(v21_rt.enable_multipath, 1);
     CU_ASSERT_EQUAL(v21_rt.multipath_version, XQC_MULTIPATH_3E);
     CU_ASSERT_EQUAL(v21_rt.init_max_path_id, 8);
+}
+
+/* Task 18 wire-in: verify the production helper xqc_tls_check_mp_aead_nonce_len
+ * (1) is reachable from production code (linker proves it),
+ * (2) bypasses cleanly when multipath is disabled (opt-out path),
+ * (3) returns -XQC_TLS_INTERNAL when 1-RTT crypto is not installed yet but MP
+ *     is requested — this is the "called too early" failure mode that the
+ *     handshake_complete call site avoids by waiting until TLS reports done.
+ *
+ * The full-path "multipath ON + nonce<12B -> TRA_TRANSPORT_PARAMETER_ERROR"
+ * branch is exercised by xqc_test_mp21_aead_nonce_min_length() (pure helper)
+ * and reached at runtime via xqc_conn_handshake_complete() which calls this
+ * wrapper when conn->enable_multipath is set. Building synthetic xqc_tls_t
+ * state with an installed-but-undersized AEAD here would require pulling in
+ * the full SSL handshake which is out of scope for the unit harness. */
+void
+xqc_test_mp21_aead_nonce_check_tls_wrapper(void)
+{
+    /* (1) Opt-out: multipath_enabled == 0 returns OK regardless of tls. */
+    CU_ASSERT_EQUAL(xqc_tls_check_mp_aead_nonce_len(NULL, 0), XQC_OK);
+
+    /* (2) MP requested but tls is NULL -> internal error, NOT silent pass. */
+    CU_ASSERT_EQUAL(xqc_tls_check_mp_aead_nonce_len(NULL, 1),
+                    -(xqc_int_t)XQC_TLS_INTERNAL);
 }

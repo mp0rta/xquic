@@ -46,5 +46,6 @@ void xqc_test_mp21_path_new_conn_id_cid_len_guard(void);
 void xqc_test_mp21_non_zero_cid_constraint(void);
 void xqc_test_mp21_abandoned_path_silently_ignored(void);
 void xqc_test_mp21_path_create_refuses_abandoned(void);
+void xqc_test_mp21_aead_nonce_check_tls_wrapper(void);
 
 #endif /* _XQC_MP21_COMPLIANCE_TEST_H */
