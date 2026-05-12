@@ -1,15 +1,94 @@
 #include <CUnit/CUnit.h>
 #include <string.h>
+#include <stdlib.h>
 #include "xquic/xquic.h"
 #include "xquic/xqc_errno.h"
 #include "src/transport/xqc_frame_parser.h"
+#include "src/transport/xqc_frame.h"
 #include "src/transport/xqc_packet_in.h"
 #include "src/transport/xqc_packet_out.h"
 #include "src/transport/xqc_conn.h"
+#include "src/transport/xqc_multipath.h"
 #include "src/transport/xqc_recv_record.h"
 #include "src/transport/xqc_transport_params.h"
 #include "src/common/xqc_log.h"
 #include "xqc_mp21_compliance_test.h"
+
+/* ------------------------------------------------------------------
+ * Chunk 4 Task 13b: shared minimal connection fixture.
+ *
+ * Allocates a calloc()-zeroed xqc_connection_t + xqc_log_t and threads
+ * the fields the Chunk 4 guards inspect. multipath_version is pinned to
+ * XQC_MULTIPATH_3E. Caller can mutate remote_settings.init_max_path_id
+ * after the call (used by Task 15's 3-condition test).
+ * ------------------------------------------------------------------ */
+xqc_connection_t *
+xqc_test_mp21_make_conn(const xqc_test_mp21_conn_params_t *p)
+{
+    xqc_log_t *log = calloc(1, sizeof(xqc_log_t));
+    if (log == NULL) {
+        return NULL;
+    }
+    log->log_level = XQC_LOG_FATAL;   /* suppress per-test noise */
+
+    xqc_connection_t *conn = calloc(1, sizeof(xqc_connection_t));
+    if (conn == NULL) {
+        free(log);
+        return NULL;
+    }
+    conn->log = log;
+    conn->conn_settings.multipath_version = XQC_MULTIPATH_3E;
+
+    conn->local_max_path_id  = p ? p->local_max_path_id  : 8;
+    conn->remote_max_path_id = p ? p->remote_max_path_id : 8;
+    conn->curr_max_path_id   = (conn->local_max_path_id < conn->remote_max_path_id)
+                                ? conn->local_max_path_id
+                                : conn->remote_max_path_id;
+    conn->remote_settings.init_max_path_id = conn->remote_max_path_id;
+    conn->local_settings.enable_multipath = 1;
+    conn->remote_settings.enable_multipath = 1;
+    conn->local_settings.multipath_version = XQC_MULTIPATH_3E;
+    conn->remote_settings.multipath_version = XQC_MULTIPATH_3E;
+
+    conn->scid_set.user_scid.cid_len    = p ? p->scid_len : 8;
+    conn->dcid_set.current_dcid.cid_len = p ? p->dcid_len : 8;
+
+    /* Avoid NULL deref from xqc_list iteration if guards run before
+     * fully-initialized cid lists are exercised. */
+    return conn;
+}
+
+void
+xqc_test_mp21_free_conn(xqc_connection_t *conn)
+{
+    if (conn == NULL) {
+        return;
+    }
+    if (conn->log) {
+        free(conn->log);
+    }
+    free(conn);
+}
+
+void
+xqc_test_mp21_fixture_smoke(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 4,
+        .remote_max_path_id = 6,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    CU_ASSERT_EQUAL(conn->conn_settings.multipath_version, XQC_MULTIPATH_3E);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 4);
+    CU_ASSERT_EQUAL(conn->remote_max_path_id, 6);
+    CU_ASSERT_EQUAL(conn->curr_max_path_id, 4);
+    CU_ASSERT_EQUAL(conn->scid_set.user_scid.cid_len, 8);
+    CU_ASSERT_EQUAL(conn->dcid_set.current_dcid.cid_len, 8);
+    xqc_test_mp21_free_conn(conn);
+}
 
 /* Test helper: synthesize a minimal xqc_packet_in_t over `buf` and forward
  * to xqc_parse_path_abandon_frame, returning the number of bytes consumed
