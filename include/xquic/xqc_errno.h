@@ -43,6 +43,12 @@ typedef enum {
 typedef uint64_t xqc_mp_err_code_t;
 #define TRA_MP_PROTOCOL_VIOLATION ((xqc_mp_err_code_t)0x1001d76d3ded42f3ULL)
 
+/* draft-ietf-quic-multipath-21 error codes for PATH_ABANDON Error Code field */
+#define TRA_APPLICATION_ABANDON_PATH        0x3eULL
+#define TRA_PATH_RESOURCE_LIMIT_REACHED     0x3e75ULL
+#define TRA_PATH_UNSTABLE_OR_POOR           0x3e76ULL
+#define TRA_NO_CID_AVAILABLE_FOR_PATH       0x3e77ULL
+
 
 #define TRA_CRYPTO_ERROR_BASE   0x100
 

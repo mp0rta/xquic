@@ -27,6 +27,18 @@
 #define XQC_TRANS_FRAME_TYPE_MAX_PATH_ID                0x15228c0c
 #define XQC_TRANS_FRAME_TYPE_MP_FROZEN                  0x15228cff
 
+/* draft-ietf-quic-multipath-21 frame types (IANA permanent registry) */
+#define XQC_TRANS_FRAME_TYPE_PATH_ACK                       0x3eULL
+#define XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN                   0x3fULL
+#define XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21               0x3e75ULL
+#define XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP             0x3e76ULL
+#define XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21      0x3e77ULL
+#define XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21     0x3e78ULL
+#define XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21  0x3e79ULL
+#define XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21                0x3e7aULL
+#define XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED                  0x3e7bULL
+#define XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED              0x3e7cULL
+
 #define XQC_TRANS_FRAME_TYPE_ACK_EXT                    0xB1
 
 /**
