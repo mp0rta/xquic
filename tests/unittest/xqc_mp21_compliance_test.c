@@ -155,6 +155,50 @@ xqc_test_mp21_path_new_conn_id_cid_len_guard(void)
 }
 
 void
+xqc_test_mp21_abandoned_path_silently_ignored(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 64,
+        .remote_max_path_id = 64,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    /* Initial state: no path is abandoned. */
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 0));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 2));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 64));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 255));
+    /* path_id beyond bitmap range -> always false. */
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 256));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 0xffffffffULL));
+
+    /* Mark path_id=2 abandoned (mimics PATH_ABANDON processing). */
+    xqc_conn_mark_path_abandoned(conn, 2);
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 2));
+    /* Other ids unaffected. */
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 1));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 3));
+
+    /* Cross-word: 64 in next bitmap word. */
+    xqc_conn_mark_path_abandoned(conn, 64);
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 64));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 63));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 65));
+
+    /* Out-of-range mark is a no-op (must not corrupt memory). */
+    xqc_conn_mark_path_abandoned(conn, 9999);
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 9999));
+    /* Existing marks survive. */
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 2));
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 64));
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
 xqc_test_mp21_non_zero_cid_constraint(void)
 {
     /* Both zero -> reject. */

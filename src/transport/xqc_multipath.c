@@ -105,6 +105,27 @@ xqc_validate_mp_cid_lengths(uint8_t scid_len, uint8_t dcid_len)
     return XQC_OK;
 }
 
+#define XQC_ABANDONED_PATH_BITMAP_BITS  256
+
+void
+xqc_conn_mark_path_abandoned(xqc_connection_t *conn, uint64_t path_id)
+{
+    if (path_id >= XQC_ABANDONED_PATH_BITMAP_BITS) {
+        return;
+    }
+    conn->abandoned_path_ids[path_id >> 6] |= (uint64_t)1 << (path_id & 63);
+}
+
+xqc_bool_t
+xqc_conn_is_path_abandoned(xqc_connection_t *conn, uint64_t path_id)
+{
+    if (path_id >= XQC_ABANDONED_PATH_BITMAP_BITS) {
+        return XQC_FALSE;
+    }
+    return (conn->abandoned_path_ids[path_id >> 6] & ((uint64_t)1 << (path_id & 63)))
+            ? XQC_TRUE : XQC_FALSE;
+}
+
 xqc_max_path_id_validation_t
 xqc_validate_max_path_id(xqc_connection_t *conn, uint64_t value)
 {
@@ -124,6 +145,14 @@ xqc_path_ctx_t *
 xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid, xqc_cid_t *dcid, uint64_t path_id)
 {
     xqc_path_ctx_t *path = NULL;
+
+    /* draft-21 §4.5: an Abandoned path_id MUST NOT be recycled by the
+     * local endpoint. Refuse before any allocation. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|refuse to recycle abandoned path_id|%ui|", path_id);
+        return NULL;
+    }
 
     if (conn->create_path_count >= XQC_MAX_PATHS_COUNT) {
         xqc_log(conn->log, XQC_LOG_ERROR, 

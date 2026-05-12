@@ -411,6 +411,15 @@ struct xqc_connection_s {
     uint64_t                        local_max_path_id;
     uint64_t                        remote_max_path_id;
 
+    /* draft-21 §4.5: Once a path_id has been Abandoned, every subsequent
+     * MP-frame referencing it MUST be silently ignored (NOT an error),
+     * AND xqc_path_create() MUST refuse to recycle it (Task 23 — no
+     * local API reuse). Bitmap covers path_ids 0..255; values beyond
+     * that are validated away earlier by xqc_validate_recv_path_id (the
+     * conn's local_max_path_id cap is 2^32-1 but practical deployments
+     * stay << 256). */
+    uint64_t                        abandoned_path_ids[4];
+
     /* for qlog */
     uint32_t                        MTU_updated_count;    
     uint32_t                        packet_dropped_count;

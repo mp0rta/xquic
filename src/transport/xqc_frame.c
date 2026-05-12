@@ -1870,6 +1870,12 @@ xqc_process_ack_mp_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
         XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
     }
+    /* draft-21 §4.5: silently ignore MP frames for already-Abandoned paths. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|ignore MP frame for abandoned path|path_id:%ui|", path_id);
+        return XQC_OK;
+    }
 
     xqc_path_ctx_t *path_to_be_acked = xqc_conn_find_path_by_path_id(conn, path_id);
     if (path_to_be_acked == NULL) {
@@ -1929,6 +1935,12 @@ xqc_process_path_ack_ecn_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
         XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
     }
+    /* draft-21 §4.5: silently ignore MP frames for already-Abandoned paths. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|ignore MP frame for abandoned path|path_id:%ui|", path_id);
+        return XQC_OK;
+    }
 
     xqc_path_ctx_t *path_to_be_acked = xqc_conn_find_path_by_path_id(conn, path_id);
     if (path_to_be_acked == NULL) {
@@ -1983,6 +1995,11 @@ xqc_process_path_abandon_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
         XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
     }
+
+    /* draft-21 §4.5: record the abandoned path_id so subsequent MP frames
+     * for the same id are silently ignored (Task 22) and xqc_path_create
+     * refuses to recycle it (Task 23). */
+    xqc_conn_mark_path_abandoned(conn, path_id);
 
     //MPQUIC: path associated cid resources should be released and path id should be consumed anyway
     xqc_path_ctx_t *path = xqc_conn_find_path_by_path_id(conn, path_id);
@@ -2040,6 +2057,12 @@ xqc_process_path_status_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
         XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
     }
+    /* draft-21 §4.5: silently ignore status updates for abandoned paths. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|ignore PATH_STATUS for abandoned path|path_id:%ui|", path_id);
+        return XQC_OK;
+    }
 
     xqc_path_ctx_t *path = xqc_conn_find_path_by_path_id(conn, path_id);
 
@@ -2095,6 +2118,12 @@ xqc_process_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
                 path_id, conn->local_max_path_id);
         XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
+    }
+    /* draft-21 §4.5: silently ignore NEW_CID for abandoned paths. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|ignore PATH_NEW_CID for abandoned path|path_id:%ui|", path_id);
+        return XQC_OK;
     }
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|new_conn_id|%s|sr_token:%s",
@@ -2244,6 +2273,12 @@ xqc_process_mp_retire_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *pac
                 path_id, conn->local_max_path_id);
         XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
+    }
+    /* draft-21 §4.5: silently ignore RETIRE_CID for abandoned paths. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|ignore PATH_RETIRE_CID for abandoned path|path_id:%ui|", path_id);
+        return XQC_OK;
     }
 
     largest_scid_seq_num = xqc_cid_set_get_largest_seq_or_rpt(&conn->scid_set, path_id);

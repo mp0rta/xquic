@@ -273,6 +273,12 @@ xqc_max_path_id_validation_t xqc_validate_max_path_id(xqc_connection_t *conn,
  * otherwise. */
 xqc_int_t xqc_validate_mp_cid_lengths(uint8_t scid_len, uint8_t dcid_len);
 
+/* draft-21 §4.5 abandoned-path bookkeeping. Bitmap is sized to 256 ids;
+ * path_id values outside that range are clamped (treated as not abandoned)
+ * — the validate_recv_path_id helper has already enforced the cap. */
+void      xqc_conn_mark_path_abandoned(xqc_connection_t *conn, uint64_t path_id);
+xqc_bool_t xqc_conn_is_path_abandoned(xqc_connection_t *conn, uint64_t path_id);
+
 xqc_bool_t xqc_path_is_initial_path(xqc_path_ctx_t *path);
 
 void xqc_path_record_info(xqc_path_ctx_t *path, xqc_path_info_t *path_info);
