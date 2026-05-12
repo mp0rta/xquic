@@ -421,7 +421,7 @@ xqc_conn_enable_multipath(xqc_connection_t *conn)
             || conn->scid_set.user_scid.cid_len == 0) 
         {
             xqc_log(conn->log, XQC_LOG_ERROR, "|zero-length DCID|");
-            XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+            XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
             return XQC_CONN_MP_DISABLED;
         }
 
