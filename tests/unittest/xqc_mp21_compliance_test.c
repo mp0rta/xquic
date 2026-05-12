@@ -11,6 +11,7 @@
 #include "src/transport/xqc_multipath.h"
 #include "src/transport/xqc_recv_record.h"
 #include "src/transport/xqc_transport_params.h"
+#include "src/tls/xqc_crypto.h"
 #include "src/common/xqc_log.h"
 #include "xqc_mp21_compliance_test.h"
 
@@ -93,6 +94,24 @@ xqc_test_mp21_validate_recv_path_id(void)
                     -(xqc_int_t)TRA_PROTOCOL_VIOLATION);
 
     xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_aead_nonce_min_length(void)
+{
+    /* MP disabled: any noncelen accepted (opt-out path). */
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(0, 8),  XQC_OK);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(0, 11), XQC_OK);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(0, 12), XQC_OK);
+
+    /* MP enabled: < 12 rejected. */
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 0),  -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 8),  -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 11), -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR);
+
+    /* MP enabled: >= 12 accepted (AES-GCM = 12, ChaCha20-Poly1305 = 12). */
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 12), XQC_OK);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 16), XQC_OK);
 }
 
 void

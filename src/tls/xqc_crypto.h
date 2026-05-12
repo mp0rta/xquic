@@ -169,6 +169,14 @@ typedef struct xqc_crypto_s {
  */
 xqc_crypto_t *xqc_crypto_create(uint32_t cipher_id, xqc_log_t *log);
 
+/* draft-21 §3 / §C.1: when multipath is enabled, the negotiated AEAD MUST
+ * provide a confidentiality nonce length of at least 12 bytes — the QUIC
+ * packet number is XORed into the low 12 bytes of the AEAD nonce, and
+ * shorter nonces would collide trivially across paths. Returns XQC_OK if
+ * the AEAD is acceptable, -TRA_TRANSPORT_PARAMETER_ERROR otherwise. The
+ * multipath_enabled=0 path always returns XQC_OK (opt-out). */
+xqc_int_t xqc_crypto_check_mp_nonce_len(uint8_t multipath_enabled, size_t noncelen);
+
 /**
  * @brief destroy crypto instance
  */
