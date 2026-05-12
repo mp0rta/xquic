@@ -1996,6 +1996,15 @@ xqc_process_path_abandon_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
         return -XQC_EILLEGAL_FRAME;
     }
 
+    /* draft-21 §4.5: a duplicate PATH_ABANDON for an already-abandoned
+     * path_id is silently ignored, symmetric with the other 5 MP frame
+     * processors. Without this, the second arrival would re-run the full
+     * release-path path below (immediate_close, CID state churn) and
+     * risk double-free corner cases. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        return XQC_OK;
+    }
+
     /* draft-21 §4.5: record the abandoned path_id so subsequent MP frames
      * for the same id are silently ignored (Task 22) and xqc_path_create
      * refuses to recycle it (Task 23). */

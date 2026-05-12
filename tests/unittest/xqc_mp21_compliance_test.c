@@ -247,6 +247,56 @@ xqc_test_mp21_abandoned_path_silently_ignored(void)
 }
 
 void
+xqc_test_mp21_duplicate_path_abandon_short_circuit(void)
+{
+    /* draft-21 §4.5: a duplicate PATH_ABANDON for an already-abandoned
+     * path_id must be silently ignored, symmetric with the other 5 MP
+     * frame processors. The short-circuit predicate in
+     * xqc_process_path_abandon_frame is
+     *   if (xqc_conn_is_path_abandoned(conn, path_id)) return XQC_OK;
+     * placed BEFORE xqc_conn_mark_path_abandoned so the first arrival
+     * still runs the full release-path path, and subsequent arrivals
+     * return without re-running immediate_close or CID state churn.
+     *
+     * We cannot fabricate a packet_in with a live conn here, but we can
+     * pin the predicate semantics the short-circuit relies on:
+     *   (1) is_abandoned returns FALSE before the first mark — first
+     *       PATH_ABANDON falls through past the short-circuit;
+     *   (2) is_abandoned returns TRUE after the first mark — every
+     *       subsequent duplicate hits the short-circuit and returns;
+     *   (3) repeated marks are idempotent — no state corruption from
+     *       the redundant set on the still-falls-through first call.
+     */
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 64,
+        .remote_max_path_id = 64,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    /* (1) First PATH_ABANDON for path_id=2: short-circuit predicate FALSE. */
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 2));
+    xqc_conn_mark_path_abandoned(conn, 2);
+
+    /* (2) Second (duplicate) PATH_ABANDON for path_id=2: predicate TRUE. */
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 2));
+
+    /* (3) Idempotent: re-marking does not corrupt or clear the bit. */
+    xqc_conn_mark_path_abandoned(conn, 2);
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 2));
+    xqc_conn_mark_path_abandoned(conn, 2);
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 2));
+
+    /* Other ids remain unaffected by the duplicate-mark dance. */
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 1));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 3));
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
 xqc_test_mp21_non_zero_cid_constraint(void)
 {
     /* Both zero -> reject. */

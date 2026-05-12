@@ -88,14 +88,13 @@ xqc_validate_recv_path_id(xqc_connection_t *conn, uint64_t path_id)
     return XQC_OK;
 }
 
-/* draft-21 §4.6: MAX_PATH_ID frame contains a Path ID value with the
- * following invariants (all are PROTOCOL_VIOLATION unless noted):
- *   (a) value MUST NOT exceed 2^32 - 1 (frame upper bound);
- *   (b) value MUST be >= the peer's advertised initial_max_path_id TP
- *       (the receiver cannot lower its own advertised cap);
- *   (c) value <= current remote_max_path_id is a stale duplicate and
- *       MUST be silently ignored (not an error).
- * Else the frame is accepted and may grow remote_max_path_id. */
+/* draft-21 §3.1: once multipath is negotiated (initial_max_path_id TP
+ * present on both sides), zero-length Source/Destination Connection IDs
+ * are forbidden. Packets are demultiplexed across paths by DCID, so a
+ * zero-length CID would collapse the per-path identity. Either endpoint
+ * observing scid_len == 0 or dcid_len == 0 on a multipath connection
+ * MUST close with PROTOCOL_VIOLATION. Returns XQC_OK when both lengths
+ * are non-zero, -TRA_PROTOCOL_VIOLATION otherwise. */
 xqc_int_t
 xqc_validate_mp_cid_lengths(uint8_t scid_len, uint8_t dcid_len)
 {
