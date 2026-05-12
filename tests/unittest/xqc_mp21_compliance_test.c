@@ -96,6 +96,45 @@ xqc_test_mp21_validate_recv_path_id(void)
 }
 
 void
+xqc_test_mp21_max_path_id_validation(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 100,
+        .remote_max_path_id = 8,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    /* Pretend the peer's initial_max_path_id TP was 4. */
+    conn->remote_settings.init_max_path_id = 4;
+
+    /* (a) value >= 2^32 — too large, PROTOCOL_VIOLATION. */
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 0x100000000ULL),
+                    XQC_MAX_PATH_ID_BAD_TOO_LARGE);
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 0xffffffffffffULL),
+                    XQC_MAX_PATH_ID_BAD_TOO_LARGE);
+
+    /* (b) value < init_max_path_id — receiver cannot drop the cap. */
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 3),
+                    XQC_MAX_PATH_ID_BAD_BELOW_INIT);
+
+    /* (c) value <= remote_max_path_id — silent ignore (stale dup). */
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 8),
+                    XQC_MAX_PATH_ID_IGNORE_STALE);
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 4),
+                    XQC_MAX_PATH_ID_IGNORE_STALE);
+
+    /* (d) accept + boundary at 2^32-1. */
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 16),
+                    XQC_MAX_PATH_ID_ACCEPT);
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 0xffffffffULL),
+                    XQC_MAX_PATH_ID_ACCEPT);
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
 xqc_test_mp21_fixture_smoke(void)
 {
     xqc_test_mp21_conn_params_t p = {

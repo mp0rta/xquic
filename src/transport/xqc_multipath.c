@@ -88,6 +88,29 @@ xqc_validate_recv_path_id(xqc_connection_t *conn, uint64_t path_id)
     return XQC_OK;
 }
 
+/* draft-21 §4.6: MAX_PATH_ID frame contains a Path ID value with the
+ * following invariants (all are PROTOCOL_VIOLATION unless noted):
+ *   (a) value MUST NOT exceed 2^32 - 1 (frame upper bound);
+ *   (b) value MUST be >= the peer's advertised initial_max_path_id TP
+ *       (the receiver cannot lower its own advertised cap);
+ *   (c) value <= current remote_max_path_id is a stale duplicate and
+ *       MUST be silently ignored (not an error).
+ * Else the frame is accepted and may grow remote_max_path_id. */
+xqc_max_path_id_validation_t
+xqc_validate_max_path_id(xqc_connection_t *conn, uint64_t value)
+{
+    if (value > 0xFFFFFFFFULL) {
+        return XQC_MAX_PATH_ID_BAD_TOO_LARGE;
+    }
+    if (value < conn->remote_settings.init_max_path_id) {
+        return XQC_MAX_PATH_ID_BAD_BELOW_INIT;
+    }
+    if (value <= conn->remote_max_path_id) {
+        return XQC_MAX_PATH_ID_IGNORE_STALE;
+    }
+    return XQC_MAX_PATH_ID_ACCEPT;
+}
+
 xqc_path_ctx_t *
 xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid, xqc_cid_t *dcid, uint64_t path_id)
 {

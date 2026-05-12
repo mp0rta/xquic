@@ -254,6 +254,18 @@ xqc_int_t xqc_conn_is_current_mp_version_supported(xqc_multipath_version_t mp_ve
  * on reject (caller logs + XQC_CONN_ERR before propagating). */
 xqc_int_t xqc_validate_recv_path_id(xqc_connection_t *conn, uint64_t path_id);
 
+/* draft-21 §4.6: MAX_PATH_ID validation outcome. Pure (no side effects);
+ * caller is responsible for state updates / error reporting. */
+typedef enum {
+    XQC_MAX_PATH_ID_ACCEPT       = 0,   /* value > remote_max_path_id, growth */
+    XQC_MAX_PATH_ID_IGNORE_STALE = 1,   /* value <= remote_max_path_id        */
+    XQC_MAX_PATH_ID_BAD_TOO_LARGE = 2,  /* value > 2^32-1 -> VIOLATION        */
+    XQC_MAX_PATH_ID_BAD_BELOW_INIT = 3, /* value < remote initial -> VIOLATION */
+} xqc_max_path_id_validation_t;
+
+xqc_max_path_id_validation_t xqc_validate_max_path_id(xqc_connection_t *conn,
+                                                      uint64_t value);
+
 xqc_bool_t xqc_path_is_initial_path(xqc_path_ctx_t *path);
 
 void xqc_path_record_info(xqc_path_ctx_t *path, xqc_path_info_t *path_info);

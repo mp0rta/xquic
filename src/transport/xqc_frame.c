@@ -2267,16 +2267,37 @@ xqc_process_max_path_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
     xqc_log(conn->log, XQC_LOG_DEBUG,
             "|max_path_id:%ui|prev_max_path_id:%ui|", max_path_id, conn->remote_max_path_id);
 
-    if (conn->remote_max_path_id < max_path_id) {
-        conn->remote_max_path_id = max_path_id;
-        new_max_path_id = xqc_min(conn->local_max_path_id, conn->remote_max_path_id);
-        if (new_max_path_id > conn->curr_max_path_id) {
-            if (xqc_conn_add_path_cid_sets(conn, conn->curr_max_path_id + 1, new_max_path_id) != XQC_OK) {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|add_path_cid_sets_error|");
-                return -XQC_EMALLOC;
-            }
-            conn->curr_max_path_id = new_max_path_id;
+    xqc_max_path_id_validation_t v = xqc_validate_max_path_id(conn, max_path_id);
+    switch (v) {
+    case XQC_MAX_PATH_ID_BAD_TOO_LARGE:
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|MAX_PATH_ID exceeds 2^32-1|value:%ui|", max_path_id);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
+        return -XQC_EILLEGAL_FRAME;
+    case XQC_MAX_PATH_ID_BAD_BELOW_INIT:
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|MAX_PATH_ID below remote initial_max_path_id|value:%ui|init:%ui|",
+                max_path_id, conn->remote_settings.init_max_path_id);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
+        return -XQC_EILLEGAL_FRAME;
+    case XQC_MAX_PATH_ID_IGNORE_STALE:
+        xqc_log(conn->log, XQC_LOG_DEBUG,
+                "|MAX_PATH_ID stale, ignored|value:%ui|cur:%ui|",
+                max_path_id, conn->remote_max_path_id);
+        return XQC_OK;
+    case XQC_MAX_PATH_ID_ACCEPT:
+    default:
+        break;
+    }
+
+    conn->remote_max_path_id = max_path_id;
+    new_max_path_id = xqc_min(conn->local_max_path_id, conn->remote_max_path_id);
+    if (new_max_path_id > conn->curr_max_path_id) {
+        if (xqc_conn_add_path_cid_sets(conn, conn->curr_max_path_id + 1, new_max_path_id) != XQC_OK) {
+            xqc_log(conn->log, XQC_LOG_ERROR, "|add_path_cid_sets_error|");
+            return -XQC_EMALLOC;
         }
+        conn->curr_max_path_id = new_max_path_id;
     }
 
     return ret;
