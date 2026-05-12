@@ -2082,6 +2082,10 @@ xqc_process_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
     if (ret != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR,
                 "|xqc_parse_new_conn_id_frame error|");
+        /* draft-21 §4.7: Length out of [1, 20] is FRAME_ENCODING_ERROR. */
+        if (ret == -XQC_EPROTO) {
+            XQC_CONN_ERR(conn, TRA_FRAME_ENCODING_ERROR);
+        }
         return ret;
     }
 

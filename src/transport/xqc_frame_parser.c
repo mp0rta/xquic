@@ -2883,12 +2883,14 @@ xqc_parse_mp_new_conn_id_frame(xqc_packet_in_t *packet_in,
     }
     p += vlen;
 
-    /* Length (8) */
+    /* Length (8) — draft-21 §4.7 mandates Length in [1, 20]. Zero-length
+     * CIDs are forbidden on multipath connections (per-path demux relies
+     * on a non-empty CID); Length > 20 is FRAME_ENCODING_ERROR. */
     if (p >= end) {
         return -XQC_EPROTO;
     }
     new_cid->cid_len = *p++;
-    if (new_cid->cid_len > XQC_MAX_CID_LEN) {
+    if (new_cid->cid_len < 1 || new_cid->cid_len > XQC_MAX_CID_LEN) {
         return -XQC_EPROTO;
     }
 

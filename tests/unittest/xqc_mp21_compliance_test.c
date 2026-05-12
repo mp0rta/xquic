@@ -96,6 +96,64 @@ xqc_test_mp21_validate_recv_path_id(void)
     xqc_test_mp21_free_conn(conn);
 }
 
+/* Build a minimal PATH_NEW_CONNECTION_ID wire image with a parameterized
+ * Length byte. Layout (varints):
+ *   Type (= 0x3e78, draft-21)  : 2B  0x7e 0x78
+ *   Path ID                    : 1B  0x01
+ *   Sequence Number            : 1B  0x00
+ *   Retire Prior To            : 1B  0x00
+ *   Length                     : 1B  <len_byte>
+ *   Connection ID              : len bytes (zero-padded)
+ *   Stateless Reset Token      : 16B (zero)
+ *
+ * For length=0 we still emit zero CID bytes; for length=21 we emit 21
+ * placeholder bytes. The parser must reject both before reading sr_token.
+ */
+static int
+xqc_test_mp21_drive_path_new_cid_parser(uint8_t len_byte)
+{
+    unsigned char buf[64];
+    memset(buf, 0, sizeof(buf));
+    size_t off = 0;
+    buf[off++] = 0x7e; buf[off++] = 0x78;   /* type varint */
+    buf[off++] = 0x01;                       /* path_id */
+    buf[off++] = 0x00;                       /* seq_num */
+    buf[off++] = 0x00;                       /* retire_prior_to */
+    buf[off++] = len_byte;                   /* Length */
+    size_t cid_bytes = len_byte;
+    if (cid_bytes > 21) cid_bytes = 21;      /* cap for buffer safety */
+    off += cid_bytes;                        /* CID body — zeros */
+    off += 16;                               /* sr_token — zeros */
+
+    xqc_packet_in_t packet_in;
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.buf = buf;
+    packet_in.buf_size = sizeof(buf);
+    packet_in.pos = buf;
+    packet_in.last = buf + off;
+
+    xqc_cid_t new_cid;
+    memset(&new_cid, 0, sizeof(new_cid));
+    uint64_t retire_prior_to = 0, path_id = 0;
+    return (int)xqc_parse_mp_new_conn_id_frame(&packet_in, &new_cid,
+                                               &retire_prior_to, &path_id, NULL);
+}
+
+void
+xqc_test_mp21_path_new_conn_id_cid_len_guard(void)
+{
+    /* Length = 0 -> reject. */
+    CU_ASSERT_NOT_EQUAL(xqc_test_mp21_drive_path_new_cid_parser(0), XQC_OK);
+    /* Length = 21 -> reject (XQC_MAX_CID_LEN == 20). */
+    CU_ASSERT_NOT_EQUAL(xqc_test_mp21_drive_path_new_cid_parser(21), XQC_OK);
+    /* Length = 1 -> accept (boundary). */
+    CU_ASSERT_EQUAL(xqc_test_mp21_drive_path_new_cid_parser(1), XQC_OK);
+    /* Length = 20 -> accept (boundary). */
+    CU_ASSERT_EQUAL(xqc_test_mp21_drive_path_new_cid_parser(20), XQC_OK);
+    /* Length = 8 -> accept (common case). */
+    CU_ASSERT_EQUAL(xqc_test_mp21_drive_path_new_cid_parser(8), XQC_OK);
+}
+
 void
 xqc_test_mp21_aead_nonce_min_length(void)
 {
