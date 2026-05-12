@@ -114,6 +114,46 @@ xqc_test_mp21_aead_nonce_min_length(void)
     CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 16), XQC_OK);
 }
 
+/* Exposed by xqc_frame.c for whitebox testing of the 1-RTT-only guard. */
+extern int xqc_frame_is_mp_public(uint64_t frame_type);
+
+void
+xqc_test_mp21_mp_frame_1rtt_only(void)
+{
+    /* The dispatcher entry-guard depends on two predicates:
+     *  (a) xqc_frame_is_mp(frame_type) enumerates every MP wire type,
+     *  (b) packet_in->pi_pkt.pkt_type != XQC_PTYPE_SHORT_HEADER rejects.
+     * We exercise (a) here directly; (b) is covered by the
+     * dual-version-dispatch and TP tests which require full SHORT_HEADER
+     * packet construction (out of scope for unit harness). */
+
+    /* All draft-21 MP frame types must be classified as MP. */
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_ACK));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED));
+
+    /* draft-10 MP types must remain classified as MP (still wire-active). */
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_MP_ACK0));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_MP_ABANDON));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_MAX_PATH_ID));
+
+    /* Non-MP frame types must NOT be classified as MP. */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x00));                     /* PADDING */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x02));                     /* ACK */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x06));                     /* CRYPTO */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x18));                     /* NEW_CID */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x1a));                     /* PATH_CHALLENGE */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x30));                     /* DATAGRAM */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_ACK_EXT));
+}
+
 void
 xqc_test_mp21_init_max_path_id_upper_bound(void)
 {

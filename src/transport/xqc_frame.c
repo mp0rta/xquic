@@ -172,6 +172,46 @@ xqc_insert_stream_frame(xqc_connection_t *conn, xqc_stream_t *stream, xqc_stream
 }
 
 
+/* draft-21 §4: every multipath-specific frame is forbidden in Initial /
+ * Handshake / 0-RTT packets. Enumerates both the draft-10 codepoints
+ * (still wire-active until Chunk 5's default flip) and the draft-21
+ * codepoints. ACK_EXT (0xB1) is not multipath-specific and is excluded. */
+static inline int
+xqc_frame_is_mp(uint64_t frame_type)
+{
+    switch (frame_type) {
+    /* draft-10 codepoints */
+    case XQC_TRANS_FRAME_TYPE_MP_ACK0:
+    case XQC_TRANS_FRAME_TYPE_MP_ACK1:
+    case XQC_TRANS_FRAME_TYPE_MP_ABANDON:
+    case XQC_TRANS_FRAME_TYPE_MP_STANDBY:
+    case XQC_TRANS_FRAME_TYPE_MP_AVAILABLE:
+    case XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID:
+    case XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID:
+    case XQC_TRANS_FRAME_TYPE_MAX_PATH_ID:
+    /* draft-21 codepoints */
+    case XQC_TRANS_FRAME_TYPE_PATH_ACK:
+    case XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN:
+    case XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21:
+    case XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP:
+    case XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21:
+    case XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21:
+    case XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21:
+    case XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21:
+    case XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED:
+    case XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+int
+xqc_frame_is_mp_public(uint64_t frame_type)
+{
+    return xqc_frame_is_mp(frame_type);
+}
+
 xqc_int_t
 xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 {
@@ -211,6 +251,19 @@ xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
         }
 
         xqc_log(conn->log, XQC_LOG_DEBUG, "|frame_type:%xL|", frame_type);
+
+        /* draft-21 §4: MP frames are 1-RTT only. Reject if received in
+         * Initial / Handshake / 0-RTT (long-header) packets. FEC-recovered
+         * packets retain SHORT_HEADER pkt_type so this guard is safe. */
+        if (xqc_frame_is_mp(frame_type)
+            && packet_in->pi_pkt.pkt_type != XQC_PTYPE_SHORT_HEADER)
+        {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|MP frame in non-1RTT pkt|frame_type:%xL|pkt_type:%d|",
+                    frame_type, packet_in->pi_pkt.pkt_type);
+            XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
+            return -XQC_EILLEGAL_FRAME;
+        }
 
         switch (frame_type) {
 
