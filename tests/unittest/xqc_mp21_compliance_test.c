@@ -96,6 +96,40 @@ xqc_test_mp21_validate_recv_path_id(void)
 }
 
 void
+xqc_test_mp21_init_max_path_id_upper_bound(void)
+{
+    /* Hand-encoded TP buffer: { id=0x3e, len=varies, value }
+     * Accept boundary at 0xFFFFFFFF (4-byte varint); reject 0x100000000
+     * (8-byte varint, one past spec maximum). */
+    xqc_transport_params_t params;
+
+    /* Accept 0xFFFFFFFF — value needs a 4-byte varint with prefix 0x80.
+     *   bytes: 0xbf 0xff 0xff 0xff  (prefix 10 | 0x3fffffff is too short)
+     *   actually 0xFFFFFFFF doesn't fit in 4-byte varint (max 0x3FFFFFFF);
+     *   needs 8-byte varint: 0xc0 0x00 0x00 0x00 0xff 0xff 0xff 0xff. */
+    uint8_t accept_buf[] = {
+        0x3e, 0x08,                                     /* id, len=8 */
+        0xc0, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff  /* val = 0xFFFFFFFF */
+    };
+    xqc_init_transport_params(&params);
+    xqc_int_t ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_CLIENT_HELLO,
+                                                accept_buf, sizeof(accept_buf));
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(params.enable_multipath, 1);
+    CU_ASSERT_EQUAL(params.init_max_path_id, 0xFFFFFFFFULL);
+
+    /* Reject 0x100000000 — one past spec maximum. */
+    uint8_t reject_buf[] = {
+        0x3e, 0x08,                                     /* id, len=8 */
+        0xc0, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00  /* val = 0x100000000 */
+    };
+    xqc_init_transport_params(&params);
+    ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_CLIENT_HELLO,
+                                      reject_buf, sizeof(reject_buf));
+    CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
+}
+
+void
 xqc_test_mp21_max_path_id_validation(void)
 {
     xqc_test_mp21_conn_params_t p = {

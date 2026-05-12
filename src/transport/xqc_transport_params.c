@@ -745,16 +745,25 @@ static xqc_int_t
 xqc_decode_enable_multipath(xqc_transport_params_t *params, xqc_transport_params_type_t exttype,
     const uint8_t *p, const uint8_t *end, uint64_t param_type, uint64_t param_len)
 {
-    if (param_type == XQC_TRANSPORT_PARAM_INIT_MAX_PATH_ID_V10) {
+    if (param_type == XQC_TRANSPORT_PARAM_INIT_MAX_PATH_ID_V10
+        || param_type == XQC_TRANSPORT_PARAM_INIT_MAX_PATH_ID_V21)
+    {
+        uint64_t value = 0;
+        ssize_t nread = xqc_vint_read(p, end, &value);
+        if (nread < 0) {
+            return -XQC_TLS_MALFORMED_TRANSPORT_PARAM;
+        }
+        /* draft-21 §3.1: initial_max_path_id MUST NOT exceed 2^32 - 1.
+         * Reject with TRANSPORT_PARAMETER_ERROR (caller maps the negative
+         * return to a CONNECTION_CLOSE during TP processing). */
+        if (value > 0xFFFFFFFFULL) {
+            return -XQC_TLS_MALFORMED_TRANSPORT_PARAM;
+        }
         params->enable_multipath = 1;
-        params->multipath_version = XQC_MULTIPATH_10;
-        XQC_DECODE_VINT_VALUE(&params->init_max_path_id, p, end);
-        return XQC_OK;
-    }
-    if (param_type == XQC_TRANSPORT_PARAM_INIT_MAX_PATH_ID_V21) {
-        params->enable_multipath = 1;
-        params->multipath_version = XQC_MULTIPATH_3E;
-        XQC_DECODE_VINT_VALUE(&params->init_max_path_id, p, end);
+        params->multipath_version =
+            (param_type == XQC_TRANSPORT_PARAM_INIT_MAX_PATH_ID_V21)
+            ? XQC_MULTIPATH_3E : XQC_MULTIPATH_10;
+        params->init_max_path_id = value;
         return XQC_OK;
     }
     return XQC_OK;
