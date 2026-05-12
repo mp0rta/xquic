@@ -294,65 +294,133 @@ xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
             break;
         case XQC_TRANS_FRAME_TYPE_MP_ACK0:
         case XQC_TRANS_FRAME_TYPE_MP_ACK1:
-            if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_ack_mp_frame(conn, packet_in);
 
             } else {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|", 
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+        case XQC_TRANS_FRAME_TYPE_PATH_ACK:
+        case XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN:
+            /* draft-21 §4.1. PATH_ACK_ECN parse-only refinement lands in
+             * Chunk 3 Task 11; for now both codepoints route to the
+             * existing ACK_MP handler (ECN Counts will simply read as
+             * trailing varints by the caller of the parser once the
+             * ECN-aware parser is added). */
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_ack_mp_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
                         conn->conn_settings.multipath_version, frame_type);
                 ret = -XQC_EMP_INVALID_MP_VERTION;
             }
             break;
         case XQC_TRANS_FRAME_TYPE_MP_ABANDON:
-            if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_path_abandon_frame(conn, packet_in);
 
             } else {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|", 
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
                         conn->conn_settings.multipath_version, frame_type);
                 ret = -XQC_EMP_INVALID_MP_VERTION;
             }
             break;
-        
+        case XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21:
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_path_abandon_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+
         case XQC_TRANS_FRAME_TYPE_MP_STANDBY:
         case XQC_TRANS_FRAME_TYPE_MP_AVAILABLE:
         case XQC_TRANS_FRAME_TYPE_MP_FROZEN:
-            if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_path_status_frame(conn, packet_in);
 
             } else {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|", 
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+        case XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP:
+        case XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21:
+            /* draft-21 §4.4 renamed STANDBY → BACKUP (semantics identical) */
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_path_status_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
                         conn->conn_settings.multipath_version, frame_type);
                 ret = -XQC_EMP_INVALID_MP_VERTION;
             }
             break;
 
         case XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID:
-            if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_mp_new_conn_id_frame(conn, packet_in);
 
             } else {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|", 
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+        case XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21:
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_mp_new_conn_id_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
                         conn->conn_settings.multipath_version, frame_type);
                 ret = -XQC_EMP_INVALID_MP_VERTION;
             }
             break;
         case XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID:
-            if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_mp_retire_conn_id_frame(conn, packet_in);
 
             } else {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|", 
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+        case XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21:
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_mp_retire_conn_id_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
                         conn->conn_settings.multipath_version, frame_type);
                 ret = -XQC_EMP_INVALID_MP_VERTION;
             }
             break;
         case XQC_TRANS_FRAME_TYPE_MAX_PATH_ID:
-            if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_max_path_id_frame(conn, packet_in);
 
             } else {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|", 
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+        case XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21:
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_max_path_id_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
                         conn->conn_settings.multipath_version, frame_type);
                 ret = -XQC_EMP_INVALID_MP_VERTION;
             }

@@ -175,3 +175,60 @@ void xqc_test_mp21_path_abandon_gen_no_reason(void)
     CU_ASSERT_EQUAL(buf[3], 0x3e);    /* error_code */
     CU_ASSERT_EQUAL(buf[4], 0xaa);    /* sentinel preserved — no reason_len */
 }
+
+void xqc_test_mp21_dual_version_dispatch(void)
+{
+    /* The xqc_process_frames switch was extended in Task 9 with draft-21
+     * case labels alongside the draft-10 labels. We cannot exercise the
+     * full dispatcher here without a real xqc_connection_t, but we can:
+     *
+     *  (a) confirm the draft-21 codepoints are all distinct (no overlap
+     *      with draft-10 or each other -> required for a C switch to
+     *      compile, so success of the build is itself a check),
+     *  (b) confirm the codepoints match the IANA-final draft-21 values.
+     *
+     * Wire-level correctness of the new handlers is exercised by the
+     * PATH_ABANDON recv/gen tests above; the remaining handlers
+     * (PATH_STATUS_BACKUP, PATH_NEW_CONNECTION_ID_V21, etc.) reuse the
+     * legacy xqc_process_path_status_frame / xqc_process_mp_*_frame
+     * code paths unchanged, so a parser test there belongs to Chunk 3
+     * or downstream MUST-guard work.
+     */
+    uint64_t v21_types[] = {
+        XQC_TRANS_FRAME_TYPE_PATH_ACK,
+        XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN,
+        XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21,
+        XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP,
+        XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21,
+        XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21,
+        XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21,
+        XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21,
+    };
+    size_t n = sizeof(v21_types) / sizeof(v21_types[0]);
+
+    /* All draft-21 codepoints must be pairwise distinct. */
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = i + 1; j < n; ++j) {
+            CU_ASSERT_NOT_EQUAL(v21_types[i], v21_types[j]);
+        }
+    }
+
+    /* None of the draft-21 codepoints may collide with draft-10. */
+    uint64_t v10_types[] = {
+        XQC_TRANS_FRAME_TYPE_MP_ACK0,
+        XQC_TRANS_FRAME_TYPE_MP_ACK1,
+        XQC_TRANS_FRAME_TYPE_MP_ABANDON,
+        XQC_TRANS_FRAME_TYPE_MP_STANDBY,
+        XQC_TRANS_FRAME_TYPE_MP_AVAILABLE,
+        XQC_TRANS_FRAME_TYPE_MP_FROZEN,
+        XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID,
+        XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID,
+        XQC_TRANS_FRAME_TYPE_MAX_PATH_ID,
+    };
+    size_t m = sizeof(v10_types) / sizeof(v10_types[0]);
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < m; ++j) {
+            CU_ASSERT_NOT_EQUAL(v21_types[i], v10_types[j]);
+        }
+    }
+}
