@@ -6,6 +6,8 @@
 #include "src/transport/xqc_packet_in.h"
 #include "src/transport/xqc_packet_out.h"
 #include "src/transport/xqc_conn.h"
+#include "src/transport/xqc_recv_record.h"
+#include "src/common/xqc_log.h"
 #include "xqc_mp21_compliance_test.h"
 
 /* Test helper: synthesize a minimal xqc_packet_in_t over `buf` and forward
@@ -231,4 +233,75 @@ void xqc_test_mp21_dual_version_dispatch(void)
             CU_ASSERT_NOT_EQUAL(v21_types[i], v10_types[j]);
         }
     }
+}
+
+void xqc_test_mp21_path_ack_ecn_parse_skip(void)
+{
+    /* draft-21 §4.1 PATH_ACK_ECN wire layout:
+     *   Type (= 0x3f, 1B varint)
+     *   Path ID (i)
+     *   Largest Acknowledged (i)
+     *   ACK Delay (i)
+     *   ACK Range Count (i)
+     *   First ACK Range (i)
+     *   [ACK Range...]
+     *   ECT0 Count (i)
+     *   ECT1 Count (i)
+     *   CE Count (i)
+     *
+     * The parser must:
+     *  (a) plumb the ACK info back through ack_info (largest_ack == 10),
+     *  (b) consume the 3 trailing ECN Counts varints (skip-only — no
+     *      accounting in Chunk 3),
+     *  (c) advance packet_in->pos by exactly the frame length,
+     *      leaving any trailing sentinel byte untouched.
+     */
+    unsigned char buf[16] = {0};
+    size_t off = 0;
+    buf[off++] = 0x3f;  /* type varint = 0x3f (PATH_ACK_ECN) */
+    buf[off++] = 0x01;  /* path_id = 1 */
+    buf[off++] = 0x0a;  /* largest_ack = 10 */
+    buf[off++] = 0x00;  /* ack_delay = 0 */
+    buf[off++] = 0x00;  /* ack_range_count = 0 */
+    buf[off++] = 0x00;  /* first_ack_range = 0 */
+    buf[off++] = 0x00;  /* ECT0 Count = 0 */
+    buf[off++] = 0x00;  /* ECT1 Count = 0 */
+    buf[off++] = 0x00;  /* CE Count = 0 */
+    buf[off++] = 0xaa;  /* sentinel — must NOT be consumed */
+
+    /* Stub connection + log: parser reads conn->remote_settings.ack_delay_exponent
+     * (0 from calloc) and may xqc_log() on error; FATAL log_level suppresses. */
+    xqc_log_t        *log  = calloc(1, sizeof(xqc_log_t));
+    xqc_connection_t *conn = calloc(1, sizeof(xqc_connection_t));
+    log->log_level = XQC_LOG_FATAL;
+    conn->log = log;
+
+    xqc_packet_in_t packet_in;
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.buf = buf;
+    packet_in.buf_size = sizeof(buf);
+    packet_in.pos = buf;
+    packet_in.last = buf + off;
+
+    uint64_t path_id = 0;
+    xqc_ack_info_t ack_info;
+    memset(&ack_info, 0, sizeof(ack_info));
+
+    xqc_int_t ret = xqc_parse_path_ack_ecn_frame(&packet_in, conn,
+                                                 &path_id, &ack_info);
+
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    size_t consumed = (size_t)(packet_in.pos - buf);
+    /* off-1 == 9 (all 9 wire bytes parsed, sentinel untouched) */
+    CU_ASSERT_EQUAL(consumed, off - 1);
+    CU_ASSERT_EQUAL(path_id, 1);
+    /* Largest Ack lands in ranges[0].high — proves ACK info plumbed
+     * through to recovery (regression guard against "ACK dropped"). */
+    CU_ASSERT_EQUAL(ack_info.n_ranges, 1);
+    CU_ASSERT_EQUAL(ack_info.ranges[0].high, 10);
+    /* Sentinel preserved. */
+    CU_ASSERT_EQUAL(buf[off - 1], 0xaa);
+
+    free(conn);
+    free(log);
 }

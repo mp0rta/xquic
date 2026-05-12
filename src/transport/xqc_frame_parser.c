@@ -2480,6 +2480,48 @@ xqc_parse_ack_mp_frame(xqc_packet_in_t *packet_in, xqc_connection_t *conn,
 
 
 /*
+ * draft-21 §4.1 PATH_ACK_ECN Frame {
+ *     Type (i) = 0x3f,
+ *     Path ID (i),
+ *     Largest Acknowledged (i),
+ *     ACK Delay (i),
+ *     ACK Range Count (i),
+ *     First ACK Range (i),
+ *     ACK Range (..) ...,
+ *     ECT0 Count (i),
+ *     ECT1 Count (i),
+ *     CE Count (i),
+ * }
+ *
+ * Parse-only: reuses the PATH_ACK body and then reads & discards the 3
+ * trailing ECN Counts varints. No ECN accounting in this layer (Chunk 3).
+ */
+xqc_int_t
+xqc_parse_path_ack_ecn_frame(xqc_packet_in_t *packet_in, xqc_connection_t *conn,
+    uint64_t *path_id, xqc_ack_info_t *ack_info)
+{
+    xqc_int_t ret = xqc_parse_ack_mp_frame(packet_in, conn, path_id, ack_info);
+    if (ret != XQC_OK) {
+        return ret;
+    }
+
+    unsigned char *p = packet_in->pos;
+    const unsigned char *end = packet_in->last;
+    uint64_t ecn_ct;
+    int vlen;
+    for (int i = 0; i < 3; ++i) {
+        vlen = xqc_vint_read(p, end, &ecn_ct);
+        if (vlen < 0) {
+            return -XQC_EVINTREAD;
+        }
+        p += vlen;
+    }
+    packet_in->pos = p;
+    return XQC_OK;
+}
+
+
+/*
  * PATH_ABANDON Frame {
  *    Type (i) = TBD-03,
  *    Path ID (i),

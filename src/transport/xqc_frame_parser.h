@@ -154,6 +154,13 @@ ssize_t xqc_gen_ack_mp_frame(xqc_connection_t *conn, uint64_t path_id, xqc_packe
 xqc_int_t xqc_parse_ack_mp_frame(xqc_packet_in_t *packet_in, xqc_connection_t *conn,
     uint64_t *path_id, xqc_ack_info_t *ack_info);
 
+/* draft-21 §4.1 PATH_ACK_ECN (type 0x3f): identical to PATH_ACK wire layout
+ * except three trailing ECN Counts varints (ECT0, ECT1, CE). The parser
+ * delegates to the PATH_ACK body and then skips the 3 ECN varints; no ECN
+ * accounting is performed in this layer (Chunk 3 parse-only). */
+xqc_int_t xqc_parse_path_ack_ecn_frame(xqc_packet_in_t *packet_in,
+    xqc_connection_t *conn, uint64_t *path_id, xqc_ack_info_t *ack_info);
+
 ssize_t xqc_gen_path_abandon_frame(xqc_connection_t *conn, 
     xqc_packet_out_t *packet_out, uint64_t path_id, uint64_t error_code);
 

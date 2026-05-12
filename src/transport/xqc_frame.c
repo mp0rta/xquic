@@ -304,14 +304,22 @@ xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
             }
             break;
         case XQC_TRANS_FRAME_TYPE_PATH_ACK:
-        case XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN:
-            /* draft-21 §4.1. PATH_ACK_ECN parse-only refinement lands in
-             * Chunk 3 Task 11; for now both codepoints route to the
-             * existing ACK_MP handler (ECN Counts will simply read as
-             * trailing varints by the caller of the parser once the
-             * ECN-aware parser is added). */
+            /* draft-21 §4.1 PATH_ACK — same wire as ACK_MP minus the
+             * version-gated codepoint; reuse the existing recovery path. */
             if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
                 ret = xqc_process_ack_mp_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+        case XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN:
+            /* draft-21 §4.1 PATH_ACK_ECN — Chunk 3 Task 11 parse-only:
+             * trailing ECN Counts varints are read and discarded. */
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_path_ack_ecn_frame(conn, packet_in);
 
             } else {
                 xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
@@ -1833,6 +1841,65 @@ xqc_process_ack_mp_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 
     ret = xqc_send_ctl_on_ack_received(path_to_be_acked->path_send_ctl, pn_ctl, conn->conn_send_queue,
                                        &ack_info, packet_in->pkt_recv_time, 
+                                       path_to_be_acked->path_id == packet_in->pi_path_id);
+    if (ret != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_send_ctl_on_ack_received error|");
+        return ret;
+    }
+
+    return XQC_OK;
+}
+
+xqc_int_t
+xqc_process_path_ack_ecn_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
+{
+    /* draft-21 §4.1: PATH_ACK_ECN reuses PATH_ACK semantics for recovery,
+     * with three trailing ECN Counts varints. Chunk 3 is parse-only — the
+     * ECN counts are read and discarded by xqc_parse_path_ack_ecn_frame.
+     */
+    xqc_int_t ret;
+
+    xqc_ack_info_t ack_info;
+    uint64_t path_id = 0;
+    ret = xqc_parse_path_ack_ecn_frame(packet_in, conn, &path_id, &ack_info);
+    if (ret != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_parse_path_ack_ecn_frame error|");
+        return ret;
+    }
+
+    if ((packet_in->pi_flag & XQC_PIF_FEC_RECOVERED) != 0) {
+        return XQC_OK;
+    }
+
+    if (path_id > conn->local_max_path_id) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|path_id exceeds limit|path_id:%ui|limit:%ui|",
+                path_id, conn->local_max_path_id);
+        XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+        return -XQC_EILLEGAL_FRAME;
+    }
+
+    xqc_path_ctx_t *path_to_be_acked = xqc_conn_find_path_by_path_id(conn, path_id);
+    if (path_to_be_acked == NULL) {
+        xqc_log(conn->log, XQC_LOG_INFO, "|ignore unknown path|path:%ui|", path_id);
+        return XQC_OK;
+    }
+
+    if (path_to_be_acked->path_id != packet_in->pi_path_id) {
+        xqc_log(conn->log, XQC_LOG_DEBUG,
+                "|PATH_ACK_ECN received on a different path|ack_path_id:%ui|recv_path_id:%ui|",
+                path_to_be_acked->path_id,
+                packet_in->pi_path_id);
+    }
+
+    for (int i = 0; i < ack_info.n_ranges; i++) {
+        xqc_log_event(conn->log, TRA_PACKETS_ACKED, packet_in, ack_info.ranges[i].high,
+            ack_info.ranges[i].low, path_to_be_acked->path_id);
+    }
+
+    xqc_pn_ctl_t *pn_ctl = xqc_get_pn_ctl(conn, path_to_be_acked);
+
+    ret = xqc_send_ctl_on_ack_received(path_to_be_acked->path_send_ctl, pn_ctl, conn->conn_send_queue,
+                                       &ack_info, packet_in->pkt_recv_time,
                                        path_to_be_acked->path_id == packet_in->pi_path_id);
     if (ret != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_send_ctl_on_ack_received error|");
