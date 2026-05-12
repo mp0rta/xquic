@@ -56,4 +56,8 @@ void xqc_test_mp21_gen_mp_retire_conn_id_dual_version(void);
 void xqc_test_mp21_gen_max_path_id_dual_version(void);
 void xqc_test_mp21_gen_ack_mp_dual_version(void);
 
+/* draft-21 §4.7 informational frames: parse-and-discard at L1+. */
+void xqc_test_mp21_paths_blocked_parse_and_discard(void);
+void xqc_test_mp21_path_cids_blocked_parse_and_discard(void);
+
 #endif /* _XQC_MP21_COMPLIANCE_TEST_H */

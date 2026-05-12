@@ -486,6 +486,49 @@ xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
             }
             break;
 
+        /* draft-21 §4.7: PATHS_BLOCKED / PATH_CIDS_BLOCKED are informational
+         * ("an endpoint MAY use these frames"). L1+ parse-and-discard so a
+         * compliant peer that emits them is interop-clean; full receive-
+         * validation + send-side emission is L2 scope. */
+        case XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED: {
+            /* Payload: Maximum Path Identifier (varint). */
+            uint64_t max_path_id_val = 0;
+            ssize_t  vlen;
+            /* advance past frame type (already read above) */
+            packet_in->pos += frame_type_len;
+            vlen = xqc_vint_read(packet_in->pos, packet_in->last, &max_path_id_val);
+            if (vlen < 0) {
+                return -XQC_EVINTREAD;
+            }
+            packet_in->pos += vlen;
+            xqc_log(conn->log, XQC_LOG_INFO,
+                    "|received PATHS_BLOCKED (informational, L2 deferred)"
+                    "|max_path_id:%ui|", max_path_id_val);
+            ret = XQC_OK;
+            break;
+        }
+        case XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED: {
+            /* Payload: Path Identifier (varint), Next Sequence Number (varint). */
+            uint64_t pid_val = 0, next_seq_val = 0;
+            ssize_t  vlen;
+            packet_in->pos += frame_type_len;
+            vlen = xqc_vint_read(packet_in->pos, packet_in->last, &pid_val);
+            if (vlen < 0) {
+                return -XQC_EVINTREAD;
+            }
+            packet_in->pos += vlen;
+            vlen = xqc_vint_read(packet_in->pos, packet_in->last, &next_seq_val);
+            if (vlen < 0) {
+                return -XQC_EVINTREAD;
+            }
+            packet_in->pos += vlen;
+            xqc_log(conn->log, XQC_LOG_INFO,
+                    "|received PATH_CIDS_BLOCKED (informational, L2 deferred)"
+                    "|path_id:%ui|next_seq:%ui|", pid_val, next_seq_val);
+            ret = XQC_OK;
+            break;
+        }
+
 #ifdef XQC_ENABLE_FEC
         case 0xfec5:
             if (conn->conn_settings.enable_decode_fec

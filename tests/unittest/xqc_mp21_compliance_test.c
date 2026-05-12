@@ -1101,3 +1101,88 @@ void xqc_test_mp21_gen_ack_mp_dual_version(void)
     CU_ASSERT_EQUAL(buf[3], 0x00);
     xqc_test_mp21_gen_teardown(conn, po);
 }
+
+/* draft-21 §4.7: PATHS_BLOCKED / PATH_CIDS_BLOCKED are informational.
+ * L1+ parse-and-discard: frame is consumed (packet_in->pos advances to
+ * packet_in->last) and XQC_OK is returned. */
+void
+xqc_test_mp21_paths_blocked_parse_and_discard(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 8,
+        .remote_max_path_id = 8,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->conn_state = XQC_CONN_STATE_ESTABED;
+    /* xqc_process_frames does a post-switch path lookup against
+     * conn_paths_list — initialise to an empty list so the iteration
+     * terminates cleanly without a real engine fixture. */
+    xqc_init_list_head(&conn->conn_paths_list);
+
+    /* PATHS_BLOCKED: type 0x3e7b (4B varint: 0x80 0x00 0x3e 0x7b)
+     *               + Max Path ID = 8 (1B varint: 0x08) */
+    unsigned char buf[16];
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 0x80; buf[1] = 0x00; buf[2] = 0x3e; buf[3] = 0x7b;
+    buf[4] = 0x08;
+
+    xqc_packet_in_t packet_in;
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.buf = buf;
+    packet_in.buf_size = sizeof(buf);
+    packet_in.pos = buf;
+    packet_in.last = buf + 5;
+    packet_in.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+    packet_in.pi_frame_types = XQC_FRAME_BIT_PING;  /* satisfy no-frames check */
+
+    xqc_int_t ret = xqc_process_frames(conn, &packet_in);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(packet_in.pos, packet_in.last);
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_path_cids_blocked_parse_and_discard(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 8,
+        .remote_max_path_id = 8,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->conn_state = XQC_CONN_STATE_ESTABED;
+    /* xqc_process_frames does a post-switch path lookup against
+     * conn_paths_list — initialise to an empty list so the iteration
+     * terminates cleanly without a real engine fixture. */
+    xqc_init_list_head(&conn->conn_paths_list);
+
+    /* PATH_CIDS_BLOCKED: type 0x3e7c (4B varint: 0x80 0x00 0x3e 0x7c)
+     *                  + Path ID = 1 (1B varint: 0x01)
+     *                  + Next Sequence Number = 2 (1B varint: 0x02) */
+    unsigned char buf[16];
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 0x80; buf[1] = 0x00; buf[2] = 0x3e; buf[3] = 0x7c;
+    buf[4] = 0x01;
+    buf[5] = 0x02;
+
+    xqc_packet_in_t packet_in;
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.buf = buf;
+    packet_in.buf_size = sizeof(buf);
+    packet_in.pos = buf;
+    packet_in.last = buf + 6;
+    packet_in.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+    packet_in.pi_frame_types = XQC_FRAME_BIT_PING;
+
+    xqc_int_t ret = xqc_process_frames(conn, &packet_in);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(packet_in.pos, packet_in.last);
+
+    xqc_test_mp21_free_conn(conn);
+}

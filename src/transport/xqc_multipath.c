@@ -110,6 +110,11 @@ void
 xqc_conn_mark_path_abandoned(xqc_connection_t *conn, uint64_t path_id)
 {
     if (path_id >= XQC_ABANDONED_PATH_BITMAP_BITS) {
+        xqc_log(conn->log, XQC_LOG_WARN,
+                "|abandoned bitmap saturated|path_id %ui >= %d"
+                "|silent-ignore semantics degraded"
+                "|TODO bump XQC_ABANDONED_PATH_BITMAP_BITS or switch to hash set|",
+                path_id, XQC_ABANDONED_PATH_BITMAP_BITS);
         return;
     }
     conn->abandoned_path_ids[path_id >> 6] |= (uint64_t)1 << (path_id & 63);
@@ -119,6 +124,11 @@ xqc_bool_t
 xqc_conn_is_path_abandoned(xqc_connection_t *conn, uint64_t path_id)
 {
     if (path_id >= XQC_ABANDONED_PATH_BITMAP_BITS) {
+        xqc_log(conn->log, XQC_LOG_WARN,
+                "|abandoned bitmap saturated|path_id %ui >= %d"
+                "|silent-ignore semantics degraded"
+                "|TODO bump XQC_ABANDONED_PATH_BITMAP_BITS or switch to hash set|",
+                path_id, XQC_ABANDONED_PATH_BITMAP_BITS);
         return XQC_FALSE;
     }
     return (conn->abandoned_path_ids[path_id >> 6] & ((uint64_t)1 << (path_id & 63)))
