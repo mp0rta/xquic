@@ -877,3 +877,227 @@ xqc_test_mp21_aead_nonce_check_tls_wrapper(void)
     CU_ASSERT_EQUAL(xqc_tls_check_mp_aead_nonce_len(NULL, 1),
                     -(xqc_int_t)XQC_TLS_INTERNAL);
 }
+
+
+/* ------------------------------------------------------------------
+ * Dual-version codepoint emission for the 5 remaining MP frame
+ * generators (post-Chunk 2 wire-fix). For each generator, confirm
+ * the buffer's first byte(s) match the draft-21 varint codepoint
+ * when multipath_version == XQC_MULTIPATH_3E, and draft-10 4-byte
+ * codepoint 0x15228cXX otherwise. Sentinel 0xaa beyond the written
+ * region must remain untouched.
+ *
+ * draft-21 (1-byte / 2-byte varint) wire bytes used here:
+ *   PATH_ACK                        0x3e        -> 0x3e
+ *   PATH_STATUS_BACKUP              0x3e76      -> 0x7e 0x76
+ *   PATH_STATUS_AVAILABLE_V21       0x3e77      -> 0x7e 0x77
+ *   PATH_NEW_CONNECTION_ID_V21      0x3e78      -> 0x7e 0x78
+ *   PATH_RETIRE_CONNECTION_ID_V21   0x3e79      -> 0x7e 0x79
+ *   MAX_PATH_ID_V21                 0x3e7a      -> 0x7e 0x7a
+ *
+ * draft-10 4-byte varint codepoint 0x15228cXX is encoded as:
+ *   high byte = 0xc0 | (val>>24) = 0xc0 | 0x15 = 0xd5, then 0x22, 0x8c, XX
+ * ------------------------------------------------------------------ */
+
+static void
+xqc_test_mp21_gen_setup(xqc_connection_t **conn_out, xqc_packet_out_t **po_out,
+    unsigned char *buf, size_t buf_cap, uint8_t mp_version)
+{
+    xqc_log_t        *log = calloc(1, sizeof(xqc_log_t));
+    xqc_connection_t *conn = calloc(1, sizeof(xqc_connection_t));
+    xqc_packet_out_t *po   = calloc(1, sizeof(xqc_packet_out_t));
+    log->log_level = XQC_LOG_FATAL;
+    conn->log = log;
+    conn->conn_settings.multipath_version = mp_version;
+    po->po_buf = buf;
+    po->po_buf_cap = buf_cap;
+    po->po_buf_size = (unsigned int)buf_cap;
+    po->po_used_size = 0;
+    po->po_reserved_size = 0;
+    *conn_out = conn;
+    *po_out = po;
+}
+
+static void
+xqc_test_mp21_gen_teardown(xqc_connection_t *conn, xqc_packet_out_t *po)
+{
+    if (conn) {
+        free(conn->log);
+        free(conn);
+    }
+    free(po);
+}
+
+void xqc_test_mp21_gen_path_status_dual_version(void)
+{
+    unsigned char buf[64];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+
+    /* (a) draft-21, STANDBY -> PATH_STATUS_BACKUP 0x3e76 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_path_status_frame(conn, po, 1, 7, XQC_APP_PATH_STATUS_STANDBY);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x76);
+    CU_ASSERT_EQUAL(buf[(size_t)written], 0xaa); /* sentinel preserved */
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) draft-21, AVAILABLE -> PATH_STATUS_AVAILABLE 0x3e77 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_path_status_frame(conn, po, 1, 7, XQC_APP_PATH_STATUS_AVAILABLE);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x77);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (c) draft-10, STANDBY -> MP_STANDBY 0x15228c07 (4-byte varint) */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_path_status_frame(conn, po, 1, 7, XQC_APP_PATH_STATUS_STANDBY);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[1], 0x22);
+    CU_ASSERT_EQUAL(buf[2], 0x8c);
+    CU_ASSERT_EQUAL(buf[3], 0x07);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (d) draft-10, AVAILABLE -> MP_AVAILABLE 0x15228c08 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_path_status_frame(conn, po, 1, 7, XQC_APP_PATH_STATUS_AVAILABLE);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[3], 0x08);
+    xqc_test_mp21_gen_teardown(conn, po);
+}
+
+void xqc_test_mp21_gen_mp_new_conn_id_dual_version(void)
+{
+    unsigned char buf[64];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+    xqc_cid_t new_cid;
+    uint8_t sr_token[XQC_STATELESS_RESET_TOKENLEN] = {0};
+    memset(&new_cid, 0, sizeof(new_cid));
+    new_cid.cid_len = 8;
+    new_cid.cid_seq_num = 1;
+
+    /* (a) draft-21 -> PATH_NEW_CONNECTION_ID 0x3e78 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_mp_new_conn_id_frame(conn, po, &new_cid, 0, sr_token, 1);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x78);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) draft-10 -> MP_NEW_CONN_ID 0x15228c09 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_mp_new_conn_id_frame(conn, po, &new_cid, 0, sr_token, 1);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[1], 0x22);
+    CU_ASSERT_EQUAL(buf[2], 0x8c);
+    CU_ASSERT_EQUAL(buf[3], 0x09);
+    xqc_test_mp21_gen_teardown(conn, po);
+}
+
+void xqc_test_mp21_gen_mp_retire_conn_id_dual_version(void)
+{
+    unsigned char buf[32];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+
+    /* (a) draft-21 -> PATH_RETIRE_CONNECTION_ID 0x3e79 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_mp_retire_conn_id_frame(conn, po, 0, 1);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x79);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) draft-10 -> MP_RETIRE_CONN_ID 0x15228c0a */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_mp_retire_conn_id_frame(conn, po, 0, 1);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[3], 0x0a);
+    xqc_test_mp21_gen_teardown(conn, po);
+}
+
+void xqc_test_mp21_gen_max_path_id_dual_version(void)
+{
+    unsigned char buf[32];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+
+    /* (a) draft-21 -> MAX_PATH_ID 0x3e7a */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_max_path_id_frame(conn, po, 8);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x7a);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) draft-10 -> MAX_PATH_ID 0x15228c0c */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_max_path_id_frame(conn, po, 8);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[3], 0x0c);
+    xqc_test_mp21_gen_teardown(conn, po);
+}
+
+void xqc_test_mp21_gen_ack_mp_dual_version(void)
+{
+    /* Build a recv_record with one range so ack_mp generator runs. */
+    unsigned char buf[64];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+    xqc_recv_record_t rr;
+    xqc_pktno_range_node_t node;
+    memset(&rr, 0, sizeof(rr));
+    memset(&node, 0, sizeof(node));
+    xqc_init_list_head(&rr.list_head);
+    node.pktno_range.high = 10;
+    node.pktno_range.low  = 10;
+    xqc_list_add_tail(&node.list, &rr.list_head);
+
+    int has_gap = 0;
+    xqc_packet_number_t largest_ack = 0;
+
+    /* (a) draft-21 -> PATH_ACK 0x3e (1-byte varint) */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    po->po_pkt.pkt_pns = XQC_PNS_APP_DATA;
+    written = xqc_gen_ack_mp_frame(conn, 1, po, 0, 0, &rr, 0,
+                                   &has_gap, &largest_ack);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x3e);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) draft-10 -> MP_ACK0 0x15228c00 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    po->po_pkt.pkt_pns = XQC_PNS_APP_DATA;
+    written = xqc_gen_ack_mp_frame(conn, 1, po, 0, 0, &rr, 0,
+                                   &has_gap, &largest_ack);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[1], 0x22);
+    CU_ASSERT_EQUAL(buf[2], 0x8c);
+    CU_ASSERT_EQUAL(buf[3], 0x00);
+    xqc_test_mp21_gen_teardown(conn, po);
+}

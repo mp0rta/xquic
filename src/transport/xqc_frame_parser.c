@@ -2242,8 +2242,13 @@ xqc_gen_ack_mp_frame(xqc_connection_t *conn, uint64_t path_id,
     int *has_gap, xqc_packet_number_t *largest_ack)
 {
     uint64_t frame_type;
-    
-    if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+
+    uint8_t mp_version = conn->conn_settings.multipath_version;
+    if (mp_version == XQC_MULTIPATH_3E) {
+        /* draft-21 §4.1: PATH_ACK codepoint 0x3e (1-byte varint) */
+        frame_type = XQC_TRANS_FRAME_TYPE_PATH_ACK;
+
+    } else if (mp_version == XQC_MULTIPATH_10) {
         frame_type = XQC_TRANS_FRAME_TYPE_MP_ACK0;
 
     } else {
@@ -2677,14 +2682,31 @@ xqc_gen_path_status_frame(xqc_connection_t *conn,
     uint64_t frame_type;
     uint64_t ft_flag;
 
-    if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+    uint8_t mp_version = conn->conn_settings.multipath_version;
+    if (mp_version == XQC_MULTIPATH_3E) {
         switch (status) {
-        case XQC_APP_PATH_STATUS_STANDBY: 
-            frame_type = XQC_TRANS_FRAME_TYPE_MP_STANDBY; 
+        case XQC_APP_PATH_STATUS_STANDBY:
+            /* draft-21 §4.4: PATH_STATUS_BACKUP codepoint 0x3e76 */
+            frame_type = XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP;
             ft_flag = XQC_FRAME_BIT_PATH_STANDBY;
             break;
-        case XQC_APP_PATH_STATUS_AVAILABLE: 
-            frame_type = XQC_TRANS_FRAME_TYPE_MP_AVAILABLE; 
+        case XQC_APP_PATH_STATUS_AVAILABLE:
+            /* draft-21 §4.4: PATH_STATUS_AVAILABLE codepoint 0x3e77 */
+            frame_type = XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21;
+            ft_flag = XQC_FRAME_BIT_PATH_AVAILABLE;
+            break;
+        default:
+            return -XQC_EMP_PATH_STATE_ERROR;
+        }
+
+    } else if (mp_version == XQC_MULTIPATH_10) {
+        switch (status) {
+        case XQC_APP_PATH_STATUS_STANDBY:
+            frame_type = XQC_TRANS_FRAME_TYPE_MP_STANDBY;
+            ft_flag = XQC_FRAME_BIT_PATH_STANDBY;
+            break;
+        case XQC_APP_PATH_STATUS_AVAILABLE:
+            frame_type = XQC_TRANS_FRAME_TYPE_MP_AVAILABLE;
             ft_flag = XQC_FRAME_BIT_PATH_AVAILABLE;
             break;
         /* XQC_APP_PATH_STATUS_FROZEN removed from the wire in draft-21 §4.4;
@@ -2692,7 +2714,7 @@ xqc_gen_path_status_frame(xqc_connection_t *conn,
         default:
             return -XQC_EMP_PATH_STATE_ERROR;
         }
-        
+
     } else {
         return -XQC_EMP_INVALID_MP_VERTION;
     }
@@ -2792,14 +2814,23 @@ xqc_parse_path_status_frame(xqc_packet_in_t *packet_in,
  *               Figure 39: MP_NEW_CONNECTION_ID Frame Format
  * */
 ssize_t
-xqc_gen_mp_new_conn_id_frame(xqc_packet_out_t *packet_out, xqc_cid_t *new_cid,
-    uint64_t retire_prior_to, const uint8_t *sr_token, uint64_t path_id)
+xqc_gen_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
+    xqc_cid_t *new_cid, uint64_t retire_prior_to, const uint8_t *sr_token, uint64_t path_id)
 {
     unsigned char *dst_buf = packet_out->po_buf + packet_out->po_used_size;
     const unsigned char *begin = dst_buf;
 
-    /* write frame type */
-    uint64_t frame_type = XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID;
+    /* write frame type — branch on negotiated multipath version */
+    uint64_t frame_type;
+    uint8_t mp_version = conn->conn_settings.multipath_version;
+    if (mp_version == XQC_MULTIPATH_3E) {
+        /* draft-21 §4.6: PATH_NEW_CONNECTION_ID codepoint 0x3e78 */
+        frame_type = XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21;
+    } else if (mp_version == XQC_MULTIPATH_10) {
+        frame_type = XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID;
+    } else {
+        return -XQC_EMP_INVALID_MP_VERTION;
+    }
     unsigned frame_type_bits = xqc_vint_get_2bit(frame_type);
     xqc_vint_write(dst_buf, frame_type, frame_type_bits, xqc_vint_len(frame_type_bits));
     dst_buf += xqc_vint_len(frame_type_bits);
@@ -2924,13 +2955,23 @@ xqc_parse_mp_new_conn_id_frame(xqc_packet_in_t *packet_in,
  * }
  * */
 ssize_t
-xqc_gen_mp_retire_conn_id_frame(xqc_packet_out_t *packet_out, uint64_t seq_num, uint64_t path_id)
+xqc_gen_mp_retire_conn_id_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
+    uint64_t seq_num, uint64_t path_id)
 {
     unsigned char *dst_buf = packet_out->po_buf + packet_out->po_used_size;
     const unsigned char *begin = dst_buf;
 
-    /* write frame type */
-    uint64_t frame_type = XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID;
+    /* write frame type — branch on negotiated multipath version */
+    uint64_t frame_type;
+    uint8_t mp_version = conn->conn_settings.multipath_version;
+    if (mp_version == XQC_MULTIPATH_3E) {
+        /* draft-21 §4.7: PATH_RETIRE_CONNECTION_ID codepoint 0x3e79 */
+        frame_type = XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21;
+    } else if (mp_version == XQC_MULTIPATH_10) {
+        frame_type = XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID;
+    } else {
+        return -XQC_EMP_INVALID_MP_VERTION;
+    }
     unsigned frame_type_bits = xqc_vint_get_2bit(frame_type);
     xqc_vint_write(dst_buf, frame_type, frame_type_bits, xqc_vint_len(frame_type_bits));
     dst_buf += xqc_vint_len(frame_type_bits);
@@ -2994,13 +3035,22 @@ xqc_parse_mp_retire_conn_id_frame(xqc_packet_in_t *packet_in, uint64_t *seq_num,
  *               Figure: MAX_PATH_ID Frame Format
  * */
 ssize_t
-xqc_gen_max_path_id_frame(xqc_packet_out_t *packet_out, uint64_t max_path_id)
+xqc_gen_max_path_id_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out, uint64_t max_path_id)
 {
     unsigned char *dst_buf = packet_out->po_buf + packet_out->po_used_size;
     const unsigned char *begin = dst_buf;
 
-    /* write frame type */
-    uint64_t frame_type = XQC_TRANS_FRAME_TYPE_MAX_PATH_ID;
+    /* write frame type — branch on negotiated multipath version */
+    uint64_t frame_type;
+    uint8_t mp_version = conn->conn_settings.multipath_version;
+    if (mp_version == XQC_MULTIPATH_3E) {
+        /* draft-21 §4.8: MAX_PATH_ID codepoint 0x3e7a */
+        frame_type = XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21;
+    } else if (mp_version == XQC_MULTIPATH_10) {
+        frame_type = XQC_TRANS_FRAME_TYPE_MAX_PATH_ID;
+    } else {
+        return -XQC_EMP_INVALID_MP_VERTION;
+    }
     unsigned frame_type_bits = xqc_vint_get_2bit(frame_type);
     xqc_vint_write(dst_buf, frame_type, frame_type_bits, xqc_vint_len(frame_type_bits));
     dst_buf += xqc_vint_len(frame_type_bits);

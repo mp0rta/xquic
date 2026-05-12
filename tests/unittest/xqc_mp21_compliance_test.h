@@ -49,4 +49,11 @@ void xqc_test_mp21_duplicate_path_abandon_short_circuit(void);
 void xqc_test_mp21_path_create_refuses_abandoned(void);
 void xqc_test_mp21_aead_nonce_check_tls_wrapper(void);
 
+/* Dual-version codepoint emission tests for the 5 remaining MP generators. */
+void xqc_test_mp21_gen_path_status_dual_version(void);
+void xqc_test_mp21_gen_mp_new_conn_id_dual_version(void);
+void xqc_test_mp21_gen_mp_retire_conn_id_dual_version(void);
+void xqc_test_mp21_gen_max_path_id_dual_version(void);
+void xqc_test_mp21_gen_ack_mp_dual_version(void);
+
 #endif /* _XQC_MP21_COMPLIANCE_TEST_H */
