@@ -154,6 +154,53 @@ xqc_test_mp21_path_new_conn_id_cid_len_guard(void)
     CU_ASSERT_EQUAL(xqc_test_mp21_drive_path_new_cid_parser(8), XQC_OK);
 }
 
+/* Forward decl — xqc_path_create lives in xqc_multipath.c but its
+ * prototype is buried in an internal header. */
+extern xqc_path_ctx_t *xqc_path_create(xqc_connection_t *conn,
+    xqc_cid_t *scid, xqc_cid_t *dcid, uint64_t path_id);
+
+void
+xqc_test_mp21_path_create_refuses_abandoned(void)
+{
+    /* draft-21 §4.5 (Task 23): xqc_path_create() MUST refuse to recycle
+     * an Abandoned path_id. The refusal is exercised pre-allocation, so
+     * the test fixture's stub conn (no engine, no pn_ctl) is sufficient.
+     *
+     * Test 2 from the plan (MAX_PATH_ID growth grants id=5 which is still
+     * refused if pre-marked as abandoned) is verified indirectly: the
+     * refusal predicate is xqc_conn_is_path_abandoned(conn, path_id),
+     * which is checked unconditionally at xqc_path_create() entry — there
+     * is no MAX_PATH_ID-aware bypass. Hence marking id=5 abandoned and
+     * subsequently growing remote_max_path_id to 8 cannot lift the refusal.
+     */
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 8,
+        .remote_max_path_id = 8,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_conn_mark_path_abandoned(conn, 2);
+
+    /* xqc_path_create's first action is the abandoned-check; it bails
+     * with NULL before touching engine / pn_ctl / send_ctl, so the stub
+     * fixture suffices. */
+    CU_ASSERT_PTR_NULL(xqc_path_create(conn, NULL, NULL, 2));
+
+    /* Refusal survives across MAX_PATH_ID growth simulations. */
+    conn->remote_max_path_id = 16;
+    conn->curr_max_path_id   = 8;
+    CU_ASSERT_PTR_NULL(xqc_path_create(conn, NULL, NULL, 2));
+
+    /* Sanity: a different, non-abandoned path_id passes the bitmap
+     * predicate (the helper, not the full xqc_path_create call). */
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 5));
+
+    xqc_test_mp21_free_conn(conn);
+}
+
 void
 xqc_test_mp21_abandoned_path_silently_ignored(void)
 {
