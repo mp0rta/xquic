@@ -223,7 +223,7 @@ void xqc_test_mp21_dual_version_dispatch(void)
         XQC_TRANS_FRAME_TYPE_MP_ABANDON,
         XQC_TRANS_FRAME_TYPE_MP_STANDBY,
         XQC_TRANS_FRAME_TYPE_MP_AVAILABLE,
-        XQC_TRANS_FRAME_TYPE_MP_FROZEN,
+        /* MP_FROZEN removed in Chunk 3 Task 13 (draft-21 §4.4). */
         XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID,
         XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID,
         XQC_TRANS_FRAME_TYPE_MAX_PATH_ID,

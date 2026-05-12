@@ -25,7 +25,10 @@
 #define XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID             0x15228c09
 #define XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID          0x15228c0a
 #define XQC_TRANS_FRAME_TYPE_MAX_PATH_ID                0x15228c0c
-#define XQC_TRANS_FRAME_TYPE_MP_FROZEN                  0x15228cff
+/* XQC_TRANS_FRAME_TYPE_MP_FROZEN (0x15228cff) removed in Chunk 3 Task 13:
+ * draft-21 §4.4 dropped FROZEN from the wire status set. The internal
+ * XQC_APP_PATH_STATUS_FROZEN enum value is retained for scheduler use
+ * but is never serialised. */
 
 /* draft-ietf-quic-multipath-21 frame types (IANA permanent registry) */
 #define XQC_TRANS_FRAME_TYPE_PATH_ACK                       0x3eULL

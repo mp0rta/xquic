@@ -350,7 +350,6 @@ xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 
         case XQC_TRANS_FRAME_TYPE_MP_STANDBY:
         case XQC_TRANS_FRAME_TYPE_MP_AVAILABLE:
-        case XQC_TRANS_FRAME_TYPE_MP_FROZEN:
             if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_path_status_frame(conn, packet_in);
 
