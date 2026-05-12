@@ -266,6 +266,13 @@ typedef enum {
 xqc_max_path_id_validation_t xqc_validate_max_path_id(xqc_connection_t *conn,
                                                       uint64_t value);
 
+/* draft-21 §3.1: zero-length CIDs are forbidden once multipath is
+ * negotiated — packets are demultiplexed by DCID across paths, so a
+ * zero-length CID would collapse the per-path identity. Returns XQC_OK
+ * when both scid_len and dcid_len are non-zero, -TRA_PROTOCOL_VIOLATION
+ * otherwise. */
+xqc_int_t xqc_validate_mp_cid_lengths(uint8_t scid_len, uint8_t dcid_len);
+
 xqc_bool_t xqc_path_is_initial_path(xqc_path_ctx_t *path);
 
 void xqc_path_record_info(xqc_path_ctx_t *path, xqc_path_info_t *path_info);

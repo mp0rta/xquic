@@ -96,6 +96,15 @@ xqc_validate_recv_path_id(xqc_connection_t *conn, uint64_t path_id)
  *   (c) value <= current remote_max_path_id is a stale duplicate and
  *       MUST be silently ignored (not an error).
  * Else the frame is accepted and may grow remote_max_path_id. */
+xqc_int_t
+xqc_validate_mp_cid_lengths(uint8_t scid_len, uint8_t dcid_len)
+{
+    if (scid_len == 0 || dcid_len == 0) {
+        return -TRA_PROTOCOL_VIOLATION;
+    }
+    return XQC_OK;
+}
+
 xqc_max_path_id_validation_t
 xqc_validate_max_path_id(xqc_connection_t *conn, uint64_t value)
 {
@@ -417,10 +426,13 @@ xqc_conn_enable_multipath(xqc_connection_t *conn)
     if ((conn->local_settings.enable_multipath == 1)
         && (conn->remote_settings.enable_multipath == 1))
     {
-        if (conn->dcid_set.current_dcid.cid_len == 0
-            || conn->scid_set.user_scid.cid_len == 0) 
+        if (xqc_validate_mp_cid_lengths(conn->scid_set.user_scid.cid_len,
+                                        conn->dcid_set.current_dcid.cid_len) != XQC_OK)
         {
-            xqc_log(conn->log, XQC_LOG_ERROR, "|zero-length DCID|");
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|zero-length CID forbidden with multipath|scid:%ud|dcid:%ud|",
+                    conn->scid_set.user_scid.cid_len,
+                    conn->dcid_set.current_dcid.cid_len);
             XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
             return XQC_CONN_MP_DISABLED;
         }

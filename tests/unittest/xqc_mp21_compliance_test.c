@@ -155,6 +155,23 @@ xqc_test_mp21_path_new_conn_id_cid_len_guard(void)
 }
 
 void
+xqc_test_mp21_non_zero_cid_constraint(void)
+{
+    /* Both zero -> reject. */
+    CU_ASSERT_EQUAL(xqc_validate_mp_cid_lengths(0, 0),
+                    -(xqc_int_t)TRA_PROTOCOL_VIOLATION);
+    /* dcid=0 -> reject. */
+    CU_ASSERT_EQUAL(xqc_validate_mp_cid_lengths(8, 0),
+                    -(xqc_int_t)TRA_PROTOCOL_VIOLATION);
+    /* scid=0 -> reject. */
+    CU_ASSERT_EQUAL(xqc_validate_mp_cid_lengths(0, 8),
+                    -(xqc_int_t)TRA_PROTOCOL_VIOLATION);
+    /* both > 0 -> accept. */
+    CU_ASSERT_EQUAL(xqc_validate_mp_cid_lengths(8, 8), XQC_OK);
+    CU_ASSERT_EQUAL(xqc_validate_mp_cid_lengths(1, 20), XQC_OK);
+}
+
+void
 xqc_test_mp21_aead_nonce_min_length(void)
 {
     /* MP disabled: any noncelen accepted (opt-out path). */
