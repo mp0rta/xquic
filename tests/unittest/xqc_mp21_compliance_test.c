@@ -1,8 +1,37 @@
 #include <CUnit/CUnit.h>
+#include <string.h>
 #include "xquic/xquic.h"
 #include "xquic/xqc_errno.h"
 #include "src/transport/xqc_frame_parser.h"
+#include "src/transport/xqc_packet_in.h"
 #include "xqc_mp21_compliance_test.h"
+
+/* Test helper: synthesize a minimal xqc_packet_in_t over `buf` and forward
+ * to xqc_parse_path_abandon_frame, returning the number of bytes consumed
+ * (i.e. how far packet_in->pos was advanced from buf).
+ *
+ * `mp_version` selects draft-10 (legacy, reads Reason Phrase) vs draft-21
+ * (XQC_MULTIPATH_3E, no Reason Phrase). The parser will only branch on
+ * version once Task 7 fix lands; for the RED test this argument is unused.
+ */
+static int
+xqc_test_parse_path_abandon(unsigned char *buf, size_t len,
+    uint64_t *path_id, uint64_t *error_code, size_t *consumed,
+    uint8_t mp_version)
+{
+    xqc_packet_in_t packet_in;
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.buf = buf;
+    packet_in.buf_size = len;
+    packet_in.pos = buf;
+    packet_in.last = buf + len;
+    (void)mp_version;
+    xqc_int_t ret = xqc_parse_path_abandon_frame(&packet_in, path_id, error_code);
+    if (consumed) {
+        *consumed = (size_t)(packet_in.pos - buf);
+    }
+    return (int)ret;
+}
 
 void xqc_test_mp21_version_enum(void)
 {
@@ -35,4 +64,36 @@ void xqc_test_mp21_frame_type_constants(void)
     CU_ASSERT_EQUAL(TRA_NO_CID_AVAILABLE_FOR_PATH,   0x3e77ULL);
     /* legacy error code must still exist */
     CU_ASSERT_EQUAL((uint64_t)TRA_PROTOCOL_VIOLATION, 0x0aULL);
+}
+
+void xqc_test_mp21_path_abandon_recv_no_reason(void)
+{
+    /* draft-21 wire: { Type, Path ID, Error Code } -- no Reason Phrase.
+     *
+     * Frame type 0x3e75 encodes as a 2-byte varint 0x7e 0x75 (prefix 01).
+     * After the type, payload is path_id(1B) + error_code(1B) = 2 bytes.
+     * A trailing 0x00 stands in for the next frame (PADDING); the parser
+     * must NOT consume it as Reason Phrase Length.
+     */
+    unsigned char buf[16] = {0};
+    size_t off = 0;
+    buf[off++] = 0x7e; buf[off++] = 0x75;   /* type varint = 0x3e75 */
+    buf[off++] = 0x01;                       /* path_id varint = 1 */
+    buf[off++] = 0x3e;                       /* error_code varint = 0x3e */
+    buf[off++] = 0x00;                       /* next frame: PADDING */
+
+    uint64_t path_id = 0, error_code = 0;
+    size_t consumed = 0;
+    int ret = xqc_test_parse_path_abandon(buf, sizeof(buf), &path_id,
+                                          &error_code, &consumed,
+                                          XQC_MULTIPATH_3E);
+
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(path_id, 1);
+    CU_ASSERT_EQUAL(error_code, 0x3e);
+    /* type(2) + path_id(1) + error_code(1) == 4 bytes total.
+     * The legacy parser also consumes one more byte for reason_len
+     * (the 0x00 PADDING byte) so total = 5. This assertion is the RED
+     * that Task 7 will turn GREEN. */
+    CU_ASSERT_EQUAL(consumed, 4);
 }
