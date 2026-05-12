@@ -2501,7 +2501,12 @@ xqc_gen_path_abandon_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
 
     need = po_remained_size = 0;
     
-    if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+    uint8_t mp_version = conn->conn_settings.multipath_version;
+    if (mp_version == XQC_MULTIPATH_3E) {
+        /* draft-21 wire codepoint for PATH_ABANDON */
+        frame_type = XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21;
+
+    } else if (mp_version >= XQC_MULTIPATH_10) {
         /* same frame type in 05 and 06 */
         frame_type = XQC_TRANS_FRAME_TYPE_MP_ABANDON;
 
@@ -2519,9 +2524,12 @@ xqc_gen_path_abandon_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
 
     need = xqc_vint_len(frame_type_bits)
            + xqc_vint_len(path_id_bits)
-           + xqc_vint_len(error_code_bits)
-           + xqc_vint_len(reason_len_bits)
-           + reason_len;
+           + xqc_vint_len(error_code_bits);
+
+    if (mp_version != XQC_MULTIPATH_3E) {
+        /* draft-10: Reason Phrase Length + Reason Phrase */
+        need += xqc_vint_len(reason_len_bits) + reason_len;
+    }
 
     po_remained_size = xqc_get_po_remained_size(packet_out);
 
@@ -2542,14 +2550,15 @@ xqc_gen_path_abandon_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
     xqc_vint_write(dst_buf, error_code, error_code_bits, xqc_vint_len(error_code_bits));
     dst_buf += xqc_vint_len(error_code_bits);
 
-    /* Reason Phrase Length (i) */
-    xqc_vint_write(dst_buf, reason_len, reason_len_bits, xqc_vint_len(reason_len_bits));
-    dst_buf += xqc_vint_len(reason_len_bits);
+    if (mp_version != XQC_MULTIPATH_3E) {
+        /* draft-10: Reason Phrase Length (i) + Reason Phrase (..) */
+        xqc_vint_write(dst_buf, reason_len, reason_len_bits, xqc_vint_len(reason_len_bits));
+        dst_buf += xqc_vint_len(reason_len_bits);
 
-    /* Reason Phrase (..) */
-    if (reason_len > 0) {
-        xqc_memcpy(dst_buf, reason, reason_len);
-        dst_buf += reason_len;
+        if (reason_len > 0) {
+            xqc_memcpy(dst_buf, reason, reason_len);
+            dst_buf += reason_len;
+        }
     }
 
     packet_out->po_frame_types |= XQC_FRAME_BIT_PATH_ABANDON;

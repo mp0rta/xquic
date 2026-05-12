@@ -4,6 +4,8 @@
 #include "xquic/xqc_errno.h"
 #include "src/transport/xqc_frame_parser.h"
 #include "src/transport/xqc_packet_in.h"
+#include "src/transport/xqc_packet_out.h"
+#include "src/transport/xqc_conn.h"
 #include "xqc_mp21_compliance_test.h"
 
 /* Test helper: synthesize a minimal xqc_packet_in_t over `buf` and forward
@@ -125,4 +127,51 @@ void xqc_test_mp10_path_abandon_recv_with_reason_still_works(void)
     CU_ASSERT_EQUAL(path_id, 1);
     CU_ASSERT_EQUAL(error_code, 0x3e);
     CU_ASSERT_EQUAL(consumed, 5);
+}
+
+/* Test helper: drive xqc_gen_path_abandon_frame() with a minimal
+ * synthetic conn + packet_out. Returns bytes written on success or a
+ * negative error code.
+ */
+static ssize_t
+xqc_test_gen_path_abandon(unsigned char *out_buf, size_t out_cap,
+    uint64_t path_id, uint64_t error_code, uint8_t mp_version)
+{
+    xqc_connection_t *conn = calloc(1, sizeof(xqc_connection_t));
+    xqc_packet_out_t *po   = calloc(1, sizeof(xqc_packet_out_t));
+    if (!conn || !po) {
+        free(conn); free(po);
+        return -1;
+    }
+    conn->conn_settings.multipath_version = mp_version;
+    po->po_buf = out_buf;
+    po->po_buf_cap = out_cap;
+    po->po_buf_size = (unsigned int)out_cap;
+    po->po_used_size = 0;
+    po->po_reserved_size = 0;
+
+    ssize_t ret = xqc_gen_path_abandon_frame(conn, po, path_id, error_code);
+
+    free(conn);
+    free(po);
+    return ret;
+}
+
+void xqc_test_mp21_path_abandon_gen_no_reason(void)
+{
+    /* draft-21: generator must emit exactly 4 bytes — 2-byte type 0x3e75
+     * varint + 1-byte path_id + 1-byte error_code. The 5th buffer byte
+     * must NOT be touched (legacy code emitted a trailing 0x00 reason_len). */
+    unsigned char buf[16];
+    memset(buf, 0xaa, sizeof(buf));   /* sentinel */
+
+    ssize_t written = xqc_test_gen_path_abandon(buf, sizeof(buf),
+                                                1, 0x3e, XQC_MULTIPATH_3E);
+
+    CU_ASSERT_EQUAL(written, 4);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);    /* type high byte */
+    CU_ASSERT_EQUAL(buf[1], 0x75);    /* type low byte */
+    CU_ASSERT_EQUAL(buf[2], 0x01);    /* path_id */
+    CU_ASSERT_EQUAL(buf[3], 0x3e);    /* error_code */
+    CU_ASSERT_EQUAL(buf[4], 0xaa);    /* sentinel preserved — no reason_len */
 }
