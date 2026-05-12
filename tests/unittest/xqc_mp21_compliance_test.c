@@ -55,8 +55,10 @@ xqc_test_mp21_make_conn(const xqc_test_mp21_conn_params_t *p)
     conn->scid_set.user_scid.cid_len    = p ? p->scid_len : 8;
     conn->dcid_set.current_dcid.cid_len = p ? p->dcid_len : 8;
 
-    /* Avoid NULL deref from xqc_list iteration if guards run before
-     * fully-initialized cid lists are exercised. */
+    /* Initialize lists that xqc_process_frames and post-frame path lookup
+     * may traverse — avoids NULL deref in tests that exercise the dispatcher. */
+    xqc_init_list_head(&conn->conn_paths_list);
+
     return conn;
 }
 
@@ -1117,10 +1119,6 @@ xqc_test_mp21_paths_blocked_parse_and_discard(void)
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
     conn->conn_state = XQC_CONN_STATE_ESTABED;
-    /* xqc_process_frames does a post-switch path lookup against
-     * conn_paths_list — initialise to an empty list so the iteration
-     * terminates cleanly without a real engine fixture. */
-    xqc_init_list_head(&conn->conn_paths_list);
 
     /* PATHS_BLOCKED: type 0x3e7b (4B varint: 0x80 0x00 0x3e 0x7b)
      *               + Max Path ID = 8 (1B varint: 0x08) */
@@ -1157,10 +1155,6 @@ xqc_test_mp21_path_cids_blocked_parse_and_discard(void)
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
     conn->conn_state = XQC_CONN_STATE_ESTABED;
-    /* xqc_process_frames does a post-switch path lookup against
-     * conn_paths_list — initialise to an empty list so the iteration
-     * terminates cleanly without a real engine fixture. */
-    xqc_init_list_head(&conn->conn_paths_list);
 
     /* PATH_CIDS_BLOCKED: type 0x3e7c (4B varint: 0x80 0x00 0x3e 0x7c)
      *                  + Path ID = 1 (1B varint: 0x01)
