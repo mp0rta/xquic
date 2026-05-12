@@ -46,7 +46,7 @@ xqc_conn_settings_t internal_default_conn_settings = {
     .init_idle_time_out         = XQC_CONN_INITIAL_IDLE_TIMEOUT,
     .idle_time_out              = XQC_CONN_DEFAULT_IDLE_TIMEOUT,
     .enable_multipath           = 0,
-    .multipath_version          = XQC_MULTIPATH_10,
+    .multipath_version          = XQC_MULTIPATH_3E,  /* draft-21 default; dispatch still accepts XQC_MULTIPATH_10 for backward interop */
     .spurious_loss_detect_on    = 0,
     .anti_amplification_limit   = XQC_DEFAULT_ANTI_AMPLIFICATION_LIMIT,
     .keyupdate_pkt_threshold    = 0,
@@ -259,7 +259,7 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
         engine->default_conn_settings.multipath_version = settings->multipath_version;
 
     } else {
-        engine->default_conn_settings.multipath_version = XQC_MULTIPATH_10;
+        engine->default_conn_settings.multipath_version = XQC_MULTIPATH_3E;
     }
 
     if (settings->init_max_path_id == 0) {
@@ -789,7 +789,7 @@ xqc_conn_create(xqc_engine_t *engine, xqc_cid_t *dcid, xqc_cid_t *scid,
     }
 
     if (xqc_conn_is_current_mp_version_supported(xc->conn_settings.multipath_version) != XQC_OK) {
-        xc->conn_settings.multipath_version = XQC_MULTIPATH_10;
+        xc->conn_settings.multipath_version = XQC_MULTIPATH_3E;
     }
 
     if (xc->conn_settings.init_max_path_id == 0) {
