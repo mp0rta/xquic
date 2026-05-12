@@ -7,6 +7,7 @@
 #include "src/transport/xqc_packet_out.h"
 #include "src/transport/xqc_conn.h"
 #include "src/transport/xqc_recv_record.h"
+#include "src/transport/xqc_transport_params.h"
 #include "src/common/xqc_log.h"
 #include "xqc_mp21_compliance_test.h"
 
@@ -304,4 +305,98 @@ void xqc_test_mp21_path_ack_ecn_parse_skip(void)
 
     free(conn);
     free(log);
+}
+
+void xqc_test_mp21_init_max_path_id_tp_codepoint(void)
+{
+    /* draft-21 §3.1: initial_max_path_id has the IANA-final codepoint
+     * 0x3e in the transport-parameter id namespace (disjoint from frame
+     * TYPEs where 0x3e is PATH_ACK).
+     *
+     * (a) The new constant exists and equals 0x3e.
+     * (b) Decoder accepts the V21 codepoint and selects XQC_MULTIPATH_3E.
+     * (c) Decoder still accepts the V10 codepoint and selects XQC_MULTIPATH_10
+     *     (backwards compatibility during transition).
+     * (d) Encoder emits the V21 codepoint when params->multipath_version
+     *     == XQC_MULTIPATH_3E (the V10/V21 round-trip).
+     */
+    CU_ASSERT_EQUAL(XQC_TRANSPORT_PARAM_INIT_MAX_PATH_ID_V21, 0x3eULL);
+    CU_ASSERT_EQUAL(XQC_TRANSPORT_PARAM_INIT_MAX_PATH_ID_V10, 0x0f739bbc1b666d09ULL);
+
+    /* (b) hand-built TP buffer: { id=0x3e (1B varint), len=1 (1B), val=8 (1B) } */
+    uint8_t v21_buf[3] = { 0x3e, 0x01, 0x08 };
+    xqc_transport_params_t params;
+    xqc_init_transport_params(&params);
+    xqc_int_t ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_CLIENT_HELLO,
+                                                v21_buf, sizeof(v21_buf));
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(params.enable_multipath, 1);
+    CU_ASSERT_EQUAL(params.multipath_version, XQC_MULTIPATH_3E);
+    CU_ASSERT_EQUAL(params.init_max_path_id, 8);
+
+    /* (c) V10 codepoint: id 0x0f739bbc1b666d09 needs 8-byte varint encoding
+     * (prefix 0xc0 | top byte). xqc_put_varint will give us the wire bytes;
+     * for a hand-built test we use xqc_write_transport_params via a known
+     * V10-version params struct round-trip instead. */
+    xqc_transport_params_t v10_params;
+    xqc_init_transport_params(&v10_params);
+    v10_params.enable_multipath = 1;
+    v10_params.multipath_version = XQC_MULTIPATH_10;
+    v10_params.init_max_path_id = 8;
+
+    uint8_t v10_buf[64];
+    size_t v10_len = 0;
+    ret = xqc_encode_transport_params(&v10_params, XQC_TP_TYPE_CLIENT_HELLO,
+                                      v10_buf, sizeof(v10_buf), &v10_len);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_TRUE(v10_len > 0);
+
+    xqc_transport_params_t v10_decoded;
+    xqc_init_transport_params(&v10_decoded);
+    ret = xqc_decode_transport_params(&v10_decoded, XQC_TP_TYPE_CLIENT_HELLO,
+                                      v10_buf, v10_len);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(v10_decoded.enable_multipath, 1);
+    CU_ASSERT_EQUAL(v10_decoded.multipath_version, XQC_MULTIPATH_10);
+    CU_ASSERT_EQUAL(v10_decoded.init_max_path_id, 8);
+
+    /* (d) V21 encoder round-trip. */
+    xqc_transport_params_t v21_params;
+    xqc_init_transport_params(&v21_params);
+    v21_params.enable_multipath = 1;
+    v21_params.multipath_version = XQC_MULTIPATH_3E;
+    v21_params.init_max_path_id = 8;
+
+    uint8_t v21_enc_buf[64];
+    size_t v21_enc_len = 0;
+    ret = xqc_encode_transport_params(&v21_params, XQC_TP_TYPE_CLIENT_HELLO,
+                                      v21_enc_buf, sizeof(v21_enc_buf), &v21_enc_len);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_TRUE(v21_enc_len >= 3);
+    /* Encoder may emit additional default params before/after multipath;
+     * scan the buffer for the V21 codepoint sequence { 0x3e, 0x01, 0x08 }.
+     * Note: id 0x3e is a 1-byte varint; default-encoded fields will not
+     * begin with a 0x3e byte because the other in-use TP ids are either
+     * < 0x40 (and not equal to 0x3e) or >= 0x40 (and so start with a
+     * non-0x3e high-bit varint prefix). */
+    int found = 0;
+    for (size_t i = 0; i + 2 < v21_enc_len; ++i) {
+        if (v21_enc_buf[i] == 0x3e &&
+            v21_enc_buf[i + 1] == 0x01 &&
+            v21_enc_buf[i + 2] == 0x08) {
+            found = 1;
+            break;
+        }
+    }
+    CU_ASSERT_TRUE(found);
+
+    /* Decode round-trip back to confirm semantics survive. */
+    xqc_transport_params_t v21_rt;
+    xqc_init_transport_params(&v21_rt);
+    ret = xqc_decode_transport_params(&v21_rt, XQC_TP_TYPE_CLIENT_HELLO,
+                                      v21_enc_buf, v21_enc_len);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(v21_rt.enable_multipath, 1);
+    CU_ASSERT_EQUAL(v21_rt.multipath_version, XQC_MULTIPATH_3E);
+    CU_ASSERT_EQUAL(v21_rt.init_max_path_id, 8);
 }
