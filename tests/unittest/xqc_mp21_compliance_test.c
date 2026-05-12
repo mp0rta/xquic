@@ -25,8 +25,7 @@ xqc_test_parse_path_abandon(unsigned char *buf, size_t len,
     packet_in.buf_size = len;
     packet_in.pos = buf;
     packet_in.last = buf + len;
-    (void)mp_version;
-    xqc_int_t ret = xqc_parse_path_abandon_frame(&packet_in, path_id, error_code);
+    xqc_int_t ret = xqc_parse_path_abandon_frame(&packet_in, path_id, error_code, mp_version);
     if (consumed) {
         *consumed = (size_t)(packet_in.pos - buf);
     }
@@ -96,4 +95,34 @@ void xqc_test_mp21_path_abandon_recv_no_reason(void)
      * (the 0x00 PADDING byte) so total = 5. This assertion is the RED
      * that Task 7 will turn GREEN. */
     CU_ASSERT_EQUAL(consumed, 4);
+}
+
+void xqc_test_mp10_path_abandon_recv_with_reason_still_works(void)
+{
+    /* draft-10 layout: { Type, Path ID, Error Code, Reason Phrase Length,
+     * Reason Phrase }. xquic always emits reason_len=0, so wire is
+     * type + path_id + error_code + 0x00.
+     *
+     * We reuse the draft-21 type bytes (0x3e75) since the parser does not
+     * validate the type value — version dispatch is decided by the caller.
+     * The fifth byte 0x00 is the reason_len that the draft-10 path MUST
+     * consume; consumed therefore must be 5 (4 + reason_len byte).
+     */
+    unsigned char buf[16] = {0};
+    size_t off = 0;
+    buf[off++] = 0x7e; buf[off++] = 0x75;   /* type varint */
+    buf[off++] = 0x01;                       /* path_id */
+    buf[off++] = 0x3e;                       /* error_code */
+    buf[off++] = 0x00;                       /* reason_len = 0 (draft-10) */
+
+    uint64_t path_id = 0, error_code = 0;
+    size_t consumed = 0;
+    int ret = xqc_test_parse_path_abandon(buf, sizeof(buf), &path_id,
+                                          &error_code, &consumed,
+                                          XQC_MULTIPATH_10);
+
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(path_id, 1);
+    CU_ASSERT_EQUAL(error_code, 0x3e);
+    CU_ASSERT_EQUAL(consumed, 5);
 }

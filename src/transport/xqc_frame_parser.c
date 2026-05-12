@@ -2559,7 +2559,7 @@ xqc_gen_path_abandon_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
 
 xqc_int_t
 xqc_parse_path_abandon_frame(xqc_packet_in_t *packet_in,
-    uint64_t *path_id, uint64_t *error_code)
+    uint64_t *path_id, uint64_t *error_code, uint8_t multipath_version)
 {
     unsigned char *p = packet_in->pos;
     const unsigned char *end = packet_in->last;
@@ -2588,16 +2588,20 @@ xqc_parse_path_abandon_frame(xqc_packet_in_t *packet_in,
     }
     p += vlen;
 
-    /* Reason Phrase Length (i) */
-    vlen = xqc_vint_read(p, end, &reason_len);
-    if (vlen < 0) {
-        return -XQC_EVINTREAD;
-    }
-    p += vlen;
+    if (multipath_version == XQC_MULTIPATH_3E) {
+        /* draft-21 §4 (PATH_ABANDON): no Reason Phrase fields.
+         * Anything beyond Error Code belongs to the next frame. */
+    } else {
+        /* draft-10 era: Reason Phrase Length (i) + Reason Phrase (..) */
+        vlen = xqc_vint_read(p, end, &reason_len);
+        if (vlen < 0) {
+            return -XQC_EVINTREAD;
+        }
+        p += vlen;
 
-     /* Reason Phrase (..) */
-    if (reason_len > 0) {
-        p += reason_len;
+        if (reason_len > 0) {
+            p += reason_len;
+        }
     }
 
     packet_in->pos = p;
