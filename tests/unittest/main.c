@@ -42,6 +42,7 @@
 #include "xqc_fec_test.h"
 #include "xqc_ack_with_timestamp_test.h"
 #include "xqc_masque_test.h"
+#include "xqc_mp21_compliance_test.h"
 
 static int xqc_init_suite(void) { return 0; }
 static int xqc_clean_suite(void) { return 0; }
@@ -77,6 +78,7 @@ main()
         || !CU_add_test(pSuite, "xqc_test_masque", xqc_test_masque)
         || !CU_add_test(pSuite, "xqc_test_datagram_send_on_path", xqc_test_datagram_send_on_path)
         || !CU_add_test(pSuite, "xqc_test_datagram_frame_path_pinning", xqc_test_datagram_frame_path_pinning)
+        || !CU_add_test(pSuite, "test_mp21_version_enum", xqc_test_mp21_version_enum)
         || !CU_add_test(pSuite, "xqc_test_empty_pkt", xqc_test_empty_pkt)
         || !CU_add_test(pSuite, "xqc_test_engine_packet_process", xqc_test_engine_packet_process)
         || !CU_add_test(pSuite, "xqc_test_stream_frame", xqc_test_stream_frame)

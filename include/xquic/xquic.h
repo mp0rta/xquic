@@ -1315,7 +1315,8 @@ typedef struct xqc_linger_s {
 
 typedef enum {
     XQC_ERR_MULTIPATH_VERSION   = 0x00,
-    XQC_MULTIPATH_10            = 0x0a, 
+    XQC_MULTIPATH_10            = 0x0a,
+    XQC_MULTIPATH_3E            = 0x3e, /* draft-ietf-quic-multipath-21 wire codepoints */
 } xqc_multipath_version_t;
 
 typedef enum {
