@@ -249,6 +249,11 @@ void xqc_path_validate(xqc_path_ctx_t *path);
 
 xqc_int_t xqc_conn_is_current_mp_version_supported(xqc_multipath_version_t mp_version);
 
+/* draft-21 §3.1.1: receivers MUST treat path_id > local_max_path_id as
+ * PROTOCOL_VIOLATION. Returns XQC_OK on accept, -TRA_PROTOCOL_VIOLATION
+ * on reject (caller logs + XQC_CONN_ERR before propagating). */
+xqc_int_t xqc_validate_recv_path_id(xqc_connection_t *conn, uint64_t path_id);
+
 xqc_bool_t xqc_path_is_initial_path(xqc_path_ctx_t *path);
 
 void xqc_path_record_info(xqc_path_ctx_t *path, xqc_path_info_t *path_info);

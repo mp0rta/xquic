@@ -71,6 +71,31 @@ xqc_test_mp21_free_conn(xqc_connection_t *conn)
 }
 
 void
+xqc_test_mp21_validate_recv_path_id(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 4,
+        .remote_max_path_id = 4,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    /* Accept: path_id == local_max_path_id is the inclusive upper bound. */
+    CU_ASSERT_EQUAL(xqc_validate_recv_path_id(conn, 0), XQC_OK);
+    CU_ASSERT_EQUAL(xqc_validate_recv_path_id(conn, 4), XQC_OK);
+
+    /* Reject: path_id > local_max_path_id maps to PROTOCOL_VIOLATION. */
+    CU_ASSERT_EQUAL(xqc_validate_recv_path_id(conn, 5),
+                    -(xqc_int_t)TRA_PROTOCOL_VIOLATION);
+    CU_ASSERT_EQUAL(xqc_validate_recv_path_id(conn, 0xffffffffULL),
+                    -(xqc_int_t)TRA_PROTOCOL_VIOLATION);
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
 xqc_test_mp21_fixture_smoke(void)
 {
     xqc_test_mp21_conn_params_t p = {

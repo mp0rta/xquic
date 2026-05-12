@@ -1811,10 +1811,10 @@ xqc_process_ack_mp_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
         return XQC_OK;
     }
 
-    if (path_id > conn->local_max_path_id) {
+    if (xqc_validate_recv_path_id(conn, path_id) != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|path_id exceeds limit|path_id:%ui|limit:%ui|",
                 path_id, conn->local_max_path_id);
-        XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
     }
 
@@ -1825,7 +1825,7 @@ xqc_process_ack_mp_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     }
 
     if (path_to_be_acked->path_id != packet_in->pi_path_id) {
-        xqc_log(conn->log, XQC_LOG_DEBUG, 
+        xqc_log(conn->log, XQC_LOG_DEBUG,
                 "|ACK_MP received on a different path|ack_path_id:%ui|recv_path_id:%ui|",
                 path_to_be_acked->path_id,
                 packet_in->pi_path_id);
@@ -1870,10 +1870,10 @@ xqc_process_path_ack_ecn_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
         return XQC_OK;
     }
 
-    if (path_id > conn->local_max_path_id) {
+    if (xqc_validate_recv_path_id(conn, path_id) != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|path_id exceeds limit|path_id:%ui|limit:%ui|",
                 path_id, conn->local_max_path_id);
-        XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
     }
 
@@ -1924,10 +1924,10 @@ xqc_process_path_abandon_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
     }
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|path abandon|path_id:%ui|", path_id);
-    if (path_id > conn->local_max_path_id) {
+    if (xqc_validate_recv_path_id(conn, path_id) != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|path_id exceeds limit|path_id:%ui|limit:%ui|",
                 path_id, conn->local_max_path_id);
-        XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
     }
 
@@ -1981,10 +1981,10 @@ xqc_process_path_status_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|path status:%ui|path_id:%ui|", path_status, path_id);
 
-    if (path_id > conn->local_max_path_id) {
+    if (xqc_validate_recv_path_id(conn, path_id) != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|path_id exceeds limit|path_id:%ui|limit:%ui|",
                 path_id, conn->local_max_path_id);
-        XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
     }
 
@@ -2032,11 +2032,11 @@ xqc_process_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
         return ret;
     }
 
-    if (path_id > conn->local_max_path_id) {
-        xqc_log(conn->log, XQC_LOG_ERROR, 
+    if (xqc_validate_recv_path_id(conn, path_id) != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
                 "|path_id exceeds limit|path_id:%ui|limit:%ui|",
                 path_id, conn->local_max_path_id);
-        XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
     }
 
@@ -2181,11 +2181,11 @@ xqc_process_mp_retire_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *pac
         return XQC_OK;
     }
 
-    if (path_id > conn->local_max_path_id) {
+    if (xqc_validate_recv_path_id(conn, path_id) != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR,
                 "|path_id exceeds limit|path_id:%ui|limit:%ui|",
                 path_id, conn->local_max_path_id);
-        XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
     }
 

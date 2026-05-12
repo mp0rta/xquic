@@ -73,6 +73,21 @@ xqc_path_destroy(xqc_path_ctx_t *path)
     xqc_free((void *)path);
 }
 
+/* draft-21 §3.1.1 — path_id MUST NOT exceed local_max_path_id. The
+ * common-case caller chain is "frame parsed -> validate -> frame handler",
+ * so this helper exists to keep the boilerplate consistent across the
+ * six PATH_* / MAX_PATH_ID processors in xqc_frame.c. The caller is
+ * responsible for the XQC_CONN_ERR + log statement to preserve the
+ * existing frame-specific log format. */
+xqc_int_t
+xqc_validate_recv_path_id(xqc_connection_t *conn, uint64_t path_id)
+{
+    if (path_id > conn->local_max_path_id) {
+        return -TRA_PROTOCOL_VIOLATION;
+    }
+    return XQC_OK;
+}
+
 xqc_path_ctx_t *
 xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid, xqc_cid_t *dcid, uint64_t path_id)
 {
