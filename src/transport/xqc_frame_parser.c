@@ -19,6 +19,24 @@
 static size_t xqc_write_packet_receive_timestamps_into_buf(xqc_connection_t *conn, unsigned char *dst_buf, size_t dst_buf_len,
     xqc_recv_timestamps_info_t *recv_timestamps, uint64_t po_largest_ack);
 
+/* F3: select the wire frame-type codepoint for the negotiated multipath
+ * version. Used by MP frame generators with a clean cp_v10/cp_v21 split
+ * (ACK_MP, PATH_ABANDON, MP_NEW_CONN_ID, MP_RETIRE_CONN_ID, MAX_PATH_ID).
+ * Returns -XQC_EMP_INVALID_MP_VERTION for any unrecognised version. */
+static inline xqc_int_t
+xqc_mp_select_codepoint(uint8_t mp_version, uint64_t cp_v10, uint64_t cp_v21,
+                        uint64_t *out)
+{
+    if (mp_version == XQC_MULTIPATH_3E) {
+        *out = cp_v21;
+    } else if (mp_version == XQC_MULTIPATH_10) {
+        *out = cp_v10;
+    } else {
+        return -XQC_EMP_INVALID_MP_VERTION;
+    }
+    return XQC_OK;
+}
+
 /**
  * generate datagram frame
  */
@@ -2242,17 +2260,13 @@ xqc_gen_ack_mp_frame(xqc_connection_t *conn, uint64_t path_id,
     int *has_gap, xqc_packet_number_t *largest_ack)
 {
     uint64_t frame_type;
-
     uint8_t mp_version = conn->conn_settings.multipath_version;
-    if (mp_version == XQC_MULTIPATH_3E) {
-        /* draft-21 §4.1: PATH_ACK codepoint 0x3e (1-byte varint) */
-        frame_type = XQC_TRANS_FRAME_TYPE_PATH_ACK;
-
-    } else if (mp_version == XQC_MULTIPATH_10) {
-        frame_type = XQC_TRANS_FRAME_TYPE_MP_ACK0;
-
-    } else {
-        return -XQC_EMP_INVALID_MP_VERTION;
+    /* draft-21 §4.1: PATH_ACK codepoint 0x3e (1-byte varint) */
+    xqc_int_t cp_ret = xqc_mp_select_codepoint(mp_version,
+        XQC_TRANS_FRAME_TYPE_MP_ACK0, XQC_TRANS_FRAME_TYPE_PATH_ACK,
+        &frame_type);
+    if (cp_ret != XQC_OK) {
+        return cp_ret;
     }
 
     unsigned char *dst_buf = packet_out->po_buf + packet_out->po_used_size;
@@ -2549,16 +2563,14 @@ xqc_gen_path_abandon_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
     need = po_remained_size = 0;
     
     uint8_t mp_version = conn->conn_settings.multipath_version;
-    if (mp_version == XQC_MULTIPATH_3E) {
-        /* draft-21 wire codepoint for PATH_ABANDON */
-        frame_type = XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21;
-
-    } else if (mp_version >= XQC_MULTIPATH_10) {
-        /* same frame type in 05 and 06 */
-        frame_type = XQC_TRANS_FRAME_TYPE_MP_ABANDON;
-
-    } else {
-        return -XQC_EMP_INVALID_MP_VERTION;
+    /* draft-21 wire codepoint for PATH_ABANDON vs draft-10 MP_ABANDON.
+     * (Note: the prior >= MULTIPATH_10 form is equivalent to == given the
+     * current enum has only two values; tightened to match other generators.) */
+    xqc_int_t cp_ret = xqc_mp_select_codepoint(mp_version,
+        XQC_TRANS_FRAME_TYPE_MP_ABANDON, XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21,
+        &frame_type);
+    if (cp_ret != XQC_OK) {
+        return cp_ret;
     }
 
     uint64_t reason_len = 0;
@@ -2615,7 +2627,7 @@ xqc_gen_path_abandon_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
 
 xqc_int_t
 xqc_parse_path_abandon_frame(xqc_packet_in_t *packet_in,
-    uint64_t *path_id, uint64_t *error_code, uint8_t multipath_version)
+    uint64_t *path_id, uint64_t *error_code, uint8_t mp_version)
 {
     unsigned char *p = packet_in->pos;
     const unsigned char *end = packet_in->last;
@@ -2644,7 +2656,7 @@ xqc_parse_path_abandon_frame(xqc_packet_in_t *packet_in,
     }
     p += vlen;
 
-    if (multipath_version == XQC_MULTIPATH_3E) {
+    if (mp_version == XQC_MULTIPATH_3E) {
         /* draft-21 §4 (PATH_ABANDON): no Reason Phrase fields.
          * Anything beyond Error Code belongs to the next frame. */
     } else {
@@ -2827,16 +2839,16 @@ xqc_gen_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_ou
     unsigned char *dst_buf = packet_out->po_buf + packet_out->po_used_size;
     const unsigned char *begin = dst_buf;
 
-    /* write frame type — branch on negotiated multipath version */
+    /* write frame type — branch on negotiated multipath version
+     * (draft-21 §4.6: PATH_NEW_CONNECTION_ID codepoint 0x3e78). */
     uint64_t frame_type;
     uint8_t mp_version = conn->conn_settings.multipath_version;
-    if (mp_version == XQC_MULTIPATH_3E) {
-        /* draft-21 §4.6: PATH_NEW_CONNECTION_ID codepoint 0x3e78 */
-        frame_type = XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21;
-    } else if (mp_version == XQC_MULTIPATH_10) {
-        frame_type = XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID;
-    } else {
-        return -XQC_EMP_INVALID_MP_VERTION;
+    xqc_int_t cp_ret = xqc_mp_select_codepoint(mp_version,
+        XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID,
+        XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21,
+        &frame_type);
+    if (cp_ret != XQC_OK) {
+        return cp_ret;
     }
     unsigned frame_type_bits = xqc_vint_get_2bit(frame_type);
     xqc_vint_write(dst_buf, frame_type, frame_type_bits, xqc_vint_len(frame_type_bits));
@@ -2968,16 +2980,16 @@ xqc_gen_mp_retire_conn_id_frame(xqc_connection_t *conn, xqc_packet_out_t *packet
     unsigned char *dst_buf = packet_out->po_buf + packet_out->po_used_size;
     const unsigned char *begin = dst_buf;
 
-    /* write frame type — branch on negotiated multipath version */
+    /* write frame type — branch on negotiated multipath version
+     * (draft-21 §4.7: PATH_RETIRE_CONNECTION_ID codepoint 0x3e79). */
     uint64_t frame_type;
     uint8_t mp_version = conn->conn_settings.multipath_version;
-    if (mp_version == XQC_MULTIPATH_3E) {
-        /* draft-21 §4.7: PATH_RETIRE_CONNECTION_ID codepoint 0x3e79 */
-        frame_type = XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21;
-    } else if (mp_version == XQC_MULTIPATH_10) {
-        frame_type = XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID;
-    } else {
-        return -XQC_EMP_INVALID_MP_VERTION;
+    xqc_int_t cp_ret = xqc_mp_select_codepoint(mp_version,
+        XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID,
+        XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21,
+        &frame_type);
+    if (cp_ret != XQC_OK) {
+        return cp_ret;
     }
     unsigned frame_type_bits = xqc_vint_get_2bit(frame_type);
     xqc_vint_write(dst_buf, frame_type, frame_type_bits, xqc_vint_len(frame_type_bits));
@@ -3047,16 +3059,16 @@ xqc_gen_max_path_id_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out, 
     unsigned char *dst_buf = packet_out->po_buf + packet_out->po_used_size;
     const unsigned char *begin = dst_buf;
 
-    /* write frame type — branch on negotiated multipath version */
+    /* write frame type — branch on negotiated multipath version
+     * (draft-21 §4.8: MAX_PATH_ID codepoint 0x3e7a). */
     uint64_t frame_type;
     uint8_t mp_version = conn->conn_settings.multipath_version;
-    if (mp_version == XQC_MULTIPATH_3E) {
-        /* draft-21 §4.8: MAX_PATH_ID codepoint 0x3e7a */
-        frame_type = XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21;
-    } else if (mp_version == XQC_MULTIPATH_10) {
-        frame_type = XQC_TRANS_FRAME_TYPE_MAX_PATH_ID;
-    } else {
-        return -XQC_EMP_INVALID_MP_VERTION;
+    xqc_int_t cp_ret = xqc_mp_select_codepoint(mp_version,
+        XQC_TRANS_FRAME_TYPE_MAX_PATH_ID,
+        XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21,
+        &frame_type);
+    if (cp_ret != XQC_OK) {
+        return cp_ret;
     }
     unsigned frame_type_bits = xqc_vint_get_2bit(frame_type);
     xqc_vint_write(dst_buf, frame_type, frame_type_bits, xqc_vint_len(frame_type_bits));

@@ -34,7 +34,13 @@
  * silently ignores the codepoint to remain spec-correct on its own side. */
 #define XQC_TRANS_FRAME_TYPE_MP_FROZEN                  0x15228cff
 
-/* draft-ietf-quic-multipath-21 frame types (IANA permanent registry) */
+/* draft-ietf-quic-multipath-21 frame types (IANA permanent registry).
+ *
+ * Naming convention: draft-21 frame TYPE constants carry a "_V21" suffix
+ * ONLY when their unsuffixed name would collide with a draft-10 constant
+ * (e.g. PATH_ABANDON_V21 vs the draft-10 MP_ABANDON-era symbolic name).
+ * New draft-21 names with no draft-10 analog (PATH_ACK, PATH_STATUS_BACKUP,
+ * PATHS_BLOCKED, PATH_CIDS_BLOCKED) carry no suffix. */
 #define XQC_TRANS_FRAME_TYPE_PATH_ACK                       0x3eULL
 #define XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN                   0x3fULL
 #define XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21               0x3e75ULL
@@ -172,7 +178,7 @@ ssize_t xqc_gen_path_abandon_frame(xqc_connection_t *conn,
     xqc_packet_out_t *packet_out, uint64_t path_id, uint64_t error_code);
 
 xqc_int_t xqc_parse_path_abandon_frame(xqc_packet_in_t *packet_in,
-    uint64_t *path_id, uint64_t *error_code, uint8_t multipath_version);
+    uint64_t *path_id, uint64_t *error_code, uint8_t mp_version);
 
 ssize_t xqc_gen_path_status_frame(xqc_connection_t *conn,
     xqc_packet_out_t *packet_out,
