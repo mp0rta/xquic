@@ -73,10 +73,95 @@ xqc_path_destroy(xqc_path_ctx_t *path)
     xqc_free((void *)path);
 }
 
+/* draft-21 §3.1.1 — path_id MUST NOT exceed local_max_path_id. The
+ * common-case caller chain is "frame parsed -> validate -> frame handler",
+ * so this helper exists to keep the boilerplate consistent across the
+ * six PATH_* / MAX_PATH_ID processors in xqc_frame.c. The caller is
+ * responsible for the XQC_CONN_ERR + log statement to preserve the
+ * existing frame-specific log format. */
+xqc_int_t
+xqc_validate_recv_path_id(xqc_connection_t *conn, uint64_t path_id)
+{
+    if (path_id > conn->local_max_path_id) {
+        return -TRA_PROTOCOL_VIOLATION;
+    }
+    return XQC_OK;
+}
+
+/* draft-21 §3.1: once multipath is negotiated (initial_max_path_id TP
+ * present on both sides), zero-length Source/Destination Connection IDs
+ * are forbidden. Packets are demultiplexed across paths by DCID, so a
+ * zero-length CID would collapse the per-path identity. Either endpoint
+ * observing scid_len == 0 or dcid_len == 0 on a multipath connection
+ * MUST close with PROTOCOL_VIOLATION. Returns XQC_OK when both lengths
+ * are non-zero, -TRA_PROTOCOL_VIOLATION otherwise. */
+xqc_int_t
+xqc_validate_mp_cid_lengths(uint8_t scid_len, uint8_t dcid_len)
+{
+    if (scid_len == 0 || dcid_len == 0) {
+        return -TRA_PROTOCOL_VIOLATION;
+    }
+    return XQC_OK;
+}
+
+#define XQC_ABANDONED_PATH_BITMAP_BITS  256
+
+void
+xqc_conn_mark_path_abandoned(xqc_connection_t *conn, uint64_t path_id)
+{
+    if (path_id >= XQC_ABANDONED_PATH_BITMAP_BITS) {
+        xqc_log(conn->log, XQC_LOG_WARN,
+                "|abandoned bitmap saturated|path_id %ui >= %d"
+                "|silent-ignore semantics degraded"
+                "|TODO bump XQC_ABANDONED_PATH_BITMAP_BITS or switch to hash set|",
+                path_id, XQC_ABANDONED_PATH_BITMAP_BITS);
+        return;
+    }
+    conn->abandoned_path_ids[path_id >> 6] |= (uint64_t)1 << (path_id & 63);
+}
+
+xqc_bool_t
+xqc_conn_is_path_abandoned(xqc_connection_t *conn, uint64_t path_id)
+{
+    if (path_id >= XQC_ABANDONED_PATH_BITMAP_BITS) {
+        xqc_log(conn->log, XQC_LOG_WARN,
+                "|abandoned bitmap saturated|path_id %ui >= %d"
+                "|silent-ignore semantics degraded"
+                "|TODO bump XQC_ABANDONED_PATH_BITMAP_BITS or switch to hash set|",
+                path_id, XQC_ABANDONED_PATH_BITMAP_BITS);
+        return XQC_FALSE;
+    }
+    return (conn->abandoned_path_ids[path_id >> 6] & ((uint64_t)1 << (path_id & 63)))
+            ? XQC_TRUE : XQC_FALSE;
+}
+
+xqc_max_path_id_validation_t
+xqc_validate_max_path_id(xqc_connection_t *conn, uint64_t value)
+{
+    if (value > 0xFFFFFFFFULL) {
+        return XQC_MAX_PATH_ID_BAD_TOO_LARGE;
+    }
+    if (value < conn->remote_settings.init_max_path_id) {
+        return XQC_MAX_PATH_ID_BAD_BELOW_INIT;
+    }
+    if (value <= conn->remote_max_path_id) {
+        return XQC_MAX_PATH_ID_IGNORE_STALE;
+    }
+    return XQC_MAX_PATH_ID_ACCEPT;
+}
+
 xqc_path_ctx_t *
 xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid, xqc_cid_t *dcid, uint64_t path_id)
 {
     xqc_path_ctx_t *path = NULL;
+
+    /* draft-21 §4.5: an Abandoned path_id MUST NOT be recycled by the
+     * local endpoint. Refuse before any allocation. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|refuse to recycle abandoned path_id|%ui|", path_id);
+        return NULL;
+    }
 
     if (conn->create_path_count >= XQC_MAX_PATHS_COUNT) {
         xqc_log(conn->log, XQC_LOG_ERROR, 
@@ -379,11 +464,14 @@ xqc_conn_enable_multipath(xqc_connection_t *conn)
     if ((conn->local_settings.enable_multipath == 1)
         && (conn->remote_settings.enable_multipath == 1))
     {
-        if (conn->dcid_set.current_dcid.cid_len == 0
-            || conn->scid_set.user_scid.cid_len == 0) 
+        if (xqc_validate_mp_cid_lengths(conn->scid_set.user_scid.cid_len,
+                                        conn->dcid_set.current_dcid.cid_len) != XQC_OK)
         {
-            xqc_log(conn->log, XQC_LOG_ERROR, "|zero-length DCID|");
-            XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|zero-length CID forbidden with multipath|scid:%ud|dcid:%ud|",
+                    conn->scid_set.user_scid.cid_len,
+                    conn->dcid_set.current_dcid.cid_len);
+            XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
             return XQC_CONN_MP_DISABLED;
         }
 
@@ -417,6 +505,7 @@ xqc_conn_is_current_mp_version_supported(xqc_multipath_version_t mp_version)
     xqc_int_t ret;
     switch (mp_version) {
     case XQC_MULTIPATH_10:
+    case XQC_MULTIPATH_3E:
         ret = XQC_OK;
         break;
     default:

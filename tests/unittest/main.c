@@ -42,6 +42,7 @@
 #include "xqc_fec_test.h"
 #include "xqc_ack_with_timestamp_test.h"
 #include "xqc_masque_test.h"
+#include "xqc_mp21_compliance_test.h"
 
 static int xqc_init_suite(void) { return 0; }
 static int xqc_clean_suite(void) { return 0; }
@@ -77,6 +78,33 @@ main()
         || !CU_add_test(pSuite, "xqc_test_masque", xqc_test_masque)
         || !CU_add_test(pSuite, "xqc_test_datagram_send_on_path", xqc_test_datagram_send_on_path)
         || !CU_add_test(pSuite, "xqc_test_datagram_frame_path_pinning", xqc_test_datagram_frame_path_pinning)
+        || !CU_add_test(pSuite, "xqc_test_mp21_version_enum", xqc_test_mp21_version_enum)
+        || !CU_add_test(pSuite, "xqc_test_mp21_frame_type_constants", xqc_test_mp21_frame_type_constants)
+        || !CU_add_test(pSuite, "xqc_test_mp21_path_abandon_recv_no_reason", xqc_test_mp21_path_abandon_recv_no_reason)
+        || !CU_add_test(pSuite, "xqc_test_mp10_path_abandon_recv_with_reason_still_works", xqc_test_mp10_path_abandon_recv_with_reason_still_works)
+        || !CU_add_test(pSuite, "xqc_test_mp21_path_abandon_gen_no_reason", xqc_test_mp21_path_abandon_gen_no_reason)
+        || !CU_add_test(pSuite, "xqc_test_mp21_dual_version_dispatch", xqc_test_mp21_dual_version_dispatch)
+        || !CU_add_test(pSuite, "xqc_test_mp21_path_ack_ecn_parse_skip", xqc_test_mp21_path_ack_ecn_parse_skip)
+        || !CU_add_test(pSuite, "xqc_test_mp21_init_max_path_id_tp_codepoint", xqc_test_mp21_init_max_path_id_tp_codepoint)
+        || !CU_add_test(pSuite, "xqc_test_mp21_fixture_smoke", xqc_test_mp21_fixture_smoke)
+        || !CU_add_test(pSuite, "xqc_test_mp21_validate_recv_path_id", xqc_test_mp21_validate_recv_path_id)
+        || !CU_add_test(pSuite, "xqc_test_mp21_max_path_id_validation", xqc_test_mp21_max_path_id_validation)
+        || !CU_add_test(pSuite, "xqc_test_mp21_init_max_path_id_upper_bound", xqc_test_mp21_init_max_path_id_upper_bound)
+        || !CU_add_test(pSuite, "xqc_test_mp21_aead_nonce_min_length", xqc_test_mp21_aead_nonce_min_length)
+        || !CU_add_test(pSuite, "xqc_test_mp21_mp_frame_1rtt_only", xqc_test_mp21_mp_frame_1rtt_only)
+        || !CU_add_test(pSuite, "xqc_test_mp21_path_new_conn_id_cid_len_guard", xqc_test_mp21_path_new_conn_id_cid_len_guard)
+        || !CU_add_test(pSuite, "xqc_test_mp21_non_zero_cid_constraint", xqc_test_mp21_non_zero_cid_constraint)
+        || !CU_add_test(pSuite, "xqc_test_mp21_abandoned_path_silently_ignored", xqc_test_mp21_abandoned_path_silently_ignored)
+        || !CU_add_test(pSuite, "xqc_test_mp21_duplicate_path_abandon_short_circuit", xqc_test_mp21_duplicate_path_abandon_short_circuit)
+        || !CU_add_test(pSuite, "xqc_test_mp21_path_create_refuses_abandoned", xqc_test_mp21_path_create_refuses_abandoned)
+        || !CU_add_test(pSuite, "xqc_test_mp21_aead_nonce_check_tls_wrapper", xqc_test_mp21_aead_nonce_check_tls_wrapper)
+        || !CU_add_test(pSuite, "xqc_test_mp21_gen_path_status_dual_version", xqc_test_mp21_gen_path_status_dual_version)
+        || !CU_add_test(pSuite, "xqc_test_mp21_gen_mp_new_conn_id_dual_version", xqc_test_mp21_gen_mp_new_conn_id_dual_version)
+        || !CU_add_test(pSuite, "xqc_test_mp21_gen_mp_retire_conn_id_dual_version", xqc_test_mp21_gen_mp_retire_conn_id_dual_version)
+        || !CU_add_test(pSuite, "xqc_test_mp21_gen_max_path_id_dual_version", xqc_test_mp21_gen_max_path_id_dual_version)
+        || !CU_add_test(pSuite, "xqc_test_mp21_gen_ack_mp_dual_version", xqc_test_mp21_gen_ack_mp_dual_version)
+        || !CU_add_test(pSuite, "xqc_test_mp21_paths_blocked_parse_and_discard", xqc_test_mp21_paths_blocked_parse_and_discard)
+        || !CU_add_test(pSuite, "xqc_test_mp21_path_cids_blocked_parse_and_discard", xqc_test_mp21_path_cids_blocked_parse_and_discard)
         || !CU_add_test(pSuite, "xqc_test_empty_pkt", xqc_test_empty_pkt)
         || !CU_add_test(pSuite, "xqc_test_engine_packet_process", xqc_test_engine_packet_process)
         || !CU_add_test(pSuite, "xqc_test_stream_frame", xqc_test_stream_frame)

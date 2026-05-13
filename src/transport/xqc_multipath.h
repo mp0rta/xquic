@@ -249,6 +249,36 @@ void xqc_path_validate(xqc_path_ctx_t *path);
 
 xqc_int_t xqc_conn_is_current_mp_version_supported(xqc_multipath_version_t mp_version);
 
+/* draft-21 §3.1.1: receivers MUST treat path_id > local_max_path_id as
+ * PROTOCOL_VIOLATION. Returns XQC_OK on accept, -TRA_PROTOCOL_VIOLATION
+ * on reject (caller logs + XQC_CONN_ERR before propagating). */
+xqc_int_t xqc_validate_recv_path_id(xqc_connection_t *conn, uint64_t path_id);
+
+/* draft-21 §4.6: MAX_PATH_ID validation outcome. Pure (no side effects);
+ * caller is responsible for state updates / error reporting. */
+typedef enum {
+    XQC_MAX_PATH_ID_ACCEPT       = 0,   /* value > remote_max_path_id, growth */
+    XQC_MAX_PATH_ID_IGNORE_STALE = 1,   /* value <= remote_max_path_id        */
+    XQC_MAX_PATH_ID_BAD_TOO_LARGE = 2,  /* value > 2^32-1 -> VIOLATION        */
+    XQC_MAX_PATH_ID_BAD_BELOW_INIT = 3, /* value < remote initial -> VIOLATION */
+} xqc_max_path_id_validation_t;
+
+xqc_max_path_id_validation_t xqc_validate_max_path_id(xqc_connection_t *conn,
+                                                      uint64_t value);
+
+/* draft-21 §3.1: zero-length CIDs are forbidden once multipath is
+ * negotiated — packets are demultiplexed by DCID across paths, so a
+ * zero-length CID would collapse the per-path identity. Returns XQC_OK
+ * when both scid_len and dcid_len are non-zero, -TRA_PROTOCOL_VIOLATION
+ * otherwise. */
+xqc_int_t xqc_validate_mp_cid_lengths(uint8_t scid_len, uint8_t dcid_len);
+
+/* draft-21 §4.5 abandoned-path bookkeeping. Bitmap is sized to 256 ids;
+ * path_id values outside that range are clamped (treated as not abandoned)
+ * — the validate_recv_path_id helper has already enforced the cap. */
+void      xqc_conn_mark_path_abandoned(xqc_connection_t *conn, uint64_t path_id);
+xqc_bool_t xqc_conn_is_path_abandoned(xqc_connection_t *conn, uint64_t path_id);
+
 xqc_bool_t xqc_path_is_initial_path(xqc_path_ctx_t *path);
 
 void xqc_path_record_info(xqc_path_ctx_t *path, xqc_path_info_t *path_info);

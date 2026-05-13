@@ -31,17 +31,11 @@ typedef enum {
 } xqc_trans_err_code_t;
 
 
-/**
- * @brief Multipath error codes
- *
- * The value exceeds INT_MAX. MSVC's C compiler always uses int as the
- * underlying type for plain enum, silently truncating it — which would
- * cause CONNECTION_CLOSE on multipath protocol violations to send the
- * wrong error code (low 32 bits only) on Windows builds. Define as a
- * uint64_t macro with a typedef-aliased uint64_t for API stability.
- */
-typedef uint64_t xqc_mp_err_code_t;
-#define TRA_MP_PROTOCOL_VIOLATION ((xqc_mp_err_code_t)0x1001d76d3ded42f3ULL)
+/* draft-ietf-quic-multipath-21 error codes for PATH_ABANDON Error Code field */
+#define TRA_APPLICATION_ABANDON_PATH        0x3eULL
+#define TRA_PATH_RESOURCE_LIMIT_REACHED     0x3e75ULL
+#define TRA_PATH_UNSTABLE_OR_POOR           0x3e76ULL
+#define TRA_NO_CID_AVAILABLE_FOR_PATH       0x3e77ULL
 
 
 #define TRA_CRYPTO_ERROR_BASE   0x100

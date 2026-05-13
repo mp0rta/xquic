@@ -172,6 +172,47 @@ xqc_insert_stream_frame(xqc_connection_t *conn, xqc_stream_t *stream, xqc_stream
 }
 
 
+/* draft-21 §4: every multipath-specific frame is forbidden in Initial /
+ * Handshake / 0-RTT packets. Enumerates both the draft-10 codepoints
+ * (still wire-active until Chunk 5's default flip) and the draft-21
+ * codepoints. ACK_EXT (0xB1) is not multipath-specific and is excluded. */
+static inline int
+xqc_frame_is_mp(uint64_t frame_type)
+{
+    switch (frame_type) {
+    /* draft-10 codepoints */
+    case XQC_TRANS_FRAME_TYPE_MP_ACK0:
+    case XQC_TRANS_FRAME_TYPE_MP_ACK1:
+    case XQC_TRANS_FRAME_TYPE_MP_ABANDON:
+    case XQC_TRANS_FRAME_TYPE_MP_STANDBY:
+    case XQC_TRANS_FRAME_TYPE_MP_AVAILABLE:
+    case XQC_TRANS_FRAME_TYPE_MP_FROZEN:
+    case XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID:
+    case XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID:
+    case XQC_TRANS_FRAME_TYPE_MAX_PATH_ID:
+    /* draft-21 codepoints */
+    case XQC_TRANS_FRAME_TYPE_PATH_ACK:
+    case XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN:
+    case XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21:
+    case XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP:
+    case XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21:
+    case XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21:
+    case XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21:
+    case XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21:
+    case XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED:
+    case XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+int
+xqc_frame_is_mp_public(uint64_t frame_type)
+{
+    return xqc_frame_is_mp(frame_type);
+}
+
 xqc_int_t
 xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 {
@@ -211,6 +252,19 @@ xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
         }
 
         xqc_log(conn->log, XQC_LOG_DEBUG, "|frame_type:%xL|", frame_type);
+
+        /* draft-21 §4: MP frames are 1-RTT only. Reject if received in
+         * Initial / Handshake / 0-RTT (long-header) packets. FEC-recovered
+         * packets retain SHORT_HEADER pkt_type so this guard is safe. */
+        if (xqc_frame_is_mp(frame_type)
+            && packet_in->pi_pkt.pkt_type != XQC_PTYPE_SHORT_HEADER)
+        {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|MP frame in non-1RTT pkt|frame_type:%xL|pkt_type:%d|",
+                    frame_type, packet_in->pi_pkt.pkt_type);
+            XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
+            return -XQC_EILLEGAL_FRAME;
+        }
 
         switch (frame_type) {
 
@@ -294,69 +348,208 @@ xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
             break;
         case XQC_TRANS_FRAME_TYPE_MP_ACK0:
         case XQC_TRANS_FRAME_TYPE_MP_ACK1:
-            if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_ack_mp_frame(conn, packet_in);
 
             } else {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|", 
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+        case XQC_TRANS_FRAME_TYPE_PATH_ACK:
+            /* draft-21 §4.1 PATH_ACK — same wire as ACK_MP minus the
+             * version-gated codepoint; reuse the existing recovery path. */
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_ack_mp_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+        case XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN:
+            /* draft-21 §4.1 PATH_ACK_ECN — Chunk 3 Task 11 parse-only:
+             * trailing ECN Counts varints are read and discarded. */
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_path_ack_ecn_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
                         conn->conn_settings.multipath_version, frame_type);
                 ret = -XQC_EMP_INVALID_MP_VERTION;
             }
             break;
         case XQC_TRANS_FRAME_TYPE_MP_ABANDON:
-            if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_path_abandon_frame(conn, packet_in);
 
             } else {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|", 
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
                         conn->conn_settings.multipath_version, frame_type);
                 ret = -XQC_EMP_INVALID_MP_VERTION;
             }
             break;
-        
+        case XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21:
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_path_abandon_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+
         case XQC_TRANS_FRAME_TYPE_MP_STANDBY:
         case XQC_TRANS_FRAME_TYPE_MP_AVAILABLE:
-        case XQC_TRANS_FRAME_TYPE_MP_FROZEN:
-            if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_path_status_frame(conn, packet_in);
 
             } else {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|", 
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+        case XQC_TRANS_FRAME_TYPE_MP_FROZEN:
+            /* xquic vendor extension (not in any IETF draft). Only valid on
+             * XQC_MULTIPATH_10. On a draft-21 (XQC_MULTIPATH_3E) connection
+             * the codepoint does not exist; parse-and-discard to remain
+             * spec-correct on our side (a conformant draft-21 peer would
+             * never emit it, but a misbehaving impl must not desync us). */
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
+                ret = xqc_process_path_status_frame(conn, packet_in);
+
+            } else {
+                uint64_t _pid = 0, _seq = 0, _st = 0;
+                xqc_log(conn->log, XQC_LOG_WARN,
+                        "|MP_FROZEN ignored on draft-21 conn|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = xqc_parse_path_status_frame(packet_in, &_pid, &_seq, &_st);
+                if (ret == XQC_OK) {
+                    /* discard parsed status */
+                    (void)_pid; (void)_seq; (void)_st;
+                }
+            }
+            break;
+        case XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP:
+        case XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21:
+            /* draft-21 §4.4 renamed STANDBY → BACKUP (semantics identical) */
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_path_status_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
                         conn->conn_settings.multipath_version, frame_type);
                 ret = -XQC_EMP_INVALID_MP_VERTION;
             }
             break;
 
         case XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID:
-            if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_mp_new_conn_id_frame(conn, packet_in);
 
             } else {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|", 
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+        case XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21:
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_mp_new_conn_id_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
                         conn->conn_settings.multipath_version, frame_type);
                 ret = -XQC_EMP_INVALID_MP_VERTION;
             }
             break;
         case XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID:
-            if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_mp_retire_conn_id_frame(conn, packet_in);
 
             } else {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|", 
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+        case XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21:
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_mp_retire_conn_id_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
                         conn->conn_settings.multipath_version, frame_type);
                 ret = -XQC_EMP_INVALID_MP_VERTION;
             }
             break;
         case XQC_TRANS_FRAME_TYPE_MAX_PATH_ID:
-            if (conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_max_path_id_frame(conn, packet_in);
 
             } else {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|", 
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
                         conn->conn_settings.multipath_version, frame_type);
                 ret = -XQC_EMP_INVALID_MP_VERTION;
             }
             break;
+        case XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21:
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_3E) {
+                ret = xqc_process_max_path_id_frame(conn, packet_in);
+
+            } else {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+
+        /* draft-21 §4.7: PATHS_BLOCKED / PATH_CIDS_BLOCKED are informational
+         * ("an endpoint MAY use these frames"). L1+ parse-and-discard so a
+         * compliant peer that emits them is interop-clean; full receive-
+         * validation + send-side emission is L2 scope. */
+        case XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED: {
+            /* Payload: Maximum Path Identifier (varint). */
+            uint64_t max_path_id_val = 0;
+            ssize_t  vlen;
+            /* advance past frame type (already read above) */
+            packet_in->pos += frame_type_len;
+            vlen = xqc_vint_read(packet_in->pos, packet_in->last, &max_path_id_val);
+            if (vlen < 0) {
+                return -XQC_EVINTREAD;
+            }
+            packet_in->pos += vlen;
+            xqc_log(conn->log, XQC_LOG_INFO,
+                    "|received PATHS_BLOCKED (informational, L2 deferred)"
+                    "|max_path_id:%ui|", max_path_id_val);
+            ret = XQC_OK;
+            break;
+        }
+        case XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED: {
+            /* Payload: Path Identifier (varint), Next Sequence Number (varint). */
+            uint64_t pid_val = 0, next_seq_val = 0;
+            ssize_t  vlen;
+            packet_in->pos += frame_type_len;
+            vlen = xqc_vint_read(packet_in->pos, packet_in->last, &pid_val);
+            if (vlen < 0) {
+                return -XQC_EVINTREAD;
+            }
+            packet_in->pos += vlen;
+            vlen = xqc_vint_read(packet_in->pos, packet_in->last, &next_seq_val);
+            if (vlen < 0) {
+                return -XQC_EVINTREAD;
+            }
+            packet_in->pos += vlen;
+            xqc_log(conn->log, XQC_LOG_INFO,
+                    "|received PATH_CIDS_BLOCKED (informational, L2 deferred)"
+                    "|path_id:%ui|next_seq:%ui|", pid_val, next_seq_val);
+            ret = XQC_OK;
+            break;
+        }
 
 #ifdef XQC_ENABLE_FEC
         case 0xfec5:
@@ -1736,11 +1929,17 @@ xqc_process_ack_mp_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
         return XQC_OK;
     }
 
-    if (path_id > conn->local_max_path_id) {
+    if (xqc_validate_recv_path_id(conn, path_id) != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|path_id exceeds limit|path_id:%ui|limit:%ui|",
                 path_id, conn->local_max_path_id);
-        XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
+    }
+    /* draft-21 §4.5: silently ignore MP frames for already-Abandoned paths. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|ignore MP frame for abandoned path|path_id:%ui|", path_id);
+        return XQC_OK;
     }
 
     xqc_path_ctx_t *path_to_be_acked = xqc_conn_find_path_by_path_id(conn, path_id);
@@ -1750,7 +1949,7 @@ xqc_process_ack_mp_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     }
 
     if (path_to_be_acked->path_id != packet_in->pi_path_id) {
-        xqc_log(conn->log, XQC_LOG_DEBUG, 
+        xqc_log(conn->log, XQC_LOG_DEBUG,
                 "|ACK_MP received on a different path|ack_path_id:%ui|recv_path_id:%ui|",
                 path_to_be_acked->path_id,
                 packet_in->pi_path_id);
@@ -1775,6 +1974,71 @@ xqc_process_ack_mp_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 }
 
 xqc_int_t
+xqc_process_path_ack_ecn_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
+{
+    /* draft-21 §4.1: PATH_ACK_ECN reuses PATH_ACK semantics for recovery,
+     * with three trailing ECN Counts varints. Chunk 3 is parse-only — the
+     * ECN counts are read and discarded by xqc_parse_path_ack_ecn_frame.
+     */
+    xqc_int_t ret;
+
+    xqc_ack_info_t ack_info;
+    uint64_t path_id = 0;
+    ret = xqc_parse_path_ack_ecn_frame(packet_in, conn, &path_id, &ack_info);
+    if (ret != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_parse_path_ack_ecn_frame error|");
+        return ret;
+    }
+
+    if ((packet_in->pi_flag & XQC_PIF_FEC_RECOVERED) != 0) {
+        return XQC_OK;
+    }
+
+    if (xqc_validate_recv_path_id(conn, path_id) != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|path_id exceeds limit|path_id:%ui|limit:%ui|",
+                path_id, conn->local_max_path_id);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
+        return -XQC_EILLEGAL_FRAME;
+    }
+    /* draft-21 §4.5: silently ignore MP frames for already-Abandoned paths. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|ignore MP frame for abandoned path|path_id:%ui|", path_id);
+        return XQC_OK;
+    }
+
+    xqc_path_ctx_t *path_to_be_acked = xqc_conn_find_path_by_path_id(conn, path_id);
+    if (path_to_be_acked == NULL) {
+        xqc_log(conn->log, XQC_LOG_INFO, "|ignore unknown path|path:%ui|", path_id);
+        return XQC_OK;
+    }
+
+    if (path_to_be_acked->path_id != packet_in->pi_path_id) {
+        xqc_log(conn->log, XQC_LOG_DEBUG,
+                "|PATH_ACK_ECN received on a different path|ack_path_id:%ui|recv_path_id:%ui|",
+                path_to_be_acked->path_id,
+                packet_in->pi_path_id);
+    }
+
+    for (int i = 0; i < ack_info.n_ranges; i++) {
+        xqc_log_event(conn->log, TRA_PACKETS_ACKED, packet_in, ack_info.ranges[i].high,
+            ack_info.ranges[i].low, path_to_be_acked->path_id);
+    }
+
+    xqc_pn_ctl_t *pn_ctl = xqc_get_pn_ctl(conn, path_to_be_acked);
+
+    ret = xqc_send_ctl_on_ack_received(path_to_be_acked->path_send_ctl, pn_ctl, conn->conn_send_queue,
+                                       &ack_info, packet_in->pkt_recv_time,
+                                       path_to_be_acked->path_id == packet_in->pi_path_id);
+    if (ret != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_send_ctl_on_ack_received error|");
+        return ret;
+    }
+
+    return XQC_OK;
+}
+
+xqc_int_t
 xqc_process_path_abandon_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 {
     xqc_int_t ret = XQC_ERROR;
@@ -1782,19 +2046,34 @@ xqc_process_path_abandon_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
     uint64_t path_id = 0;
     uint64_t error_code;
 
-    ret = xqc_parse_path_abandon_frame(packet_in, &path_id, &error_code);
+    ret = xqc_parse_path_abandon_frame(packet_in, &path_id, &error_code,
+                                       conn->conn_settings.multipath_version);
     if (ret != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_parse_path_abandon_frame error|");
         return ret;
     }
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|path abandon|path_id:%ui|", path_id);
-    if (path_id > conn->local_max_path_id) {
+    if (xqc_validate_recv_path_id(conn, path_id) != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|path_id exceeds limit|path_id:%ui|limit:%ui|",
                 path_id, conn->local_max_path_id);
-        XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
     }
+
+    /* draft-21 §4.5: a duplicate PATH_ABANDON for an already-abandoned
+     * path_id is silently ignored, symmetric with the other 5 MP frame
+     * processors. Without this, the second arrival would re-run the full
+     * release-path path below (immediate_close, CID state churn) and
+     * risk double-free corner cases. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        return XQC_OK;
+    }
+
+    /* draft-21 §4.5: record the abandoned path_id so subsequent MP frames
+     * for the same id are silently ignored (Task 22) and xqc_path_create
+     * refuses to recycle it (Task 23). */
+    xqc_conn_mark_path_abandoned(conn, path_id);
 
     //MPQUIC: path associated cid resources should be released and path id should be consumed anyway
     xqc_path_ctx_t *path = xqc_conn_find_path_by_path_id(conn, path_id);
@@ -1846,11 +2125,17 @@ xqc_process_path_status_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|path status:%ui|path_id:%ui|", path_status, path_id);
 
-    if (path_id > conn->local_max_path_id) {
+    if (xqc_validate_recv_path_id(conn, path_id) != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|path_id exceeds limit|path_id:%ui|limit:%ui|",
                 path_id, conn->local_max_path_id);
-        XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
+    }
+    /* draft-21 §4.5: silently ignore status updates for abandoned paths. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|ignore PATH_STATUS for abandoned path|path_id:%ui|", path_id);
+        return XQC_OK;
     }
 
     xqc_path_ctx_t *path = xqc_conn_find_path_by_path_id(conn, path_id);
@@ -1894,15 +2179,25 @@ xqc_process_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
     if (ret != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR,
                 "|xqc_parse_new_conn_id_frame error|");
+        /* draft-21 §4.7: Length out of [1, 20] is FRAME_ENCODING_ERROR. */
+        if (ret == -XQC_EPROTO) {
+            XQC_CONN_ERR(conn, TRA_FRAME_ENCODING_ERROR);
+        }
         return ret;
     }
 
-    if (path_id > conn->local_max_path_id) {
-        xqc_log(conn->log, XQC_LOG_ERROR, 
+    if (xqc_validate_recv_path_id(conn, path_id) != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
                 "|path_id exceeds limit|path_id:%ui|limit:%ui|",
                 path_id, conn->local_max_path_id);
-        XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
+    }
+    /* draft-21 §4.5: silently ignore NEW_CID for abandoned paths. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|ignore PATH_NEW_CID for abandoned path|path_id:%ui|", path_id);
+        return XQC_OK;
     }
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|new_conn_id|%s|sr_token:%s",
@@ -2046,12 +2341,18 @@ xqc_process_mp_retire_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *pac
         return XQC_OK;
     }
 
-    if (path_id > conn->local_max_path_id) {
+    if (xqc_validate_recv_path_id(conn, path_id) != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR,
                 "|path_id exceeds limit|path_id:%ui|limit:%ui|",
                 path_id, conn->local_max_path_id);
-        XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EILLEGAL_FRAME;
+    }
+    /* draft-21 §4.5: silently ignore RETIRE_CID for abandoned paths. */
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|ignore PATH_RETIRE_CID for abandoned path|path_id:%ui|", path_id);
+        return XQC_OK;
     }
 
     largest_scid_seq_num = xqc_cid_set_get_largest_seq_or_rpt(&conn->scid_set, path_id);
@@ -2132,16 +2433,37 @@ xqc_process_max_path_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
     xqc_log(conn->log, XQC_LOG_DEBUG,
             "|max_path_id:%ui|prev_max_path_id:%ui|", max_path_id, conn->remote_max_path_id);
 
-    if (conn->remote_max_path_id < max_path_id) {
-        conn->remote_max_path_id = max_path_id;
-        new_max_path_id = xqc_min(conn->local_max_path_id, conn->remote_max_path_id);
-        if (new_max_path_id > conn->curr_max_path_id) {
-            if (xqc_conn_add_path_cid_sets(conn, conn->curr_max_path_id + 1, new_max_path_id) != XQC_OK) {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|add_path_cid_sets_error|");
-                return -XQC_EMALLOC;
-            }
-            conn->curr_max_path_id = new_max_path_id;
+    xqc_max_path_id_validation_t v = xqc_validate_max_path_id(conn, max_path_id);
+    switch (v) {
+    case XQC_MAX_PATH_ID_BAD_TOO_LARGE:
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|MAX_PATH_ID exceeds 2^32-1|value:%ui|", max_path_id);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
+        return -XQC_EILLEGAL_FRAME;
+    case XQC_MAX_PATH_ID_BAD_BELOW_INIT:
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|MAX_PATH_ID below remote initial_max_path_id|value:%ui|init:%ui|",
+                max_path_id, conn->remote_settings.init_max_path_id);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
+        return -XQC_EILLEGAL_FRAME;
+    case XQC_MAX_PATH_ID_IGNORE_STALE:
+        xqc_log(conn->log, XQC_LOG_DEBUG,
+                "|MAX_PATH_ID stale, ignored|value:%ui|cur:%ui|",
+                max_path_id, conn->remote_max_path_id);
+        return XQC_OK;
+    case XQC_MAX_PATH_ID_ACCEPT:
+    default:
+        break;
+    }
+
+    conn->remote_max_path_id = max_path_id;
+    new_max_path_id = xqc_min(conn->local_max_path_id, conn->remote_max_path_id);
+    if (new_max_path_id > conn->curr_max_path_id) {
+        if (xqc_conn_add_path_cid_sets(conn, conn->curr_max_path_id + 1, new_max_path_id) != XQC_OK) {
+            xqc_log(conn->log, XQC_LOG_ERROR, "|add_path_cid_sets_error|");
+            return -XQC_EMALLOC;
         }
+        conn->curr_max_path_id = new_max_path_id;
     }
 
     return ret;
