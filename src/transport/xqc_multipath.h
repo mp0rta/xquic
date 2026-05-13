@@ -266,6 +266,24 @@ typedef enum {
 xqc_max_path_id_validation_t xqc_validate_max_path_id(xqc_connection_t *conn,
                                                       uint64_t value);
 
+/* draft-21 §3.2.1 / §4.6 mp21 L2 — MAX_PATH_ID credit grant.
+ * Increment applied per grant when granting auto-credit on PATHS_BLOCKED
+ * receipt. Magnitude is implementation-defined (spec unspec); chosen to
+ * give peer ~8 fresh paths per grant which matches typical XQC_MAX_PATHS
+ * deployments. */
+#define XQC_MAX_PATH_ID_GRANT_INCREMENT  8
+
+/* Evaluate whether a MAX_PATH_ID credit grant should fire on receipt of
+ * PATHS_BLOCKED. Side-effects: when the grant fires, advances
+ * conn->local_max_path_id and updates conn->last_max_path_id_grant_us.
+ * Returns the new local_max_path_id to emit (>0) or 0 when no grant
+ * fires (disabled, at cap, rate-limited, or initial path missing PTO).
+ *
+ * Caller is responsible for emitting the MAX_PATH_ID frame when the
+ * return value is non-zero. Splitting state mutation from emission lets
+ * tests exercise the gate without a fully-wired send queue. */
+uint64_t xqc_try_grant_max_path_id(xqc_connection_t *conn);
+
 /* draft-21 §3.1: zero-length CIDs are forbidden once multipath is
  * negotiated — packets are demultiplexed by DCID across paths, so a
  * zero-length CID would collapse the per-path identity. Returns XQC_OK

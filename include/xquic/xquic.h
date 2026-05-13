@@ -1540,7 +1540,20 @@ typedef struct xqc_conn_settings_s {
     uint8_t                     client_scid[XQC_MAX_CID_LEN];
     uint8_t                     specify_client_dcid;
     uint8_t                     client_dcid[XQC_MAX_CID_LEN];
-    
+
+    /* draft-21 §3.2.1 / §4.6 MAX_PATH_ID credit grant policy (mp21 L2).
+     *
+     * When the peer sends PATHS_BLOCKED, the local endpoint MAY grant
+     * additional path-id credit by emitting a MAX_PATH_ID frame. Granting
+     * is permissive per spec ("can" in §2.1 / §4.6), so default 0 means
+     * grant is disabled (initial_max_path_id is never grown). Operators
+     * that want auto-grant set this to the desired hard cap (typically
+     * <= 2^32-1); each grant is sized by XQC_MAX_PATH_ID_GRANT_INCREMENT
+     * (default 8) and rate-limited to one grant per PTO. Append-only
+     * field — zero-initialized for ABI-compat with pre-L2 consumers.
+     */
+    uint64_t                    max_path_id_grant_max_value;
+
 } xqc_conn_settings_t;
 
 

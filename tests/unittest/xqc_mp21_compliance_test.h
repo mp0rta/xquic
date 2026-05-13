@@ -56,8 +56,16 @@ void xqc_test_mp21_gen_mp_retire_conn_id_dual_version(void);
 void xqc_test_mp21_gen_max_path_id_dual_version(void);
 void xqc_test_mp21_gen_ack_mp_dual_version(void);
 
-/* draft-21 §4.7 informational frames: parse-and-discard at L1+. */
-void xqc_test_mp21_paths_blocked_parse_and_discard(void);
-void xqc_test_mp21_path_cids_blocked_parse_and_discard(void);
+/* draft-21 §4.7 informational frames: mp21 L2 M1 full receive validation
+ * (renamed from L1+ "_parse_and_discard" — bodies now cover the violation/
+ * ignore matrix specified by the L2 plan §M1). */
+void xqc_test_mp21_paths_blocked_validation(void);
+void xqc_test_mp21_path_cids_blocked_validation(void);
+
+/* mp21 L2 M3 — MAX_PATH_ID credit grant gate behaviour. */
+void xqc_test_mp21_max_path_id_grant_disabled_by_default(void);
+void xqc_test_mp21_max_path_id_grant_trigger_on_paths_blocked(void);
+void xqc_test_mp21_max_path_id_grant_skipped_at_max(void);
+void xqc_test_mp21_max_path_id_grant_rate_limited(void);
 
 #endif /* _XQC_MP21_COMPLIANCE_TEST_H */

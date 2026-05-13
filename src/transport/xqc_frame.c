@@ -250,27 +250,6 @@ xqc_mp_recv_path_id_gate(xqc_connection_t *conn, uint64_t path_id,
     return XQC_MP_RECV_GATE_OK;
 }
 
-/* F5: parse-and-discard helper for draft-21 §4.7 informational frames
- * (PATHS_BLOCKED, PATH_CIDS_BLOCKED). Caller must have already advanced
- * packet_in->pos past the frame-type bytes. Reads n_varints varints and
- * logs at INFO level; full receive validation + emission is L2 scope. */
-static xqc_int_t
-xqc_parse_and_discard_varints(xqc_packet_in_t *packet_in, size_t n_varints,
-                              xqc_log_t *log, const char *frame_name)
-{
-    for (size_t i = 0; i < n_varints; i++) {
-        uint64_t val = 0;
-        ssize_t  vlen = xqc_vint_read(packet_in->pos, packet_in->last, &val);
-        if (vlen < 0) {
-            return -XQC_EVINTREAD;
-        }
-        packet_in->pos += vlen;
-    }
-    xqc_log(log, XQC_LOG_INFO,
-            "|%s|received and discarded (L2 deferred)|", frame_name);
-    return XQC_OK;
-}
-
 /* F1: MP frame dispatch table — replaces ~100 lines of mp_version-gated
  * switch arms. Each entry maps a wire frame type + required negotiated
  * multipath version to its processor. MP_FROZEN and the blocked-frames
@@ -303,6 +282,9 @@ static const xqc_mp_frame_dispatch_t xqc_mp_frame_dispatch_table[] = {
     { XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21,    XQC_MULTIPATH_3E, xqc_process_mp_new_conn_id_frame },
     { XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21, XQC_MULTIPATH_3E, xqc_process_mp_retire_conn_id_frame },
     { XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21,               XQC_MULTIPATH_3E, xqc_process_max_path_id_frame    },
+    /* draft-21 §4.7 informational frames (mp21 L2 M1 full validation) */
+    { XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED,                 XQC_MULTIPATH_3E, xqc_process_paths_blocked_frame      },
+    { XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED,             XQC_MULTIPATH_3E, xqc_process_path_cids_blocked_frame  },
 };
 
 static xqc_int_t
@@ -503,21 +485,11 @@ xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
             ret = xqc_dispatch_mp_frame(conn, packet_in, frame_type);
             break;
 
-        /* draft-21 §4.7: PATHS_BLOCKED / PATH_CIDS_BLOCKED are informational
-         * ("an endpoint MAY use these frames"). L1+ parse-and-discard so a
-         * compliant peer that emits them is interop-clean; full receive-
-         * validation + send-side emission is L2 scope. */
+        /* draft-21 §4.7 informational frames — full receive validation
+         * (mp21 L2 M1). Dispatched via xqc_mp_frame_dispatch_table. */
         case XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED:
-            /* Payload: Maximum Path Identifier (varint). */
-            packet_in->pos += frame_type_len;
-            ret = xqc_parse_and_discard_varints(packet_in, 1, conn->log,
-                                                "PATHS_BLOCKED");
-            break;
         case XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED:
-            /* Payload: Path Identifier (varint), Next Sequence Number (varint). */
-            packet_in->pos += frame_type_len;
-            ret = xqc_parse_and_discard_varints(packet_in, 2, conn->log,
-                                                "PATH_CIDS_BLOCKED");
+            ret = xqc_dispatch_mp_frame(conn, packet_in, frame_type);
             break;
 
 #ifdef XQC_ENABLE_FEC
@@ -2362,6 +2334,124 @@ xqc_process_max_path_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
     }
 
     return ret;
+}
+
+/* draft-21 §4.7 PATHS_BLOCKED receive validation (mp21 L2 M1).
+ *
+ * Spec §4.7 verbatim:
+ *   "Receipt of a value of Maximum Path Identifier or Path Identifier
+ *    that is higher than the local maximum value MUST be treated as a
+ *    connection error of type PROTOCOL_VIOLATION."
+ *
+ * Implementation choice (spec silent on <=): silently ignore when the
+ * peer reports a Maximum Path Identifier <= our local_max_path_id. The
+ * frame is purely informational; no persistent state required.
+ *
+ * §3.2.1 grant trigger (mp21 L2 M3) is invoked inline below when
+ * conn_settings.max_path_id_grant_max_value > 0.
+ */
+xqc_int_t
+xqc_process_paths_blocked_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
+{
+    uint64_t max_path_id = 0;
+    xqc_int_t ret = xqc_parse_paths_blocked_frame(packet_in, &max_path_id);
+    if (ret != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_parse_paths_blocked_frame error|");
+        return ret;
+    }
+
+    /* spec §4.7 MUST: peer-reported Maximum Path Identifier > our
+     * local_max_path_id is PROTOCOL_VIOLATION. */
+    if (max_path_id > conn->local_max_path_id) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|PATHS_BLOCKED max_path_id exceeds local limit"
+                "|peer_max:%ui|local_max:%ui|",
+                max_path_id, conn->local_max_path_id);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
+        return -XQC_EILLEGAL_FRAME;
+    }
+
+    xqc_log(conn->log, XQC_LOG_INFO,
+            "|PATHS_BLOCKED received|peer_max:%ui|local_max:%ui|",
+            max_path_id, conn->local_max_path_id);
+
+    /* mp21 L2 M3 — auto credit grant gate. Returns the new local_max
+     * value to emit, or 0 if no grant fires. The arithmetic is
+     * factored to xqc_try_grant_max_path_id() so tests can drive the
+     * gate without needing a fully-wired send queue. */
+    uint64_t grant_value = xqc_try_grant_max_path_id(conn);
+    if (grant_value > 0) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|MAX_PATH_ID auto-grant|new_local_max:%ui|",
+                grant_value);
+        (void)xqc_write_max_path_id_to_packet(conn, grant_value);
+    }
+
+    return XQC_OK;
+}
+
+/* draft-21 §4.7 PATH_CIDS_BLOCKED receive validation (mp21 L2 M1).
+ *
+ * Spec §4.7 verbatim (Maximum-/Path-Identifier MUST clause is shared
+ * with PATHS_BLOCKED; see xqc_process_paths_blocked_frame). For Next
+ * Sequence Number, spec §4.7 verbatim:
+ *   "Receipt of a value of Next Sequence Number that is higher than the
+ *    sequence number of the next expected to be issued connection ID for
+ *    this path MUST be treated as a connection error of type
+ *    PROTOCOL_VIOLATION."
+ *
+ * "next expected to be issued connection ID for this path by the peer"
+ * (spec §4.7 Path Identifier description) — the sender is the peer, so
+ * "by the peer" refers to us, the receiver. We compute next_expected
+ * from our scid_set (CIDs we issue) as largest_seq + 1.
+ *
+ * Implementation choices (spec silent):
+ *  - path_id ∈ abandoned set → silently ignore (matches §4.5 semantics)
+ *  - Next Sequence Number <= next_expected → silently ignore
+ */
+xqc_int_t
+xqc_process_path_cids_blocked_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
+{
+    uint64_t path_id = 0;
+    uint64_t next_seq = 0;
+
+    xqc_int_t ret = xqc_parse_path_cids_blocked_frame(packet_in, &path_id, &next_seq);
+    if (ret != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|xqc_parse_path_cids_blocked_frame error|");
+        return ret;
+    }
+
+    /* path_id range check + abandoned-path silent-ignore. */
+    xqc_mp_recv_gate_t g = xqc_mp_recv_path_id_gate(conn, path_id, "PATH_CIDS_BLOCKED");
+    if (g == XQC_MP_RECV_GATE_ERROR) {
+        return -XQC_EILLEGAL_FRAME;
+    }
+    if (g == XQC_MP_RECV_GATE_IGNORE) {
+        return XQC_OK;
+    }
+
+    /* Compute next_expected = largest seq of CIDs we have issued for
+     * this path + 1. Missing per-path scid_set entry → treat as
+     * not-yet-issued (next_expected = 0); peer claiming any seq > 0 is
+     * PROTOCOL_VIOLATION. */
+    int64_t largest = xqc_cid_set_get_largest_seq_or_rpt(&conn->scid_set, path_id);
+    uint64_t next_expected = (largest < 0) ? 0 : (uint64_t)largest + 1;
+
+    if (next_seq > next_expected) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|PATH_CIDS_BLOCKED Next Seq exceeds next_expected"
+                "|path_id:%ui|next_seq:%ui|next_expected:%ui|",
+                path_id, next_seq, next_expected);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
+        return -XQC_EILLEGAL_FRAME;
+    }
+
+    xqc_log(conn->log, XQC_LOG_INFO,
+            "|PATH_CIDS_BLOCKED received|path_id:%ui|next_seq:%ui"
+            "|next_expected:%ui|",
+            path_id, next_seq, next_expected);
+    return XQC_OK;
 }
 
 #ifdef XQC_ENABLE_FEC
