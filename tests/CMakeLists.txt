@@ -122,6 +122,8 @@ if(HAVE_CUNIT)
         ${UNIT_TEST_DIR}/xqc_ack_with_timestamp_test.c
         ${UNIT_TEST_DIR}/xqc_masque_test.c
         ${UNIT_TEST_DIR}/xqc_mp21_compliance_test.c
+        ${UNIT_TEST_DIR}/xqc_test_helpers.c
+        ${UNIT_TEST_DIR}/xqc_test_helpers_test.c
     )
 
     if(XQC_ENABLE_FEC)

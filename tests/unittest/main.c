@@ -43,6 +43,7 @@
 #include "xqc_ack_with_timestamp_test.h"
 #include "xqc_masque_test.h"
 #include "xqc_mp21_compliance_test.h"
+#include "xqc_test_helpers.h"
 
 static int xqc_init_suite(void) { return 0; }
 static int xqc_clean_suite(void) { return 0; }
@@ -109,6 +110,7 @@ main()
         || !CU_add_test(pSuite, "xqc_test_mp21_max_path_id_grant_trigger_on_paths_blocked", xqc_test_mp21_max_path_id_grant_trigger_on_paths_blocked)
         || !CU_add_test(pSuite, "xqc_test_mp21_max_path_id_grant_skipped_at_max", xqc_test_mp21_max_path_id_grant_skipped_at_max)
         || !CU_add_test(pSuite, "xqc_test_mp21_max_path_id_grant_rate_limited", xqc_test_mp21_max_path_id_grant_rate_limited)
+        || !CU_add_test(pSuite, "xqc_test_helpers_smoke", xqc_test_helpers_smoke)
         || !CU_add_test(pSuite, "xqc_test_empty_pkt", xqc_test_empty_pkt)
         || !CU_add_test(pSuite, "xqc_test_engine_packet_process", xqc_test_engine_packet_process)
         || !CU_add_test(pSuite, "xqc_test_stream_frame", xqc_test_stream_frame)
@@ -142,7 +144,7 @@ main()
         || !CU_add_test(pSuite, "xqc_test_fec", xqc_test_fec)
 #endif
         || !CU_add_test(pSuite, "xqc_test_ack_with_timestamp", xqc_test_ack_with_timestamp)
-        /* ADD TESTS HERE */) 
+        /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();
         return (int)CU_get_error();
