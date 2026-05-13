@@ -213,6 +213,27 @@ xqc_frame_is_mp_public(uint64_t frame_type)
     return xqc_frame_is_mp(frame_type);
 }
 
+/* F5: parse-and-discard helper for draft-21 §4.7 informational frames
+ * (PATHS_BLOCKED, PATH_CIDS_BLOCKED). Caller must have already advanced
+ * packet_in->pos past the frame-type bytes. Reads n_varints varints and
+ * logs at INFO level; full receive validation + emission is L2 scope. */
+static xqc_int_t
+xqc_parse_and_discard_varints(xqc_packet_in_t *packet_in, size_t n_varints,
+                              xqc_log_t *log, const char *frame_name)
+{
+    for (size_t i = 0; i < n_varints; i++) {
+        uint64_t val = 0;
+        ssize_t  vlen = xqc_vint_read(packet_in->pos, packet_in->last, &val);
+        if (vlen < 0) {
+            return -XQC_EVINTREAD;
+        }
+        packet_in->pos += vlen;
+    }
+    xqc_log(log, XQC_LOG_INFO,
+            "|%s|received and discarded (L2 deferred)|", frame_name);
+    return XQC_OK;
+}
+
 xqc_int_t
 xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 {
@@ -512,44 +533,18 @@ xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
          * ("an endpoint MAY use these frames"). L1+ parse-and-discard so a
          * compliant peer that emits them is interop-clean; full receive-
          * validation + send-side emission is L2 scope. */
-        case XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED: {
+        case XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED:
             /* Payload: Maximum Path Identifier (varint). */
-            uint64_t max_path_id_val = 0;
-            ssize_t  vlen;
-            /* advance past frame type (already read above) */
             packet_in->pos += frame_type_len;
-            vlen = xqc_vint_read(packet_in->pos, packet_in->last, &max_path_id_val);
-            if (vlen < 0) {
-                return -XQC_EVINTREAD;
-            }
-            packet_in->pos += vlen;
-            xqc_log(conn->log, XQC_LOG_INFO,
-                    "|received PATHS_BLOCKED (informational, L2 deferred)"
-                    "|max_path_id:%ui|", max_path_id_val);
-            ret = XQC_OK;
+            ret = xqc_parse_and_discard_varints(packet_in, 1, conn->log,
+                                                "PATHS_BLOCKED");
             break;
-        }
-        case XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED: {
+        case XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED:
             /* Payload: Path Identifier (varint), Next Sequence Number (varint). */
-            uint64_t pid_val = 0, next_seq_val = 0;
-            ssize_t  vlen;
             packet_in->pos += frame_type_len;
-            vlen = xqc_vint_read(packet_in->pos, packet_in->last, &pid_val);
-            if (vlen < 0) {
-                return -XQC_EVINTREAD;
-            }
-            packet_in->pos += vlen;
-            vlen = xqc_vint_read(packet_in->pos, packet_in->last, &next_seq_val);
-            if (vlen < 0) {
-                return -XQC_EVINTREAD;
-            }
-            packet_in->pos += vlen;
-            xqc_log(conn->log, XQC_LOG_INFO,
-                    "|received PATH_CIDS_BLOCKED (informational, L2 deferred)"
-                    "|path_id:%ui|next_seq:%ui|", pid_val, next_seq_val);
-            ret = XQC_OK;
+            ret = xqc_parse_and_discard_varints(packet_in, 2, conn->log,
+                                                "PATH_CIDS_BLOCKED");
             break;
-        }
 
 #ifdef XQC_ENABLE_FEC
         case 0xfec5:
