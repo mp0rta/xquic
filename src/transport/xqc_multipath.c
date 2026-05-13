@@ -196,19 +196,52 @@ xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid, xqc_cid_t *dcid, uint64
 {
     xqc_path_ctx_t *path = NULL;
 
-    /* draft-21 §4.5: an Abandoned path_id MUST NOT be recycled by the
-     * local endpoint. Refuse before any allocation. */
+    /* Stage 1: lightweight validation. No heavy allocation on failure.
+     * draft-21 §4.5: an Abandoned path_id MUST NOT be recycled by the
+     * local endpoint. §4.6: path_id MUST be <= max(remote init_max_path_id,
+     * local_max_path_id). */
+    if (path_id > conn->remote_settings.init_max_path_id
+        && path_id > conn->local_max_path_id) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|path_id %ui out of range|init=%ui|local=%ui|",
+                path_id, conn->remote_settings.init_max_path_id,
+                conn->local_max_path_id);
+        return NULL;
+    }
     if (xqc_conn_is_path_abandoned(conn, path_id)) {
         xqc_log(conn->log, XQC_LOG_ERROR,
                 "|refuse to recycle abandoned path_id|%ui|", path_id);
         return NULL;
     }
+    if (scid == NULL && xqc_cid_set_has_unused(&conn->scid_set, path_id) == 0) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|no unused scid for path_id|%ui|", path_id);
+        return NULL;
+    }
+    if (dcid == NULL && xqc_cid_set_has_unused(&conn->dcid_set, path_id) == 0) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|no unused dcid for path_id|%ui|", path_id);
+        return NULL;
+    }
 
+    /* Stage 2: defensive hard cap. */
+    if (conn->create_path_count >= XQC_PATH_HARD_CAP) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|hard cap reached|%d paths active, cap=%d|",
+                conn->create_path_count, XQC_PATH_HARD_CAP);
+        return NULL;
+    }
+
+    /* TODO(Chunk 2): drop legacy XQC_MAX_PATHS_COUNT now superseded by
+     * XQC_PATH_HARD_CAP. Keeping during Chunk 1 to preserve existing
+     * behaviour for paths_info-style consumers. */
     if (conn->create_path_count >= XQC_MAX_PATHS_COUNT) {
-        xqc_log(conn->log, XQC_LOG_ERROR, 
+        xqc_log(conn->log, XQC_LOG_ERROR,
                 "|too many paths|current maximum:%d|", XQC_MAX_PATHS_COUNT);
         return NULL;
     }
+
+    /* Stage 3: heavy allocation. */
 
     path = xqc_calloc(1, sizeof(xqc_path_ctx_t));
     if (path == NULL) {
