@@ -9,5 +9,6 @@
 #define XQC_TEST_PATH_HARD_CAP_H
 
 void test_path_create_no_heavy_state_on_validation_fail(void);
+void test_path_create_hard_cap_stress(void);
 
 #endif /* XQC_TEST_PATH_HARD_CAP_H */

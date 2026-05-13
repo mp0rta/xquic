@@ -60,3 +60,14 @@ test_path_create_no_heavy_state_on_validation_fail(void)
     xqc_test_helper_conn_destroy(conn);
 }
 
+void
+test_path_create_hard_cap_stress(void)
+{
+    CU_PASS("skipped: enabled in Chunk 2 — pending XQC_MAX_PATHS_COUNT removal");
+    /* Reference implementation for Chunk 2:
+     *   - seed 100 CIDs
+     *   - call xqc_path_create for i in 0..99, expect non-NULL
+     *   - top up to 256 CIDs
+     *   - call xqc_path_create for path_id 256, expect NULL (hard cap)
+     */
+}
