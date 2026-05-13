@@ -214,6 +214,14 @@ xqc_int_t xqc_parse_mp_retire_conn_id_frame(xqc_packet_in_t *packet_in, uint64_t
 ssize_t xqc_gen_max_path_id_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out, uint64_t max_path_id);
 xqc_int_t xqc_parse_max_path_id_frame(xqc_packet_in_t *packet_in, uint64_t *max_path_id);
 
+/* draft-21 §4.7 PATHS_BLOCKED: 1 varint payload (Maximum Path Identifier). */
+xqc_int_t xqc_parse_paths_blocked_frame(xqc_packet_in_t *packet_in, uint64_t *max_path_id);
+
+/* draft-21 §4.7 PATH_CIDS_BLOCKED: 2 varint payload
+ * (Path Identifier, Next Sequence Number). */
+xqc_int_t xqc_parse_path_cids_blocked_frame(xqc_packet_in_t *packet_in,
+    uint64_t *path_id, uint64_t *next_seq);
+
 void xqc_try_process_fec_decode(xqc_connection_t *conn, xqc_int_t block_id);
 
 

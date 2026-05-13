@@ -3112,6 +3112,70 @@ xqc_parse_max_path_id_frame(xqc_packet_in_t *packet_in, uint64_t *max_path_id)
     return XQC_OK;
 }
 
+/* draft-21 §4.7 PATHS_BLOCKED:
+ *     Type (i) = 0x3e7b
+ *     Maximum Path Identifier (i)
+ */
+xqc_int_t
+xqc_parse_paths_blocked_frame(xqc_packet_in_t *packet_in, uint64_t *max_path_id)
+{
+    unsigned char *p = packet_in->pos;
+    const unsigned char *end = packet_in->last;
+    int vlen;
+
+    uint64_t frame_type = 0;
+    vlen = xqc_vint_read(p, end, &frame_type);
+    if (vlen < 0) {
+        return -XQC_EVINTREAD;
+    }
+    p += vlen;
+
+    vlen = xqc_vint_read(p, end, max_path_id);
+    if (vlen < 0) {
+        return -XQC_EVINTREAD;
+    }
+    p += vlen;
+
+    packet_in->pos = p;
+    return XQC_OK;
+}
+
+/* draft-21 §4.7 PATH_CIDS_BLOCKED:
+ *     Type (i) = 0x3e7c
+ *     Path Identifier (i)
+ *     Next Sequence Number (i)
+ */
+xqc_int_t
+xqc_parse_path_cids_blocked_frame(xqc_packet_in_t *packet_in,
+    uint64_t *path_id, uint64_t *next_seq)
+{
+    unsigned char *p = packet_in->pos;
+    const unsigned char *end = packet_in->last;
+    int vlen;
+
+    uint64_t frame_type = 0;
+    vlen = xqc_vint_read(p, end, &frame_type);
+    if (vlen < 0) {
+        return -XQC_EVINTREAD;
+    }
+    p += vlen;
+
+    vlen = xqc_vint_read(p, end, path_id);
+    if (vlen < 0) {
+        return -XQC_EVINTREAD;
+    }
+    p += vlen;
+
+    vlen = xqc_vint_read(p, end, next_seq);
+    if (vlen < 0) {
+        return -XQC_EVINTREAD;
+    }
+    p += vlen;
+
+    packet_in->pos = p;
+    return XQC_OK;
+}
+
 /*
  *
     0                   1                   2                   3

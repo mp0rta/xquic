@@ -56,7 +56,10 @@ void xqc_test_mp21_gen_mp_retire_conn_id_dual_version(void);
 void xqc_test_mp21_gen_max_path_id_dual_version(void);
 void xqc_test_mp21_gen_ack_mp_dual_version(void);
 
-/* draft-21 §4.7 informational frames: parse-and-discard at L1+. */
+/* draft-21 §4.7 informational frames: mp21 L2 M1 full receive validation
+ * (the test names keep the legacy "_parse_and_discard" suffix to preserve
+ * git blame and CI history; the test bodies cover the violation/ignore
+ * matrix specified by the L2 plan §M1). */
 void xqc_test_mp21_paths_blocked_parse_and_discard(void);
 void xqc_test_mp21_path_cids_blocked_parse_and_discard(void);
 

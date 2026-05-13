@@ -9,6 +9,7 @@
 #include "src/transport/xqc_packet_out.h"
 #include "src/transport/xqc_conn.h"
 #include "src/transport/xqc_multipath.h"
+#include "src/transport/xqc_cid.h"
 #include "src/transport/xqc_recv_record.h"
 #include "src/transport/xqc_transport_params.h"
 #include "src/tls/xqc_crypto.h"
@@ -58,6 +59,9 @@ xqc_test_mp21_make_conn(const xqc_test_mp21_conn_params_t *p)
     /* Initialize lists that xqc_process_frames and post-frame path lookup
      * may traverse — avoids NULL deref in tests that exercise the dispatcher. */
     xqc_init_list_head(&conn->conn_paths_list);
+    /* mp21 L2: PATH_CIDS_BLOCKED handler walks conn->scid_set per-path
+     * cid_set_list; calloc-zeroed list head would crash list traversal. */
+    xqc_init_list_head(&conn->scid_set.cid_set_list);
 
     return conn;
 }
@@ -1104,14 +1108,13 @@ void xqc_test_mp21_gen_ack_mp_dual_version(void)
     xqc_test_mp21_gen_teardown(conn, po);
 }
 
-/* draft-21 §4.7: PATHS_BLOCKED / PATH_CIDS_BLOCKED are informational.
- * L1+ parse-and-discard: frame is consumed (packet_in->pos advances to
- * packet_in->last) and XQC_OK is returned. */
-static void
-assert_parse_and_discard(const unsigned char *payload, size_t payload_len)
+/* draft-21 §4.7 PATHS_BLOCKED / PATH_CIDS_BLOCKED: mp21 L2 M1
+ * full receive validation tests. */
+static xqc_connection_t *
+mp21_make_conn_for_blocked(uint64_t local_max)
 {
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = 8,
+        .local_max_path_id  = local_max,
         .remote_max_path_id = 8,
         .scid_len           = 8,
         .dcid_len           = 8,
@@ -1119,10 +1122,16 @@ assert_parse_and_discard(const unsigned char *payload, size_t payload_len)
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
     conn->conn_state = XQC_CONN_STATE_ESTABED;
+    return conn;
+}
 
-    unsigned char buf[16];
-    memset(buf, 0, sizeof(buf));
+static void
+mp21_run_frame(xqc_connection_t *conn, const unsigned char *payload, size_t payload_len,
+               xqc_int_t *out_ret)
+{
+    unsigned char buf[32];
     CU_ASSERT_FATAL(payload_len <= sizeof(buf));
+    memset(buf, 0, sizeof(buf));
     memcpy(buf, payload, payload_len);
 
     xqc_packet_in_t packet_in;
@@ -1132,30 +1141,88 @@ assert_parse_and_discard(const unsigned char *payload, size_t payload_len)
     packet_in.pos = buf;
     packet_in.last = buf + payload_len;
     packet_in.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
-    packet_in.pi_frame_types = XQC_FRAME_BIT_PING;  /* satisfy no-frames check */
+    packet_in.pi_frame_types = XQC_FRAME_BIT_PING;
 
-    xqc_int_t ret = xqc_process_frames(conn, &packet_in);
-    CU_ASSERT_EQUAL(ret, XQC_OK);
-    CU_ASSERT_EQUAL(packet_in.pos, packet_in.last);
-
-    xqc_test_mp21_free_conn(conn);
+    *out_ret = xqc_process_frames(conn, &packet_in);
 }
 
+/* PATHS_BLOCKED case A: peer_max == local_max -> ignore (XQC_OK, no err). */
 void
 xqc_test_mp21_paths_blocked_parse_and_discard(void)
 {
     /* PATHS_BLOCKED: type 0x3e7b (4B varint: 0x80 0x00 0x3e 0x7b)
-     *               + Max Path ID = 8 (1B varint: 0x08) */
-    static const unsigned char buf[] = {0x80, 0x00, 0x3e, 0x7b, 0x08};
-    assert_parse_and_discard(buf, sizeof(buf));
+     *               + Max Path ID = 8 (1B: 0x08). local_max = 8 -> ignore. */
+    static const unsigned char buf_eq[] = {0x80, 0x00, 0x3e, 0x7b, 0x08};
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    xqc_int_t ret = XQC_ERROR;
+    mp21_run_frame(conn, buf_eq, sizeof(buf_eq), &ret);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 8);  /* unchanged (grant disabled) */
+    xqc_test_mp21_free_conn(conn);
+
+    /* case B: peer_max < local_max -> ignore. */
+    static const unsigned char buf_lt[] = {0x80, 0x00, 0x3e, 0x7b, 0x04};
+    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    mp21_run_frame(conn, buf_lt, sizeof(buf_lt), &ret);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    xqc_test_mp21_free_conn(conn);
+
+    /* case C: peer_max > local_max -> PROTOCOL_VIOLATION (spec §4.7 MUST). */
+    static const unsigned char buf_gt[] = {0x80, 0x00, 0x3e, 0x7b, 0x09};
+    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    mp21_run_frame(conn, buf_gt, sizeof(buf_gt), &ret);
+    CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
+    xqc_test_mp21_free_conn(conn);
 }
 
 void
 xqc_test_mp21_path_cids_blocked_parse_and_discard(void)
 {
-    /* PATH_CIDS_BLOCKED: type 0x3e7c (4B varint: 0x80 0x00 0x3e 0x7c)
-     *                  + Path ID = 1 (1B varint: 0x01)
-     *                  + Next Sequence Number = 2 (1B varint: 0x02) */
-    static const unsigned char buf[] = {0x80, 0x00, 0x3e, 0x7c, 0x01, 0x02};
-    assert_parse_and_discard(buf, sizeof(buf));
+    xqc_int_t ret = XQC_ERROR;
+
+    /* case A: path_id == local_max (8), seq=0 <= next_expected(0) -> OK ignore. */
+    static const unsigned char buf_ok[] = {0x80, 0x00, 0x3e, 0x7c, 0x08, 0x00};
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    mp21_run_frame(conn, buf_ok, sizeof(buf_ok), &ret);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    xqc_test_mp21_free_conn(conn);
+
+    /* case B: path_id > local_max -> PROTOCOL_VIOLATION (gate). */
+    static const unsigned char buf_pid_gt[] = {0x80, 0x00, 0x3e, 0x7c, 0x09, 0x00};
+    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    mp21_run_frame(conn, buf_pid_gt, sizeof(buf_pid_gt), &ret);
+    CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
+    xqc_test_mp21_free_conn(conn);
+
+    /* case C: path_id abandoned -> silently ignored (per §4.5 + impl choice). */
+    static const unsigned char buf_aban[] = {0x80, 0x00, 0x3e, 0x7c, 0x02, 0x00};
+    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    xqc_conn_mark_path_abandoned(conn, 2);
+    mp21_run_frame(conn, buf_aban, sizeof(buf_aban), &ret);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    xqc_test_mp21_free_conn(conn);
+
+    /* case D: next_seq > next_expected -> PROTOCOL_VIOLATION (spec §4.7 MUST). */
+    static const unsigned char buf_seq_gt[] = {0x80, 0x00, 0x3e, 0x7c, 0x01, 0x02};
+    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    /* no scid issued for path 1 -> next_expected = 0; peer claims 2 -> violation */
+    mp21_run_frame(conn, buf_seq_gt, sizeof(buf_seq_gt), &ret);
+    CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
+    xqc_test_mp21_free_conn(conn);
+
+    /* case E: next_seq == next_expected (both 0, missing path) -> ignore OK. */
+    static const unsigned char buf_seq_eq[] = {0x80, 0x00, 0x3e, 0x7c, 0x01, 0x00};
+    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    mp21_run_frame(conn, buf_seq_eq, sizeof(buf_seq_eq), &ret);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    xqc_test_mp21_free_conn(conn);
 }
+
