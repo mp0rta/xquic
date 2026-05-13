@@ -2396,6 +2396,18 @@ xqc_process_paths_blocked_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_
             "|PATHS_BLOCKED received|peer_max:%ui|local_max:%ui|",
             max_path_id, conn->local_max_path_id);
 
+    /* mp21 L2 M3 — auto credit grant gate. Returns the new local_max
+     * value to emit, or 0 if no grant fires. The arithmetic is
+     * factored to xqc_try_grant_max_path_id() so tests can drive the
+     * gate without needing a fully-wired send queue. */
+    uint64_t grant_value = xqc_try_grant_max_path_id(conn);
+    if (grant_value > 0) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|MAX_PATH_ID auto-grant|new_local_max:%ui|",
+                grant_value);
+        (void)xqc_write_max_path_id_to_packet(conn, grant_value);
+    }
+
     return XQC_OK;
 }
 

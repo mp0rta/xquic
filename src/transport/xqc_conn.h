@@ -420,6 +420,11 @@ struct xqc_connection_s {
      * stay << 256). */
     uint64_t                        abandoned_path_ids[4];
 
+    /* draft-21 §3.2.1 / §4.6 mp21 L2 — MAX_PATH_ID credit grant:
+     * monotonic timestamp (us) of the most recent local grant. Used to
+     * rate-limit grants to one per PTO. Zero = no grant has fired yet. */
+    xqc_usec_t                      last_max_path_id_grant_us;
+
     /* for qlog */
     uint32_t                        MTU_updated_count;    
     uint32_t                        packet_dropped_count;

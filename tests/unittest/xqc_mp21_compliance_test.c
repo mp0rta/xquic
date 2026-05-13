@@ -10,6 +10,7 @@
 #include "src/transport/xqc_conn.h"
 #include "src/transport/xqc_multipath.h"
 #include "src/transport/xqc_cid.h"
+#include "src/transport/xqc_send_ctl.h"
 #include "src/transport/xqc_recv_record.h"
 #include "src/transport/xqc_transport_params.h"
 #include "src/tls/xqc_crypto.h"
@@ -1226,3 +1227,115 @@ xqc_test_mp21_path_cids_blocked_parse_and_discard(void)
     xqc_test_mp21_free_conn(conn);
 }
 
+/* mp21 L2 M3 — MAX_PATH_ID credit grant tests. Tests exercise the
+ * xqc_try_grant_max_path_id() gate directly so they don't depend on a
+ * fully-wired send queue. PATHS_BLOCKED end-to-end emission is covered
+ * by an integration test in a later session. */
+static xqc_path_ctx_t *
+mp21_stub_initial_path_for_grant(xqc_connection_t *conn,
+                                 void **out_send_ctl_buf)
+{
+    /* xqc_send_ctl_t is incomplete here — we only need ctl_srtt + ctl_rttvar
+     * + ctl_conn which are at known offsets in src/transport/xqc_send_ctl.h.
+     * Reach via the public xqc_send_ctl.h header for the inline PTO calc. */
+    xqc_send_ctl_t *sc = calloc(1, sizeof(xqc_send_ctl_t));
+    CU_ASSERT_PTR_NOT_NULL_FATAL(sc);
+    sc->ctl_conn = conn;
+    sc->ctl_srtt = 50 * 1000;
+    sc->ctl_rttvar = 0;
+    *out_send_ctl_buf = sc;
+
+    xqc_path_ctx_t *path = calloc(1, sizeof(xqc_path_ctx_t));
+    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+    path->parent_conn = conn;
+    path->path_send_ctl = sc;
+    return path;
+}
+
+static void
+mp21_free_grant_stubs(xqc_path_ctx_t *path, void *send_ctl_buf)
+{
+    if (path) free(path);
+    if (send_ctl_buf) free(send_ctl_buf);
+}
+
+void
+xqc_test_mp21_max_path_id_grant_disabled_by_default(void)
+{
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    /* conn_settings.max_path_id_grant_max_value left at 0 by calloc fixture */
+    uint64_t granted = xqc_try_grant_max_path_id(conn);
+    CU_ASSERT_EQUAL(granted, 0);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 8);
+    CU_ASSERT_EQUAL(conn->last_max_path_id_grant_us, 0);
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_max_path_id_grant_trigger_on_paths_blocked(void)
+{
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    conn->conn_settings.max_path_id_grant_max_value = 64;
+    void *sc_buf = NULL;
+    xqc_path_ctx_t *path = mp21_stub_initial_path_for_grant(conn, &sc_buf);
+    conn->conn_initial_path = path;
+
+    uint64_t granted = xqc_try_grant_max_path_id(conn);
+    CU_ASSERT_EQUAL(granted, 8 + XQC_MAX_PATH_ID_GRANT_INCREMENT);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 8 + XQC_MAX_PATH_ID_GRANT_INCREMENT);
+    CU_ASSERT_NOT_EQUAL(conn->last_max_path_id_grant_us, 0);
+
+    mp21_free_grant_stubs(path, sc_buf);
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_max_path_id_grant_skipped_at_max(void)
+{
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/16);
+    conn->conn_settings.max_path_id_grant_max_value = 16;  /* already at cap */
+    void *sc_buf = NULL;
+    xqc_path_ctx_t *path = mp21_stub_initial_path_for_grant(conn, &sc_buf);
+    conn->conn_initial_path = path;
+
+    uint64_t granted = xqc_try_grant_max_path_id(conn);
+    CU_ASSERT_EQUAL(granted, 0);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 16);
+    CU_ASSERT_EQUAL(conn->last_max_path_id_grant_us, 0);
+
+    /* Grant also clamps when increment overshoots cap. */
+    conn->local_max_path_id = 14;
+    conn->conn_settings.max_path_id_grant_max_value = 16;
+    granted = xqc_try_grant_max_path_id(conn);
+    CU_ASSERT_EQUAL(granted, 16);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 16);
+
+    mp21_free_grant_stubs(path, sc_buf);
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_max_path_id_grant_rate_limited(void)
+{
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    conn->conn_settings.max_path_id_grant_max_value = 64;
+    void *sc_buf = NULL;
+    xqc_path_ctx_t *path = mp21_stub_initial_path_for_grant(conn, &sc_buf);
+    conn->conn_initial_path = path;
+    /* Set last_grant to "now" so rate-limit predicate fails. */
+    conn->last_max_path_id_grant_us = xqc_monotonic_timestamp();
+    xqc_usec_t before = conn->last_max_path_id_grant_us;
+
+    uint64_t granted = xqc_try_grant_max_path_id(conn);
+    CU_ASSERT_EQUAL(granted, 0);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 8);
+    CU_ASSERT_EQUAL(conn->last_max_path_id_grant_us, before);
+
+    /* Simulate 1+ PTO elapsed by zeroing last_grant. */
+    conn->last_max_path_id_grant_us = 0;
+    granted = xqc_try_grant_max_path_id(conn);
+    CU_ASSERT_EQUAL(granted, 8 + XQC_MAX_PATH_ID_GRANT_INCREMENT);
+
+    mp21_free_grant_stubs(path, sc_buf);
+    xqc_test_mp21_free_conn(conn);
+}

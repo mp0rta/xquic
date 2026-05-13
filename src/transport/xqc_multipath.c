@@ -135,6 +135,47 @@ xqc_conn_is_path_abandoned(xqc_connection_t *conn, uint64_t path_id)
             ? XQC_TRUE : XQC_FALSE;
 }
 
+/* draft-21 §3.2.1 / §4.6 mp21 L2 M3 — MAX_PATH_ID credit grant gate.
+ *
+ * Spec §2.1 / §4.6 verbatim: "endpoints can send the MAX_PATH_ID frame
+ * to increase the maximum allowed path ID". "can" is permissive — the
+ * granter has no MUST/SHOULD obligation. Default 0 = disabled (safe-
+ * default, no auto-grant). Operator opt-in by setting
+ * conn_settings.max_path_id_grant_max_value > 0 enables auto-grant on
+ * PATHS_BLOCKED receipt, bounded by that cap.
+ *
+ * Per-grant magnitude (XQC_MAX_PATH_ID_GRANT_INCREMENT) and rate-limit
+ * interval (1 PTO) are implementation-defined; spec is silent.
+ */
+uint64_t
+xqc_try_grant_max_path_id(xqc_connection_t *conn)
+{
+    uint64_t cap = conn->conn_settings.max_path_id_grant_max_value;
+    if (cap == 0 || conn->local_max_path_id >= cap) {
+        return 0;
+    }
+    if (conn->conn_initial_path == NULL
+        || conn->conn_initial_path->path_send_ctl == NULL)
+    {
+        return 0;
+    }
+    xqc_usec_t now = xqc_monotonic_timestamp();
+    xqc_usec_t pto = xqc_send_ctl_calc_pto(conn->conn_initial_path->path_send_ctl);
+    if (conn->last_max_path_id_grant_us != 0
+        && (now - conn->last_max_path_id_grant_us) < pto)
+    {
+        return 0;
+    }
+
+    uint64_t new_max = conn->local_max_path_id + XQC_MAX_PATH_ID_GRANT_INCREMENT;
+    if (new_max > cap) {
+        new_max = cap;
+    }
+    conn->local_max_path_id = new_max;
+    conn->last_max_path_id_grant_us = now;
+    return new_max;
+}
+
 xqc_max_path_id_validation_t
 xqc_validate_max_path_id(xqc_connection_t *conn, uint64_t value)
 {
