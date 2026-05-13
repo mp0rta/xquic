@@ -1568,6 +1568,13 @@ typedef enum {
 
 
 #define XQC_MAX_PATHS_COUNT 8
+#define XQC_PATH_HARD_CAP   256  /* defensive local hard max; spec §2.1 allows up to 2^32-1 */
+
+_Static_assert(XQC_PATH_HARD_CAP >= 64,
+               "XQC_PATH_HARD_CAP must be >= 64 to support typical multipath scenarios");
+_Static_assert(XQC_PATH_HARD_CAP <= (1ULL << 32) - 1,
+               "XQC_PATH_HARD_CAP must not exceed draft-21 §2.1 ceiling of 2^32-1");
+
 #define XQC_CONN_INFO_LEN 400
 #define XQC_EXTERN_CONN_INFO_LEN 128
 
