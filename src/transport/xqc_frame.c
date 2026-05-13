@@ -250,27 +250,6 @@ xqc_mp_recv_path_id_gate(xqc_connection_t *conn, uint64_t path_id,
     return XQC_MP_RECV_GATE_OK;
 }
 
-/* F5: parse-and-discard helper for draft-21 §4.7 informational frames
- * (PATHS_BLOCKED, PATH_CIDS_BLOCKED). Caller must have already advanced
- * packet_in->pos past the frame-type bytes. Reads n_varints varints and
- * logs at INFO level; full receive validation + emission is L2 scope. */
-static xqc_int_t
-xqc_parse_and_discard_varints(xqc_packet_in_t *packet_in, size_t n_varints,
-                              xqc_log_t *log, const char *frame_name)
-{
-    for (size_t i = 0; i < n_varints; i++) {
-        uint64_t val = 0;
-        ssize_t  vlen = xqc_vint_read(packet_in->pos, packet_in->last, &val);
-        if (vlen < 0) {
-            return -XQC_EVINTREAD;
-        }
-        packet_in->pos += vlen;
-    }
-    xqc_log(log, XQC_LOG_INFO,
-            "|%s|received and discarded (L2 deferred)|", frame_name);
-    return XQC_OK;
-}
-
 /* F1: MP frame dispatch table — replaces ~100 lines of mp_version-gated
  * switch arms. Each entry maps a wire frame type + required negotiated
  * multipath version to its processor. MP_FROZEN and the blocked-frames

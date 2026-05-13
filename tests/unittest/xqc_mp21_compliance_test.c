@@ -1149,7 +1149,7 @@ mp21_run_frame(xqc_connection_t *conn, const unsigned char *payload, size_t payl
 
 /* PATHS_BLOCKED case A: peer_max == local_max -> ignore (XQC_OK, no err). */
 void
-xqc_test_mp21_paths_blocked_parse_and_discard(void)
+xqc_test_mp21_paths_blocked_validation(void)
 {
     /* PATHS_BLOCKED: type 0x3e7b (4B varint: 0x80 0x00 0x3e 0x7b)
      *               + Max Path ID = 8 (1B: 0x08). local_max = 8 -> ignore. */
@@ -1180,7 +1180,7 @@ xqc_test_mp21_paths_blocked_parse_and_discard(void)
 }
 
 void
-xqc_test_mp21_path_cids_blocked_parse_and_discard(void)
+xqc_test_mp21_path_cids_blocked_validation(void)
 {
     xqc_int_t ret = XQC_ERROR;
 
