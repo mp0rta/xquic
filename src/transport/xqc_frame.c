@@ -1941,16 +1941,23 @@ xqc_process_path_response_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_
 }
 
 
-xqc_int_t
-xqc_process_ack_mp_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
+/* F2: shared body for xqc_process_ack_mp_frame and
+ * xqc_process_path_ack_ecn_frame. The two differ only in the parser
+ * function and the frame label embedded in logs. */
+typedef xqc_int_t (*xqc_ack_parser_t)(xqc_packet_in_t *, xqc_connection_t *,
+                                      uint64_t *, xqc_ack_info_t *);
+
+static xqc_int_t
+xqc_process_ack_common(xqc_connection_t *conn, xqc_packet_in_t *packet_in,
+                       xqc_ack_parser_t parser_fn, const char *frame_label)
 {
     xqc_int_t ret;
-
     xqc_ack_info_t ack_info;
     uint64_t path_id = 0;
-    ret = xqc_parse_ack_mp_frame(packet_in, conn, &path_id, &ack_info);
+
+    ret = parser_fn(packet_in, conn, &path_id, &ack_info);
     if (ret != XQC_OK) {
-        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_parse_ack_mp_frame error|");
+        xqc_log(conn->log, XQC_LOG_ERROR, "|%s parse error|", frame_label);
         return ret;
     }
 
@@ -1958,7 +1965,7 @@ xqc_process_ack_mp_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
         return XQC_OK;
     }
 
-    xqc_mp_recv_gate_t g = xqc_mp_recv_path_id_gate(conn, path_id, "ACK_MP");
+    xqc_mp_recv_gate_t g = xqc_mp_recv_path_id_gate(conn, path_id, frame_label);
     if (g == XQC_MP_RECV_GATE_ERROR)  return -XQC_EILLEGAL_FRAME;
     if (g == XQC_MP_RECV_GATE_IGNORE) return XQC_OK;
 
@@ -1970,64 +1977,8 @@ xqc_process_ack_mp_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 
     if (path_to_be_acked->path_id != packet_in->pi_path_id) {
         xqc_log(conn->log, XQC_LOG_DEBUG,
-                "|ACK_MP received on a different path|ack_path_id:%ui|recv_path_id:%ui|",
-                path_to_be_acked->path_id,
-                packet_in->pi_path_id);
-    }
-
-    for (int i = 0; i < ack_info.n_ranges; i++) {
-        xqc_log_event(conn->log, TRA_PACKETS_ACKED, packet_in, ack_info.ranges[i].high, 
-            ack_info.ranges[i].low, path_to_be_acked->path_id);
-    }
-
-    xqc_pn_ctl_t *pn_ctl = xqc_get_pn_ctl(conn, path_to_be_acked);
-
-    ret = xqc_send_ctl_on_ack_received(path_to_be_acked->path_send_ctl, pn_ctl, conn->conn_send_queue,
-                                       &ack_info, packet_in->pkt_recv_time, 
-                                       path_to_be_acked->path_id == packet_in->pi_path_id);
-    if (ret != XQC_OK) {
-        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_send_ctl_on_ack_received error|");
-        return ret;
-    }
-
-    return XQC_OK;
-}
-
-xqc_int_t
-xqc_process_path_ack_ecn_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
-{
-    /* draft-21 §4.1: PATH_ACK_ECN reuses PATH_ACK semantics for recovery,
-     * with three trailing ECN Counts varints. Chunk 3 is parse-only — the
-     * ECN counts are read and discarded by xqc_parse_path_ack_ecn_frame.
-     */
-    xqc_int_t ret;
-
-    xqc_ack_info_t ack_info;
-    uint64_t path_id = 0;
-    ret = xqc_parse_path_ack_ecn_frame(packet_in, conn, &path_id, &ack_info);
-    if (ret != XQC_OK) {
-        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_parse_path_ack_ecn_frame error|");
-        return ret;
-    }
-
-    if ((packet_in->pi_flag & XQC_PIF_FEC_RECOVERED) != 0) {
-        return XQC_OK;
-    }
-
-    xqc_mp_recv_gate_t g = xqc_mp_recv_path_id_gate(conn, path_id, "PATH_ACK_ECN");
-    if (g == XQC_MP_RECV_GATE_ERROR)  return -XQC_EILLEGAL_FRAME;
-    if (g == XQC_MP_RECV_GATE_IGNORE) return XQC_OK;
-
-    xqc_path_ctx_t *path_to_be_acked = xqc_conn_find_path_by_path_id(conn, path_id);
-    if (path_to_be_acked == NULL) {
-        xqc_log(conn->log, XQC_LOG_INFO, "|ignore unknown path|path:%ui|", path_id);
-        return XQC_OK;
-    }
-
-    if (path_to_be_acked->path_id != packet_in->pi_path_id) {
-        xqc_log(conn->log, XQC_LOG_DEBUG,
-                "|PATH_ACK_ECN received on a different path|ack_path_id:%ui|recv_path_id:%ui|",
-                path_to_be_acked->path_id,
+                "|%s received on a different path|ack_path_id:%ui|recv_path_id:%ui|",
+                frame_label, path_to_be_acked->path_id,
                 packet_in->pi_path_id);
     }
 
@@ -2047,6 +1998,24 @@ xqc_process_path_ack_ecn_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
     }
 
     return XQC_OK;
+}
+
+xqc_int_t
+xqc_process_ack_mp_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
+{
+    return xqc_process_ack_common(conn, packet_in,
+                                  xqc_parse_ack_mp_frame, "ACK_MP");
+}
+
+xqc_int_t
+xqc_process_path_ack_ecn_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
+{
+    /* draft-21 §4.1: PATH_ACK_ECN reuses PATH_ACK semantics for recovery,
+     * with three trailing ECN Counts varints. Chunk 3 is parse-only — the
+     * ECN counts are read and discarded by xqc_parse_path_ack_ecn_frame.
+     */
+    return xqc_process_ack_common(conn, packet_in,
+                                  xqc_parse_path_ack_ecn_frame, "PATH_ACK_ECN");
 }
 
 xqc_int_t
