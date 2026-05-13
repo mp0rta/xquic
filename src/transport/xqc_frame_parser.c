@@ -2709,8 +2709,11 @@ xqc_gen_path_status_frame(xqc_connection_t *conn,
             frame_type = XQC_TRANS_FRAME_TYPE_MP_AVAILABLE;
             ft_flag = XQC_FRAME_BIT_PATH_AVAILABLE;
             break;
-        /* XQC_APP_PATH_STATUS_FROZEN removed from the wire in draft-21 §4.4;
-         * scheduler-internal FROZEN state never reaches this generator. */
+        case XQC_APP_PATH_STATUS_FROZEN:
+            /* xquic vendor extension, draft-10 / MULTIPATH_10 only. */
+            frame_type = XQC_TRANS_FRAME_TYPE_MP_FROZEN;
+            ft_flag = XQC_FRAME_BIT_PATH_FROZEN;
+            break;
         default:
             return -XQC_EMP_PATH_STATE_ERROR;
         }
@@ -2791,7 +2794,11 @@ xqc_parse_path_status_frame(xqc_packet_in_t *packet_in,
             *path_status = XQC_APP_PATH_STATUS_AVAILABLE;
             packet_in->pi_frame_types |= XQC_FRAME_BIT_PATH_AVAILABLE;
             break;
-        /* MP_FROZEN (0x15228cff) removed in draft-21 §4.4. */
+        case XQC_TRANS_FRAME_TYPE_MP_FROZEN:
+            /* xquic vendor extension — see xqc_frame_parser.h comment. */
+            *path_status = XQC_APP_PATH_STATUS_FROZEN;
+            packet_in->pi_frame_types |= XQC_FRAME_BIT_PATH_FROZEN;
+            break;
         default:
             return -XQC_EILLEGAL_FRAME;
     }

@@ -186,6 +186,7 @@ xqc_frame_is_mp(uint64_t frame_type)
     case XQC_TRANS_FRAME_TYPE_MP_ABANDON:
     case XQC_TRANS_FRAME_TYPE_MP_STANDBY:
     case XQC_TRANS_FRAME_TYPE_MP_AVAILABLE:
+    case XQC_TRANS_FRAME_TYPE_MP_FROZEN:
     case XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID:
     case XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID:
     case XQC_TRANS_FRAME_TYPE_MAX_PATH_ID:
@@ -410,6 +411,27 @@ xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
                 xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|v:%ud|f:%xL|",
                         conn->conn_settings.multipath_version, frame_type);
                 ret = -XQC_EMP_INVALID_MP_VERTION;
+            }
+            break;
+        case XQC_TRANS_FRAME_TYPE_MP_FROZEN:
+            /* xquic vendor extension (not in any IETF draft). Only valid on
+             * XQC_MULTIPATH_10. On a draft-21 (XQC_MULTIPATH_3E) connection
+             * the codepoint does not exist; parse-and-discard to remain
+             * spec-correct on our side (a conformant draft-21 peer would
+             * never emit it, but a misbehaving impl must not desync us). */
+            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
+                ret = xqc_process_path_status_frame(conn, packet_in);
+
+            } else {
+                uint64_t _pid = 0, _seq = 0, _st = 0;
+                xqc_log(conn->log, XQC_LOG_WARN,
+                        "|MP_FROZEN ignored on draft-21 conn|v:%ud|f:%xL|",
+                        conn->conn_settings.multipath_version, frame_type);
+                ret = xqc_parse_path_status_frame(packet_in, &_pid, &_seq, &_st);
+                if (ret == XQC_OK) {
+                    /* discard parsed status */
+                    (void)_pid; (void)_seq; (void)_st;
+                }
             }
             break;
         case XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP:
