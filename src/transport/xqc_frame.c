@@ -239,8 +239,11 @@ xqc_mp_recv_path_id_gate(xqc_connection_t *conn, uint64_t path_id,
     }
     /* draft-21 §4.5: silently ignore MP frames for already-Abandoned paths. */
     if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        /* Keep per-frame substring "ignore <frame_name> for abandoned" so existing
+         * operator grep patterns (PATH_NEW_CID / PATH_RETIRE_CID / PATH_STATUS /
+         * ACK_MP / PATH_ACK_ECN) still match. */
         xqc_log(conn->log, XQC_LOG_INFO,
-                "|%s|ignore MP frame for abandoned path|path_id:%ui|",
+                "|ignore %s for abandoned path|path_id:%ui|",
                 frame_name, path_id);
         return XQC_MP_RECV_GATE_IGNORE;
     }
