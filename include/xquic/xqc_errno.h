@@ -36,6 +36,11 @@ typedef enum {
 #define TRA_PATH_RESOURCE_LIMIT_REACHED     0x3e75ULL
 #define TRA_PATH_UNSTABLE_OR_POOR           0x3e76ULL
 #define TRA_NO_CID_AVAILABLE_FOR_PATH       0x3e77ULL
+/* TODO(G-F6): draft-21 §4.2.1 names additional codepoints
+ * (STATELESS_RESET, MIGRATION_REFUSED, NO_ERROR). Receive-side parser
+ * is tolerant; send-side has no current emitter. Add named constants
+ * when IANA codepoints are reconfirmed against latest draft.
+ * See docs/audit-notes/pr4-l5a-audit-findings.md row G-F6. */
 
 
 #define TRA_CRYPTO_ERROR_BASE   0x100

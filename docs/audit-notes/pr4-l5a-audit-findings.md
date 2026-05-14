@@ -1,24 +1,14 @@
 # PR4 (L5a) MUST-audit batch — findings
 
+> **Verified against:** `mp0rta/xquic` commit `ddaae63` (PR4 third commit). Re-audit needed if MP frame parsers, `xqc_path_immediate_close`, `xqc_conn_add_path_cid_sets`, or `xqc_write_*_frame_to_packet` writers change.
+
 Audit of 17 residual draft-ietf-quic-multipath-21 MUST / SHOULD / VERIFY
 items flagged for L5a. Each row: where the relevant code lives, what it
 does, and verdict.
 
 Spec: <https://datatracker.ietf.org/doc/draft-ietf-quic-multipath/21/>
 
-**Summary: 14 clean / 1 compile-time pin / 1 deferred-to-mqvpn-side /
-1 deferred-to-future-PR.**
-
-Tallies by item:
-
-- `clean`                     : G-N2, G-N7, G-P1, G-P4, G-P6, G-P8, G-P11,
-                                G-P12, G-F12, G-F14, G-F15, G-I1a, G-I2, G-I3
-- `fix-applied (Static_assert)`: G-C3
-- `deferred-to-mqvpn-side`     : G-I1b
-- `deferred-to-future-PR`      : G-I4 (RFC 9000 §9.4 cwnd/RTT reset on
-                                  NAT rebind; scope outside draft-21
-                                  audit batch), G-F6 partial codepoints
-                                  (see row).
+**Summary: 14 clean / 1 compile-time pin / 1 deferred-to-mqvpn-side / 1 partial (receive clean, send-side constants deferred) / 1 deferred-to-future-PR.**
 
 ---
 
@@ -32,7 +22,7 @@ Tallies by item:
 | G-P8  | §3.2.1 ¶6 | `src/transport/xqc_packet_out.c:1710`, `src/transport/xqc_conn.c:5239-5300, 4284-4302`, `src/transport/xqc_frame.c:2330-2338` | inner_sets are only created for `path_id <= min(local_max_path_id, remote_max_path_id)` via `xqc_conn_add_path_cid_sets` at init (line 4340) and on MAX_PATH_ID grant (line 2333). The only caller of `xqc_write_mp_new_conn_id_frame_to_packet` is `xqc_conn_try_add_new_conn_id`, which iterates the existing inner_sets. Therefore over-cap path_ids can never be enqueued: the bookkeeping is the guard. | clean |
 | G-P11 | §3.2 ¶2   | `src/transport/xqc_conn.c:5246-5296` | When `multipath_version >= XQC_MULTIPATH_10`, `xqc_conn_try_add_new_conn_id` issues `xqc_write_mp_new_conn_id_frame_to_packet` for every `XQC_CID_SET_USED` inner_set, including `XQC_INITIAL_PATH_ID` (path 0). Legacy `xqc_write_new_conn_id_frame_to_packet` only fires in non-MP mode (else branch at 5283). Path 0 uses the MP-form NEW_CONNECTION_ID in MP21 mode per spec. | clean |
 | G-P12 | §3.2.2 ¶2 | `src/transport/xqc_frame.c:2207-2289`, `src/transport/xqc_conn.c:5239-5300`, `src/transport/xqc_engine.c:780` | `xqc_process_mp_retire_conn_id_frame` retires the SCID. On every engine main-tick the engine calls `xqc_conn_try_add_new_conn_id`, which top-ups unused_cnt back to `unused_limit=2` for each in-use inner_set (per-path). Replenishment is automatic. | clean |
-| G-F6  | §4.2.1    | `include/xquic/xqc_errno.h:34-38` | Defined: `TRA_APPLICATION_ABANDON_PATH = 0x3e`, `TRA_PATH_RESOURCE_LIMIT_REACHED = 0x3e75`, `TRA_PATH_UNSTABLE_OR_POOR = 0x3e76`, `TRA_NO_CID_AVAILABLE_FOR_PATH = 0x3e77`. Generic `TRA_NO_ERROR = 0x0` covers NO_ERROR. The spec's STATELESS_RESET and MIGRATION_REFUSED error codes for PATH_ABANDON are not yet defined as named constants — only callers using the explicit numeric value would emit them, but no caller currently does. Receive-side parser accepts any varint error code so peer-emitted codes are still tolerated. | clean (receive); deferred-to-future-PR (named send-side constants; needs IANA codepoint confirmation against latest draft) |
+| G-F6  | §4.2.1    | `include/xquic/xqc_errno.h:34-38` | Defined: `TRA_APPLICATION_ABANDON_PATH = 0x3e`, `TRA_PATH_RESOURCE_LIMIT_REACHED = 0x3e75`, `TRA_PATH_UNSTABLE_OR_POOR = 0x3e76`, `TRA_NO_CID_AVAILABLE_FOR_PATH = 0x3e77`. Generic `TRA_NO_ERROR = 0x0` covers NO_ERROR. The spec's STATELESS_RESET and MIGRATION_REFUSED error codes for PATH_ABANDON are not yet defined as named constants — only callers using the explicit numeric value would emit them, but no caller currently does. Receive-side parser accepts any varint error code so peer-emitted codes are still tolerated. | partial (receive clean, send-side constants deferred — see TODO in xqc_errno.h) |
 | G-F12 | §4.4 ¶7   | `src/transport/xqc_frame.c:2054-2204` | The Retire Prior To enforcement (lines 2126-2152) calls `xqc_get_path_cid_set(&conn->dcid_set, path_id)` and `xqc_cid_set_set_largest_seq_or_rpt(..., path_id, ...)` — all retirement operations scoped to the same `path_id` carried in the frame. | clean |
 | G-F14 | §4.5 ¶7   | `src/transport/xqc_frame.c:2207-2289` | `xqc_process_mp_retire_conn_id_frame` looks up SCID via `xqc_get_inner_cid_by_seq(&conn->scid_set, seq_num, path_id)`. Sequence number space is per-path. | clean |
 | G-F15 | §4.5 ¶6   | `src/transport/xqc_frame.c:1153-1227` | Legacy `xqc_process_retire_conn_id_frame` always passes `XQC_INITIAL_PATH_ID` to `xqc_cid_set_get_largest_seq_or_rpt` / `xqc_get_inner_cid_by_seq` (lines 1169, 1188). Since the legacy frame has no path_id field, it inherently targets path 0 — spec compliant. | clean |
