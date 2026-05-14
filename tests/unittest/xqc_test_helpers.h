@@ -2,10 +2,9 @@
  * @copyright Copyright (c) 2026, mqvpn project
  *
  * Shared test-harness helpers for PR3 (dynamic path cap) and later
- * Chunk-based multipath tests. The goal is to give Chunk 1-4 callers
- * one canonical place for fixture creation, CID seeding, allocation
- * accounting and handshake-state simulation, instead of each test
- * file open-coding its own setup.
+ * Chunk-based multipath tests. Provides a stable name for fixture
+ * creation, CID seeding and handshake-state simulation so Chunk 1-4
+ * tests do not each open-code their own setup.
  */
 
 #ifndef XQC_TEST_HELPERS_H
@@ -17,11 +16,6 @@
 #include "xquic/xquic_typedef.h"
 #include "src/transport/xqc_engine.h"
 #include "src/transport/xqc_conn.h"
-
-/* Engine fixture — wraps the long-standing test_create_engine() in
- * xqc_common_test.c so PR3 callers do not need to include that header. */
-xqc_engine_t *xqc_test_helper_engine_create(void);
-void          xqc_test_helper_engine_destroy(xqc_engine_t *engine);
 
 /* Lightweight calloc-zeroed xqc_connection_t fixture, multipath_version
  * pinned to XQC_MULTIPATH_3E. Defaults: local/remote max_path_id = 8,
@@ -47,18 +41,6 @@ void              xqc_test_helper_conn_destroy(xqc_connection_t *conn);
  */
 xqc_int_t xqc_test_seed_cids(xqc_connection_t *conn, size_t n);
 
-/* Monotonically-increasing counter of allocations performed via the
- * harness wrapper xqc_test_calloc(). The wrapper exists because the
- * production xqc_calloc is a static-inline in a header and therefore
- * cannot be intercepted via weak symbols / LD_PRELOAD without touching
- * src/. Tests that want to assert "this helper performs >=1 alloc"
- * should call xqc_test_calloc explicitly in the helper path; tests
- * comparing snapshots use xqc_test_alloc_counter() to read the
- * monotonic count.
- */
-uint64_t xqc_test_alloc_counter(void);
-void    *xqc_test_calloc(size_t count, size_t size);
-
 /* Mark the connection as fully established for harness purposes: sets
  * conn_state to XQC_CONN_STATE_ESTABED and OR's in the
  * XQC_CONN_FLAG_HANDSHAKE_COMPLETED flag. This is enough for the PR3
@@ -66,8 +48,5 @@ void    *xqc_test_calloc(size_t count, size_t size);
  * need TLS/key state must do the full handshake themselves.
  */
 void xqc_test_simulate_handshake_done(xqc_connection_t *conn);
-
-/* Smoke test runner (registered from main.c). */
-void xqc_test_helpers_smoke(void);
 
 #endif /* XQC_TEST_HELPERS_H */

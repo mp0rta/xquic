@@ -11,25 +11,6 @@
 #include "xqc_mp21_compliance_test.h"
 #include "src/transport/xqc_cid.h"
 #include "src/common/xqc_list.h"
-#include "src/common/xqc_malloc.h"
-
-/* ------------------------------------------------------------------ */
-/* Engine fixture — thin wrappers around the long-standing common test
- * helpers so PR3 callers do not need to pull in xqc_common_test.h.
- * ------------------------------------------------------------------ */
-xqc_engine_t *
-xqc_test_helper_engine_create(void)
-{
-    return test_create_engine();
-}
-
-void
-xqc_test_helper_engine_destroy(xqc_engine_t *engine)
-{
-    if (engine != NULL) {
-        xqc_engine_destroy(engine);
-    }
-}
 
 /* ------------------------------------------------------------------ */
 /* Connection fixture — alias over the existing mp21 fixture so PR3
@@ -128,29 +109,6 @@ xqc_test_seed_cids(xqc_connection_t *conn, size_t n)
     }
 
     return XQC_OK;
-}
-
-/* ------------------------------------------------------------------ */
-/* Allocation counter — production xqc_calloc is a static inline in a
- * header, so we cannot intercept it without touching src/. Instead we
- * expose an xqc_test_calloc wrapper that increments a static counter
- * and forwards to xqc_calloc. Helpers that want their alloc activity
- * tracked must route through xqc_test_calloc; other code paths are
- * deliberately invisible to the counter.
- * ------------------------------------------------------------------ */
-static uint64_t s_alloc_counter = 0;
-
-uint64_t
-xqc_test_alloc_counter(void)
-{
-    return s_alloc_counter;
-}
-
-void *
-xqc_test_calloc(size_t count, size_t size)
-{
-    s_alloc_counter++;
-    return xqc_calloc(count, size);
 }
 
 /* ------------------------------------------------------------------ */

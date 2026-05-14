@@ -123,7 +123,6 @@ if(HAVE_CUNIT)
         ${UNIT_TEST_DIR}/xqc_masque_test.c
         ${UNIT_TEST_DIR}/xqc_mp21_compliance_test.c
         ${UNIT_TEST_DIR}/xqc_test_helpers.c
-        ${UNIT_TEST_DIR}/xqc_test_helpers_test.c
         ${UNIT_TEST_DIR}/xqc_test_path_hard_cap.c
     )
 
