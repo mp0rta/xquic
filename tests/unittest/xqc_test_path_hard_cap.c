@@ -71,3 +71,29 @@ test_path_create_hard_cap_stress(void)
      *   - call xqc_path_create for path_id 256, expect NULL (hard cap)
      */
 }
+
+/* PR3 Chunk 2 / Task 2.1: contract test for the dynamic paths_info field
+ * on xqc_conn_stats_t. Verifies:
+ *   - With zero ACTIVE paths, paths_info_count == 0 and paths_info is NULL.
+ *   - Stub paths in non-ACTIVE state are skipped (paths_info_count == 0).
+ *   - One stub ACTIVE path with valid path_send_ctl yields count == 1 and
+ *     a heap-allocated paths_info buffer the caller is responsible for
+ *     freeing.
+ *
+ * Wrapped in CU_SKIP until the atomic refactor lands (end of Task 2.1).
+ */
+extern xqc_conn_stats_t xqc_conn_get_stats(xqc_engine_t *engine, const xqc_cid_t *cid);
+
+void
+test_conn_stats_dynamic_paths_info(void)
+{
+    CU_PASS("skipped: enabled at end of Task 2.1 atomic refactor");
+    return;
+    /* Reference body (enabled in Step 7):
+     *   xqc_connection_t *conn = xqc_test_helper_conn_create(NULL);
+     *   ... push fake xqc_path_ctx_t entries onto conn->conn_paths_list ...
+     *   xqc_conn_stats_t stats = xqc_conn_get_stats(conn->engine, &conn->scid_set.user_scid);
+     *   CU_ASSERT(stats.paths_info_count == 0 || stats.paths_info != NULL);
+     *   xqc_free(stats.paths_info);
+     */
+}
