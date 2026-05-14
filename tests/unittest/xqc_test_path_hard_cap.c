@@ -166,3 +166,34 @@ test_dos_peer_init_max_path_id_max_valid(void)
     xqc_test_helper_conn_destroy(conn);
 }
 
+/* PR3 Chunk 4 / Task 4.2: DoS resistance — once XQC_PATH_HARD_CAP paths
+ * exist, further xqc_path_create() calls MUST fail with the Stage-2
+ * hard-cap rejection rather than silently allocating. Distinct from
+ * test_path_create_hard_cap_stress (single attempt) — here we verify the
+ * cap is *sticky* under continuous pressure (10 successive attempts), so
+ * a peer flooding path requests cannot exhaust memory.
+ */
+void
+test_dos_continuous_path_requests_capped(void)
+{
+    xqc_connection_t *conn = xqc_test_helper_conn_create(NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    /* Make Stage 1 pass for path_id 42 (seed cids, set max well above 42). */
+    conn->remote_settings.init_max_path_id = 1000;
+    conn->local_max_path_id = 1000;
+    CU_ASSERT(xqc_test_seed_cids(conn, 50) == XQC_OK);
+
+    /* Simulate the cap being reached. */
+    conn->create_path_count = XQC_PATH_HARD_CAP;
+
+    /* Repeatedly attempt with a Stage-1-passing path_id. All must fail and
+     * create_path_count must remain exactly at HARD_CAP. */
+    for (int i = 0; i < 10; i++) {
+        xqc_path_ctx_t *p = xqc_path_create(conn, NULL, NULL, 42);
+        CU_ASSERT_PTR_NULL(p);
+        CU_ASSERT(conn->create_path_count == XQC_PATH_HARD_CAP);
+    }
+
+    xqc_test_helper_conn_destroy(conn);
+}
