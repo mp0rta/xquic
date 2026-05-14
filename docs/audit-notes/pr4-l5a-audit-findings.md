@@ -2,7 +2,7 @@
 
 > **Verified against:** `mp0rta/xquic` commit `ddaae63` (PR4 third commit). Re-audit needed if MP frame parsers, `xqc_path_immediate_close`, `xqc_conn_add_path_cid_sets`, or `xqc_write_*_frame_to_packet` writers change.
 
-Audit of 17 residual draft-ietf-quic-multipath-21 MUST / SHOULD / VERIFY
+Audit of 18 residual draft-ietf-quic-multipath-21 MUST / SHOULD / VERIFY
 items flagged for L5a. Each row: where the relevant code lives, what it
 does, and verdict.
 
