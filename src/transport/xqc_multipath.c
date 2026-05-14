@@ -782,44 +782,6 @@ xqc_conn_create_path_inner(xqc_connection_t *conn,
 }
 
 
-/* PR3 §4.3 Rev 4: extracted from the formerly-inline metrics fill loop.
- * Reduces an xqc_path_ctx_t into the public xqc_path_metrics_t structure,
- * and side-accumulates the standby / total app byte counters on stats. */
-static void
-xqc_path_fill_metrics(xqc_path_ctx_t *path, xqc_path_metrics_t *m,
-                      xqc_conn_stats_t *stats)
-{
-    m->path_id              = path->path_id;
-    m->path_pkt_recv_count  = path->path_send_ctl->ctl_recv_count;
-    m->path_pkt_send_count  = path->path_send_ctl->ctl_send_count;
-    m->path_send_bytes      = path->path_send_ctl->ctl_app_bytes_send;
-    m->path_recv_bytes      = path->path_send_ctl->ctl_app_bytes_recv;
-    m->path_app_status      = path->app_path_status;
-
-    /* Extended scheduler metrics */
-    m->path_srtt            = path->path_send_ctl->ctl_srtt;
-    m->path_min_rtt         = path->path_send_ctl->ctl_minrtt;
-    m->path_bytes_in_flight = path->path_send_ctl->ctl_bytes_in_flight;
-    m->path_est_bw          = xqc_send_ctl_get_est_bw(path->path_send_ctl);
-    m->path_pacing_rate     = xqc_send_ctl_get_pacing_rate(path->path_send_ctl);
-    m->path_lost_count      = path->path_send_ctl->ctl_lost_count;
-    m->path_state           = path->path_state;
-    if (path->path_send_ctl->ctl_cong_callback
-        && path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd)
-    {
-        m->path_cwnd = path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(
-                           path->path_send_ctl->ctl_cong);
-    }
-
-    if (path->app_path_status == XQC_APP_PATH_STATUS_STANDBY) {
-        stats->standby_path_app_bytes +=
-            path->path_send_ctl->ctl_app_bytes_send + path->path_send_ctl->ctl_app_bytes_recv;
-    }
-    stats->total_app_bytes +=
-        path->path_send_ctl->ctl_app_bytes_send + path->path_send_ctl->ctl_app_bytes_recv;
-}
-
-
 void
 xqc_conn_path_metrics_print(xqc_connection_t *conn, xqc_conn_stats_t *stats)
 {
@@ -867,7 +829,35 @@ xqc_conn_path_metrics_print(xqc_connection_t *conn, xqc_conn_stats_t *stats)
             continue;
         }
         if (path->path_state >= XQC_PATH_STATE_ACTIVE && idx < active_count) {
-            xqc_path_fill_metrics(path, &stats->paths_info[idx], stats);
+            xqc_path_metrics_t *m = &stats->paths_info[idx];
+            m->path_id              = path->path_id;
+            m->path_pkt_recv_count  = path->path_send_ctl->ctl_recv_count;
+            m->path_pkt_send_count  = path->path_send_ctl->ctl_send_count;
+            m->path_send_bytes      = path->path_send_ctl->ctl_app_bytes_send;
+            m->path_recv_bytes      = path->path_send_ctl->ctl_app_bytes_recv;
+            m->path_app_status      = path->app_path_status;
+
+            /* Extended scheduler metrics */
+            m->path_srtt            = path->path_send_ctl->ctl_srtt;
+            m->path_min_rtt         = path->path_send_ctl->ctl_minrtt;
+            m->path_bytes_in_flight = path->path_send_ctl->ctl_bytes_in_flight;
+            m->path_est_bw          = xqc_send_ctl_get_est_bw(path->path_send_ctl);
+            m->path_pacing_rate     = xqc_send_ctl_get_pacing_rate(path->path_send_ctl);
+            m->path_lost_count      = path->path_send_ctl->ctl_lost_count;
+            m->path_state           = path->path_state;
+            if (path->path_send_ctl->ctl_cong_callback
+                && path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd)
+            {
+                m->path_cwnd = path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(
+                                   path->path_send_ctl->ctl_cong);
+            }
+
+            if (path->app_path_status == XQC_APP_PATH_STATUS_STANDBY) {
+                stats->standby_path_app_bytes +=
+                    path->path_send_ctl->ctl_app_bytes_send + path->path_send_ctl->ctl_app_bytes_recv;
+            }
+            stats->total_app_bytes +=
+                path->path_send_ctl->ctl_app_bytes_send + path->path_send_ctl->ctl_app_bytes_recv;
             idx++;
         }
     }
