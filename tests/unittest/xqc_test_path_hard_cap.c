@@ -44,8 +44,9 @@ test_path_create_no_heavy_state_on_validation_fail(void)
 
     CU_ASSERT_PTR_NULL(p);
     /* Observable state: create_path_count must NOT have incremented.
-     * Production xqc_calloc inside xqc_path_create is not visible to
-     * xqc_test_alloc_counter, so we assert observable state instead. */
+     * We assert observable state rather than allocation counts, since
+     * production xqc_calloc inside xqc_path_create cannot be intercepted
+     * from the test harness. */
     CU_ASSERT(conn->create_path_count == create_count_before);
 
     /* No path entry left dangling on the conn paths list. */
@@ -118,9 +119,9 @@ test_conn_stats_dynamic_paths_info(void)
      * ownership contract.
      *
      * Exercising N>0 active paths needs the full path_create + cong-control
-     * stack; that path is covered indirectly by the existing
-     * xqc_test_helpers_smoke / mp21 conn-create tests and end-to-end tests
-     * that already call xqc_conn_get_stats. Here we pin the ABI contract.
+     * stack; that path is covered indirectly by the mp21 conn-create tests
+     * and end-to-end tests that already call xqc_conn_get_stats. Here we
+     * pin the ABI contract.
      */
     xqc_connection_t *conn = xqc_test_helper_conn_create(NULL);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
