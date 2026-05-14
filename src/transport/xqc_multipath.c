@@ -232,15 +232,6 @@ xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid, xqc_cid_t *dcid, uint64
         return NULL;
     }
 
-    /* TODO(Chunk 2): drop legacy XQC_MAX_PATHS_COUNT now superseded by
-     * XQC_PATH_HARD_CAP. Keeping during Chunk 1 to preserve existing
-     * behaviour for paths_info-style consumers. */
-    if (conn->create_path_count >= XQC_MAX_PATHS_COUNT) {
-        xqc_log(conn->log, XQC_LOG_ERROR,
-                "|too many paths|current maximum:%d|", XQC_MAX_PATHS_COUNT);
-        return NULL;
-    }
-
     /* Stage 3: heavy allocation. */
 
     path = xqc_calloc(1, sizeof(xqc_path_ctx_t));
@@ -790,6 +781,44 @@ xqc_conn_create_path_inner(xqc_connection_t *conn,
 }
 
 
+/* PR3 §4.3 Rev 4: extracted from the formerly-inline metrics fill loop.
+ * Reduces an xqc_path_ctx_t into the public xqc_path_metrics_t structure,
+ * and side-accumulates the standby / total app byte counters on stats. */
+static void
+xqc_path_fill_metrics(xqc_path_ctx_t *path, xqc_path_metrics_t *m,
+                      xqc_conn_stats_t *stats)
+{
+    m->path_id              = path->path_id;
+    m->path_pkt_recv_count  = path->path_send_ctl->ctl_recv_count;
+    m->path_pkt_send_count  = path->path_send_ctl->ctl_send_count;
+    m->path_send_bytes      = path->path_send_ctl->ctl_app_bytes_send;
+    m->path_recv_bytes      = path->path_send_ctl->ctl_app_bytes_recv;
+    m->path_app_status      = path->app_path_status;
+
+    /* Extended scheduler metrics */
+    m->path_srtt            = path->path_send_ctl->ctl_srtt;
+    m->path_min_rtt         = path->path_send_ctl->ctl_minrtt;
+    m->path_bytes_in_flight = path->path_send_ctl->ctl_bytes_in_flight;
+    m->path_est_bw          = xqc_send_ctl_get_est_bw(path->path_send_ctl);
+    m->path_pacing_rate     = xqc_send_ctl_get_pacing_rate(path->path_send_ctl);
+    m->path_lost_count      = path->path_send_ctl->ctl_lost_count;
+    m->path_state           = path->path_state;
+    if (path->path_send_ctl->ctl_cong_callback
+        && path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd)
+    {
+        m->path_cwnd = path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(
+                           path->path_send_ctl->ctl_cong);
+    }
+
+    if (path->app_path_status == XQC_APP_PATH_STATUS_STANDBY) {
+        stats->standby_path_app_bytes +=
+            path->path_send_ctl->ctl_app_bytes_send + path->path_send_ctl->ctl_app_bytes_recv;
+    }
+    stats->total_app_bytes +=
+        path->path_send_ctl->ctl_app_bytes_send + path->path_send_ctl->ctl_app_bytes_recv;
+}
+
+
 void
 xqc_conn_path_metrics_print(xqc_connection_t *conn, xqc_conn_stats_t *stats)
 {
@@ -799,54 +828,49 @@ xqc_conn_path_metrics_print(xqc_connection_t *conn, xqc_conn_stats_t *stats)
         stats->mp_state = (conn->validated_path_count > 1) ? 1 : 2;
     }
 
+    /* Count eligible paths first so we can allocate exactly. Eligibility =
+     * ACTIVE state plus non-NULL path_send_ctl (the metrics fill dereferences
+     * it). */
     xqc_list_head_t *pos, *next;
     xqc_path_ctx_t *path = NULL;
-    int paths_num = 0;
+    size_t active_count = 0;
 
     xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
         path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
-        if (path->path_state >= XQC_PATH_STATE_ACTIVE && paths_num < XQC_MAX_PATHS_COUNT) {
-
-            if (path == NULL || path->path_send_ctl == NULL) {
-                continue;
-            }
-
-            stats->paths_info[paths_num].path_id = path->path_id;
-            stats->paths_info[paths_num].path_pkt_recv_count = path->path_send_ctl->ctl_recv_count;
-            stats->paths_info[paths_num].path_pkt_send_count = path->path_send_ctl->ctl_send_count;
-            stats->paths_info[paths_num].path_send_bytes = path->path_send_ctl->ctl_app_bytes_send;
-            stats->paths_info[paths_num].path_recv_bytes = path->path_send_ctl->ctl_app_bytes_recv;
-            stats->paths_info[paths_num].path_app_status = path->app_path_status;
-
-            /* Extended scheduler metrics */
-            stats->paths_info[paths_num].path_srtt = path->path_send_ctl->ctl_srtt;
-            stats->paths_info[paths_num].path_min_rtt = path->path_send_ctl->ctl_minrtt;
-            stats->paths_info[paths_num].path_bytes_in_flight =
-                path->path_send_ctl->ctl_bytes_in_flight;
-            stats->paths_info[paths_num].path_est_bw =
-                xqc_send_ctl_get_est_bw(path->path_send_ctl);
-            stats->paths_info[paths_num].path_pacing_rate =
-                xqc_send_ctl_get_pacing_rate(path->path_send_ctl);
-            stats->paths_info[paths_num].path_lost_count =
-                path->path_send_ctl->ctl_lost_count;
-            stats->paths_info[paths_num].path_state = path->path_state;
-            if (path->path_send_ctl->ctl_cong_callback
-                && path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd)
-            {
-                stats->paths_info[paths_num].path_cwnd =
-                    path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(
-                        path->path_send_ctl->ctl_cong);
-            }
-
-            if (path->app_path_status == XQC_APP_PATH_STATUS_STANDBY) {
-                stats->standby_path_app_bytes += path->path_send_ctl->ctl_app_bytes_send + path->path_send_ctl->ctl_app_bytes_recv;
-            }
-
-            stats->total_app_bytes += path->path_send_ctl->ctl_app_bytes_send + path->path_send_ctl->ctl_app_bytes_recv;
-
-            paths_num++;
+        if (path == NULL || path->path_send_ctl == NULL) {
+            continue;
+        }
+        if (path->path_state >= XQC_PATH_STATE_ACTIVE) {
+            active_count++;
         }
     }
+
+    stats->paths_info = NULL;
+    stats->paths_info_count = 0;
+
+    if (active_count == 0) {
+        return;
+    }
+
+    stats->paths_info = xqc_calloc(active_count, sizeof(xqc_path_metrics_t));
+    if (stats->paths_info == NULL) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|paths_info calloc failed|n=%uz|", active_count);
+        return;
+    }
+
+    size_t idx = 0;
+    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
+        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+        if (path == NULL || path->path_send_ctl == NULL) {
+            continue;
+        }
+        if (path->path_state >= XQC_PATH_STATE_ACTIVE && idx < active_count) {
+            xqc_path_fill_metrics(path, &stats->paths_info[idx], stats);
+            idx++;
+        }
+    }
+    stats->paths_info_count = (uint32_t)idx;
 }
 
 

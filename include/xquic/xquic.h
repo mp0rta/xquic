@@ -1646,7 +1646,19 @@ typedef struct xqc_conn_stats_s {
     int                 total_rebind_count;
     int                 total_rebind_valid;
 
-    xqc_path_metrics_t  paths_info[XQC_MAX_PATHS_COUNT];
+    /**
+     * Active path metrics. Dynamically allocated by xquic.
+     *
+     * Ownership: xquic allocates via xqc_calloc, caller MUST xqc_free(paths_info)
+     * after use to avoid leaking. On error returns (e.g. connection not found,
+     * allocation failure), paths_info == NULL and paths_info_count == 0; no free
+     * is required in that case. paths_info_count == 0 may be paired with a
+     * NULL paths_info; xqc_free(NULL) is safe.
+     *
+     * PR3 spec §4.3 Rev 4: replaces fixed-size paths_info[XQC_MAX_PATHS_COUNT].
+     */
+    xqc_path_metrics_t *paths_info;
+    uint32_t            paths_info_count;
     char                conn_info[XQC_CONN_INFO_LEN];
 
     char                alpn[XQC_MAX_ALPN_BUF_LEN];
