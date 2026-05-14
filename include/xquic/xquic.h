@@ -1567,7 +1567,6 @@ typedef enum {
 } xqc_0rtt_flag_t;
 
 
-#define XQC_MAX_PATHS_COUNT 8
 #define XQC_PATH_HARD_CAP   256  /* defensive local hard max; spec §2.1 allows up to 2^32-1 */
 
 _Static_assert(XQC_PATH_HARD_CAP >= 64,
@@ -1655,7 +1654,8 @@ typedef struct xqc_conn_stats_s {
      * is required in that case. paths_info_count == 0 may be paired with a
      * NULL paths_info; xqc_free(NULL) is safe.
      *
-     * PR3 spec §4.3 Rev 4: replaces fixed-size paths_info[XQC_MAX_PATHS_COUNT].
+     * PR3 spec §4.3 Rev 4: replaces fixed-size paths_info array (was capped
+     * at 8 paths via the now-removed XQC_MAX_PATHS_COUNT macro).
      */
     xqc_path_metrics_t *paths_info;
     uint32_t            paths_info_count;

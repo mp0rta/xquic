@@ -10,8 +10,8 @@
  * (and in this fixture: dereferencing NULL conn->conn_pool) on the table.
  *
  * Stage 2 (defensive hard cap) is exercised by test_path_create_hard_cap_stress
- * — kept skipped until Chunk 2 removes the legacy XQC_MAX_PATHS_COUNT=8 cap
- * that currently prevents going beyond 8 paths.
+ * — enabled in PR3 Chunk 2 / Task 2.5 once XQC_PATH_HARD_CAP is the sole
+ * defensive ceiling and the legacy XQC_MAX_PATHS_COUNT=8 has been removed.
  */
 
 #include <CUnit/CUnit.h>
@@ -64,13 +64,32 @@ test_path_create_no_heavy_state_on_validation_fail(void)
 void
 test_path_create_hard_cap_stress(void)
 {
-    CU_PASS("skipped: enabled in Chunk 2 — pending XQC_MAX_PATHS_COUNT removal");
-    /* Reference implementation for Chunk 2:
-     *   - seed 100 CIDs
-     *   - call xqc_path_create for i in 0..99, expect non-NULL
-     *   - top up to 256 CIDs
-     *   - call xqc_path_create for path_id 256, expect NULL (hard cap)
+    /* PR3 Chunk 2 / Task 2.5: with XQC_MAX_PATHS_COUNT removed the only
+     * defensive ceiling on path creation is XQC_PATH_HARD_CAP. The full
+     * "spin up 256 real paths through path_init" stress requires a complete
+     * engine + conn_pool, which the lightweight mp21 fixture does not
+     * provide. Instead we verify the Stage 2 hard-cap gate directly: when
+     * create_path_count is already at HARD_CAP, even a Stage-1-valid call
+     * (range OK, unused CID present, not abandoned) MUST fail before any
+     * heavy allocation.
      */
+    xqc_connection_t *conn = xqc_test_helper_conn_create(NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    conn->remote_settings.init_max_path_id = XQC_PATH_HARD_CAP;
+    conn->local_max_path_id = XQC_PATH_HARD_CAP;
+    /* Seed enough CIDs so Stage 1's "no unused scid/dcid" gate does not
+     * fire — the cap is what we want to exercise. */
+    CU_ASSERT(xqc_test_seed_cids(conn, 4) == XQC_OK);
+
+    /* Pretend HARD_CAP paths have already been created. */
+    conn->create_path_count = XQC_PATH_HARD_CAP;
+
+    xqc_path_ctx_t *p = xqc_path_create(conn, NULL, NULL, /*path_id=*/3);
+    CU_ASSERT_PTR_NULL(p);
+    CU_ASSERT(conn->create_path_count == XQC_PATH_HARD_CAP);
+
+    xqc_test_helper_conn_destroy(conn);
 }
 
 /* PR3 Chunk 2 / Task 2.1: contract test for the dynamic paths_info field
