@@ -137,3 +137,32 @@ test_conn_stats_dynamic_paths_info(void)
 
     xqc_test_helper_conn_destroy(conn);
 }
+
+/* PR3 Chunk 4 / Task 4.1: DoS resistance — peer offering init_max_path_id
+ * = 2^32-1 (spec-valid max for the varint range used by mp21) MUST NOT
+ * trigger O(N) preallocation. The lazy-alloc design (Chunk 1) and dynamic
+ * stats (Chunk 2) ensure no path resources are reserved at TP-acceptance
+ * time; paths are created lazily via xqc_path_create() and bounded by
+ * XQC_PATH_HARD_CAP.
+ *
+ * This test pins the spec-valid corner: accepting the max init_max_path_id
+ * into conn settings does not, by itself, materialize any paths.
+ */
+void
+test_dos_peer_init_max_path_id_max_valid(void)
+{
+    xqc_connection_t *conn = xqc_test_helper_conn_create(NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    conn->remote_settings.init_max_path_id = (1ULL << 32) - 1;
+    conn->local_max_path_id = (1ULL << 32) - 1;
+
+    int create_count_before = conn->create_path_count;
+    xqc_test_simulate_handshake_done(conn);
+
+    /* After handshake done, no implicit path creation. */
+    CU_ASSERT(conn->create_path_count == create_count_before);
+
+    xqc_test_helper_conn_destroy(conn);
+}
+
