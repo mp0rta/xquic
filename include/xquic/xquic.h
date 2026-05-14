@@ -1648,11 +1648,12 @@ typedef struct xqc_conn_stats_s {
     /**
      * Active path metrics. Dynamically allocated by xquic.
      *
-     * Ownership: xquic allocates via xqc_calloc, caller MUST xqc_free(paths_info)
-     * after use to avoid leaking. On error returns (e.g. connection not found,
-     * allocation failure), paths_info == NULL and paths_info_count == 0; no free
-     * is required in that case. paths_info_count == 0 may be paired with a
-     * NULL paths_info; xqc_free(NULL) is safe.
+     * Ownership: xquic allocates the buffer; caller MUST free() (libc free,
+     * not xqc_free) the paths_info pointer after use to avoid leaking. On
+     * error returns (e.g. connection not found, allocation failure),
+     * paths_info == NULL and paths_info_count == 0; no free is required in
+     * that case. paths_info_count == 0 may be paired with a NULL paths_info;
+     * free(NULL) is safe.
      *
      * PR3 spec §4.3 Rev 4: replaces fixed-size paths_info array (was capped
      * at 8 paths via the now-removed XQC_MAX_PATHS_COUNT macro).

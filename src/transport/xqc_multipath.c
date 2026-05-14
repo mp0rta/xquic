@@ -856,7 +856,7 @@ xqc_conn_path_metrics_print(xqc_connection_t *conn, xqc_conn_stats_t *stats)
     stats->paths_info = xqc_calloc(active_count, sizeof(xqc_path_metrics_t));
     if (stats->paths_info == NULL) {
         xqc_log(conn->log, XQC_LOG_ERROR,
-                "|paths_info calloc failed|n=%uz|", active_count);
+                "|paths_info calloc failed|n=%zu|", active_count);
         return;
     }
 
