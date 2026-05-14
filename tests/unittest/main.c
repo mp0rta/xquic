@@ -43,6 +43,8 @@
 #include "xqc_ack_with_timestamp_test.h"
 #include "xqc_masque_test.h"
 #include "xqc_mp21_compliance_test.h"
+#include "xqc_test_helpers.h"
+#include "xqc_test_path_hard_cap.h"
 
 static int xqc_init_suite(void) { return 0; }
 static int xqc_clean_suite(void) { return 0; }
@@ -109,6 +111,10 @@ main()
         || !CU_add_test(pSuite, "xqc_test_mp21_max_path_id_grant_trigger_on_paths_blocked", xqc_test_mp21_max_path_id_grant_trigger_on_paths_blocked)
         || !CU_add_test(pSuite, "xqc_test_mp21_max_path_id_grant_skipped_at_max", xqc_test_mp21_max_path_id_grant_skipped_at_max)
         || !CU_add_test(pSuite, "xqc_test_mp21_max_path_id_grant_rate_limited", xqc_test_mp21_max_path_id_grant_rate_limited)
+        || !CU_add_test(pSuite, "test_path_create_no_heavy_state_on_validation_fail", test_path_create_no_heavy_state_on_validation_fail)
+        || !CU_add_test(pSuite, "test_path_create_hard_cap_stress", test_path_create_hard_cap_stress)
+        || !CU_add_test(pSuite, "test_conn_stats_dynamic_paths_info", test_conn_stats_dynamic_paths_info)
+        || !CU_add_test(pSuite, "test_dos_peer_init_max_path_id_max_valid", test_dos_peer_init_max_path_id_max_valid)
         || !CU_add_test(pSuite, "xqc_test_empty_pkt", xqc_test_empty_pkt)
         || !CU_add_test(pSuite, "xqc_test_engine_packet_process", xqc_test_engine_packet_process)
         || !CU_add_test(pSuite, "xqc_test_stream_frame", xqc_test_stream_frame)
@@ -142,7 +148,7 @@ main()
         || !CU_add_test(pSuite, "xqc_test_fec", xqc_test_fec)
 #endif
         || !CU_add_test(pSuite, "xqc_test_ack_with_timestamp", xqc_test_ack_with_timestamp)
-        /* ADD TESTS HERE */) 
+        /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();
         return (int)CU_get_error();

@@ -649,8 +649,10 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 
     if (!(packet_in->pi_flag & XQC_PIF_FEC_RECOVERED)) {
         xqc_stream_path_metrics_on_recv(conn, stream, packet_in);
-        if (packet_in->pi_path_id < XQC_MAX_PATHS_COUNT) {
-            stream->paths_info[packet_in->pi_path_id].path_recv_bytes += stream_frame->data_length;
+        xqc_path_metrics_t *sm =
+            xqc_stream_path_metrics_get_or_grow(stream, packet_in->pi_path_id);
+        if (sm != NULL) {
+            sm->path_recv_bytes += stream_frame->data_length;
         }
     }
 
@@ -766,10 +768,12 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
         xqc_stream_ready_to_read(stream);
     }
 
-    if (!(packet_in->pi_flag & XQC_PIF_FEC_RECOVERED)
-        && packet_in->pi_path_id < XQC_MAX_PATHS_COUNT)
-    {
-        stream->paths_info[packet_in->pi_path_id].path_recv_effective_bytes += stream_frame->data_length;
+    if (!(packet_in->pi_flag & XQC_PIF_FEC_RECOVERED)) {
+        xqc_path_metrics_t *sm =
+            xqc_stream_path_metrics_get_or_grow(stream, packet_in->pi_path_id);
+        if (sm != NULL) {
+            sm->path_recv_effective_bytes += stream_frame->data_length;
+        }
     }
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|stream_length:%ui|merged_offset_end:%ui|stream_id:%ui|",

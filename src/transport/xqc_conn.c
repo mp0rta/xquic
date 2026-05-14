@@ -3719,10 +3719,9 @@ xqc_conn_get_stats(xqc_engine_t *engine, const xqc_cid_t *cid)
     xqc_connection_t *conn;
     xqc_conn_stats_t conn_stats;
     xqc_memzero(&conn_stats, sizeof(conn_stats));
-    for (int i = 0; i < XQC_MAX_PATHS_COUNT; ++i) {
-        conn_stats.paths_info[i].path_id = XQC_MAX_UINT64_VALUE;
-        conn_stats.paths_info[i].path_app_status = 0;
-    }
+    /* PR3 §4.3 Rev 4: paths_info is now a dynamically-allocated array owned
+     * by the caller. xqc_conn_path_metrics_print allocates it; on error /
+     * empty paths case it stays NULL with paths_info_count == 0. */
 
     conn = xqc_engine_conns_hash_find(engine, cid, 's');
     if (!conn) {
