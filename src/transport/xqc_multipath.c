@@ -14,6 +14,7 @@
 #include "src/transport/xqc_frame_parser.h"
 #include "src/transport/xqc_datagram.h"
 #include "src/transport/xqc_recv_timestamps_info.h"
+#include "src/http3/xqc_h3_stream.h"
 
 #include "src/common/xqc_common.h"
 #include "src/common/xqc_malloc.h"
@@ -894,14 +895,16 @@ xqc_request_path_metrics_print(xqc_connection_t *conn, xqc_h3_stream_t *h3_strea
     xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
         path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
 
-        if (path->path_id < XQC_MAX_PATHS_COUNT
-            && path->path_id == h3_stream->paths_info[path->path_id].path_id)
-        {
-            uint64_t send_bytes = h3_stream->paths_info[path->path_id].path_send_bytes;
-            uint64_t recv_bytes = h3_stream->paths_info[path->path_id].path_recv_bytes;
+        /* PR3 §4.3 Rev 4: dynamic h3 stream paths_info — look up by path_id
+         * instead of indexing into a fixed array. */
+        xqc_path_metrics_t *hm =
+            xqc_h3_stream_path_metrics_find(h3_stream, path->path_id);
+        if (hm != NULL) {
+            uint64_t send_bytes = hm->path_send_bytes;
+            uint64_t recv_bytes = hm->path_recv_bytes;
 
-            h3_stream->paths_info[path->path_id].path_srtt = path->path_send_ctl->ctl_srtt;
-            h3_stream->paths_info[path->path_id].path_app_status = path->app_path_status;
+            hm->path_srtt = path->path_send_ctl->ctl_srtt;
+            hm->path_app_status = path->app_path_status;
 
             if (send_bytes > 0 || recv_bytes > 0) {
                 aggregate_send_bytes += send_bytes;

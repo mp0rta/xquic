@@ -103,6 +103,8 @@ xqc_h3_stream_destroy(xqc_h3_stream_t *h3s)
     xqc_log(h3s->log, XQC_LOG_DEBUG, "|stream_id:%ui|h3_stream_type:%d|",
             h3s->stream_id, h3s->type);
 
+    /* PR3 §4.3 Rev 4: free dynamic paths_info before freeing h3s. */
+    xqc_h3_stream_path_metrics_destroy(h3s);
     xqc_free(h3s);
 }
 
@@ -2071,26 +2073,26 @@ void
 xqc_h3_stream_get_path_info(xqc_h3_stream_t *h3s)
 {
     /* update path_info if transport stream is still alive.
-     * PR3 §4.3 Rev 4: stream->paths_info is now a flat dynamic array; walk
-     * actual entries and copy into the h3 stream's path_id-indexed slots
-     * (h3 stream array becomes dynamic in Task 2.3). */
+     * PR3 §4.3 Rev 4: both stream->paths_info and h3s->paths_info are flat
+     * dynamic arrays. Mirror per-path metrics by path_id. */
     if (h3s->stream) {
         xqc_stream_t *s = h3s->stream;
         for (uint32_t i = 0; i < s->paths_info_count; ++i) {
             uint64_t pid = s->paths_info[i].path_id;
-            if (pid >= XQC_MAX_PATHS_COUNT) {
+            const xqc_path_metrics_t *sm = &s->paths_info[i].metrics;
+            xqc_path_metrics_t *dm = xqc_h3_stream_path_metrics_get_or_grow(h3s, pid);
+            if (dm == NULL) {
                 continue;
             }
-            const xqc_path_metrics_t *sm = &s->paths_info[i].metrics;
-            h3s->paths_info[pid].path_id                          = pid;
-            h3s->paths_info[pid].path_pkt_recv_count              = sm->path_pkt_recv_count;
-            h3s->paths_info[pid].path_pkt_send_count              = sm->path_pkt_send_count;
-            h3s->paths_info[pid].path_send_bytes                  = sm->path_send_bytes;
-            h3s->paths_info[pid].path_send_reinject_bytes         = sm->path_send_reinject_bytes;
-            h3s->paths_info[pid].path_recv_bytes                  = sm->path_recv_bytes;
-            h3s->paths_info[pid].path_recv_reinject_bytes         = sm->path_recv_reinject_bytes;
-            h3s->paths_info[pid].path_recv_effective_bytes        = sm->path_recv_effective_bytes;
-            h3s->paths_info[pid].path_recv_effective_reinject_bytes = sm->path_recv_effective_reinject_bytes;
+            dm->path_id                          = pid;
+            dm->path_pkt_recv_count              = sm->path_pkt_recv_count;
+            dm->path_pkt_send_count              = sm->path_pkt_send_count;
+            dm->path_send_bytes                  = sm->path_send_bytes;
+            dm->path_send_reinject_bytes         = sm->path_send_reinject_bytes;
+            dm->path_recv_bytes                  = sm->path_recv_bytes;
+            dm->path_recv_reinject_bytes         = sm->path_recv_reinject_bytes;
+            dm->path_recv_effective_bytes        = sm->path_recv_effective_bytes;
+            dm->path_recv_effective_reinject_bytes = sm->path_recv_effective_reinject_bytes;
         }
     }
 }
