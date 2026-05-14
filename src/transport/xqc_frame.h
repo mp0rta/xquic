@@ -106,6 +106,39 @@ _Static_assert(XQC_FRAME_BIT_REPAIR_SYMBOL == ((xqc_frame_type_bit_t)1ULL << XQC
 _Static_assert(XQC_FRAME_BIT_NUM == ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_NUM),
                "XQC_FRAME_BIT_NUM must be bit XQC_FRAME_NUM (= 33)");
 
+/* draft-ietf-quic-multipath-21 frame bits (G-C3): pin each MP frame bit
+ * to its enum constant so a stray enum reorder cannot silently shift the
+ * bitmap. Loss-detection / ack-eliciting / can-in-flight macros all rely
+ * on these bits; a shifted bit would drop the frame from retransmit /
+ * cwnd accounting on Windows builds (where plain enum truncates) — same
+ * failure mode the SID/REPAIR_SYMBOL asserts above protect against. */
+_Static_assert(XQC_FRAME_BIT_ACK_MP == ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_ACK_MP),
+               "XQC_FRAME_BIT_ACK_MP shift must match enum value");
+_Static_assert(XQC_FRAME_BIT_PATH_ABANDON == ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_PATH_ABANDON),
+               "XQC_FRAME_BIT_PATH_ABANDON shift must match enum value");
+_Static_assert(XQC_FRAME_BIT_PATH_STATUS == ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_PATH_STATUS),
+               "XQC_FRAME_BIT_PATH_STATUS shift must match enum value");
+_Static_assert(XQC_FRAME_BIT_PATH_STANDBY == ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_PATH_STANDBY),
+               "XQC_FRAME_BIT_PATH_STANDBY shift must match enum value");
+_Static_assert(XQC_FRAME_BIT_PATH_AVAILABLE == ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_PATH_AVAILABLE),
+               "XQC_FRAME_BIT_PATH_AVAILABLE shift must match enum value");
+_Static_assert(XQC_FRAME_BIT_MP_NEW_CONNECTION_ID == ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_MP_NEW_CONNECTION_ID),
+               "XQC_FRAME_BIT_MP_NEW_CONNECTION_ID shift must match enum value");
+_Static_assert(XQC_FRAME_BIT_MP_RETIRE_CONNECTION_ID == ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_MP_RETIRE_CONNECTION_ID),
+               "XQC_FRAME_BIT_MP_RETIRE_CONNECTION_ID shift must match enum value");
+_Static_assert(XQC_FRAME_BIT_MAX_PATH_ID == ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_MAX_PATH_ID),
+               "XQC_FRAME_BIT_MAX_PATH_ID shift must match enum value");
+_Static_assert(XQC_FRAME_BIT_PATH_FROZEN == ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_PATH_FROZEN),
+               "XQC_FRAME_BIT_PATH_FROZEN shift must match enum value");
+/* Enum ordering pin: MP frame ordinals must stay contiguous and within
+ * INT_MAX (bit 31) so plain-int enum compilers don't truncate. If a new
+ * MP frame is inserted above ACK_MP, both these asserts and the bit-31
+ * boundary guards (above) need re-examination. */
+_Static_assert(XQC_FRAME_ACK_MP < 31,
+               "MP frame ordinals must remain below bit-31 boundary");
+_Static_assert(XQC_FRAME_PATH_FROZEN < 31,
+               "MP frame ordinals must remain below bit-31 boundary");
+
 
 /*
  * Ack-eliciting Packet:  A QUIC packet that contains frames other than
