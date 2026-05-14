@@ -197,10 +197,10 @@ xqc_h3_request_encode_rtts(xqc_h3_request_t *h3r, char *buff, size_t buff_size)
 
     /* PR3 §4.3 Rev 4: dynamic h3 stream paths_info. */
     for (uint32_t i = 0; i < h3_stream->paths_info_count; ++i) {
-        const xqc_path_metrics_t *m = &h3_stream->paths_info[i].metrics;
-        if ((m->path_send_bytes > 0) || (m->path_recv_bytes > 0)) {
+        const xqc_path_metrics_t *metrics = &h3_stream->paths_info[i].metrics;
+        if ((metrics->path_send_bytes > 0) || (metrics->path_recv_bytes > 0)) {
             ret = snprintf(buff + cursor, buff_size - cursor,
-                           "%"PRIu64"-", m->path_srtt / 1000);
+                           "%"PRIu64"-", metrics->path_srtt / 1000);
             cursor += ret;
 
             if (cursor >= buff_size) {
@@ -258,17 +258,17 @@ xqc_stream_info_print(xqc_h3_stream_t *h3_stream, xqc_request_stats_t *stats)
     }
 
     for (uint32_t i = 0; i < h3_stream->paths_info_count; ++i) {
-        const xqc_path_metrics_t *m = &h3_stream->paths_info[i].metrics;
-        if ((m->path_send_bytes > 0) || (m->path_recv_bytes > 0)) {
+        const xqc_path_metrics_t *metrics = &h3_stream->paths_info[i].metrics;
+        if ((metrics->path_send_bytes > 0) || (metrics->path_recv_bytes > 0)) {
             ret = snprintf(buff + cursor, buff_size - cursor,
                             "%"PRIu64"-%"PRIu64"-%"PRIu64"-%"PRIu64"-%"PRIu64"-%"PRIu64"-%d#",
                             h3_stream->paths_info[i].path_id,
-                            m->path_pkt_send_count,
-                            m->path_pkt_recv_count,
-                            m->path_send_bytes,
-                            m->path_recv_bytes,
-                            m->path_srtt,
-                            m->path_app_status);
+                            metrics->path_pkt_send_count,
+                            metrics->path_pkt_recv_count,
+                            metrics->path_send_bytes,
+                            metrics->path_recv_bytes,
+                            metrics->path_srtt,
+                            metrics->path_app_status);
             cursor += ret;
 
             if (cursor >= buff_size) {

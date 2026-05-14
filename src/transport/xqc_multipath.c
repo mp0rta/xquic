@@ -829,27 +829,27 @@ xqc_conn_path_metrics_print(xqc_connection_t *conn, xqc_conn_stats_t *stats)
             continue;
         }
         if (path->path_state >= XQC_PATH_STATE_ACTIVE && idx < active_count) {
-            xqc_path_metrics_t *m = &stats->paths_info[idx];
-            m->path_id              = path->path_id;
-            m->path_pkt_recv_count  = path->path_send_ctl->ctl_recv_count;
-            m->path_pkt_send_count  = path->path_send_ctl->ctl_send_count;
-            m->path_send_bytes      = path->path_send_ctl->ctl_app_bytes_send;
-            m->path_recv_bytes      = path->path_send_ctl->ctl_app_bytes_recv;
-            m->path_app_status      = path->app_path_status;
+            xqc_path_metrics_t *metrics = &stats->paths_info[idx];
+            metrics->path_id              = path->path_id;
+            metrics->path_pkt_recv_count  = path->path_send_ctl->ctl_recv_count;
+            metrics->path_pkt_send_count  = path->path_send_ctl->ctl_send_count;
+            metrics->path_send_bytes      = path->path_send_ctl->ctl_app_bytes_send;
+            metrics->path_recv_bytes      = path->path_send_ctl->ctl_app_bytes_recv;
+            metrics->path_app_status      = path->app_path_status;
 
             /* Extended scheduler metrics */
-            m->path_srtt            = path->path_send_ctl->ctl_srtt;
-            m->path_min_rtt         = path->path_send_ctl->ctl_minrtt;
-            m->path_bytes_in_flight = path->path_send_ctl->ctl_bytes_in_flight;
-            m->path_est_bw          = xqc_send_ctl_get_est_bw(path->path_send_ctl);
-            m->path_pacing_rate     = xqc_send_ctl_get_pacing_rate(path->path_send_ctl);
-            m->path_lost_count      = path->path_send_ctl->ctl_lost_count;
-            m->path_state           = path->path_state;
+            metrics->path_srtt            = path->path_send_ctl->ctl_srtt;
+            metrics->path_min_rtt         = path->path_send_ctl->ctl_minrtt;
+            metrics->path_bytes_in_flight = path->path_send_ctl->ctl_bytes_in_flight;
+            metrics->path_est_bw          = xqc_send_ctl_get_est_bw(path->path_send_ctl);
+            metrics->path_pacing_rate     = xqc_send_ctl_get_pacing_rate(path->path_send_ctl);
+            metrics->path_lost_count      = path->path_send_ctl->ctl_lost_count;
+            metrics->path_state           = path->path_state;
             if (path->path_send_ctl->ctl_cong_callback
                 && path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd)
             {
-                m->path_cwnd = path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(
-                                   path->path_send_ctl->ctl_cong);
+                metrics->path_cwnd = path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(
+                                         path->path_send_ctl->ctl_cong);
             }
 
             if (path->app_path_status == XQC_APP_PATH_STATUS_STANDBY) {
@@ -887,14 +887,14 @@ xqc_request_path_metrics_print(xqc_connection_t *conn, xqc_h3_stream_t *h3_strea
 
         /* PR3 §4.3 Rev 4: dynamic h3 stream paths_info — look up by path_id
          * instead of indexing into a fixed array. */
-        xqc_path_metrics_t *hm =
+        xqc_path_metrics_t *metrics =
             xqc_h3_stream_path_metrics_find(h3_stream, path->path_id);
-        if (hm != NULL) {
-            uint64_t send_bytes = hm->path_send_bytes;
-            uint64_t recv_bytes = hm->path_recv_bytes;
+        if (metrics != NULL) {
+            uint64_t send_bytes = metrics->path_send_bytes;
+            uint64_t recv_bytes = metrics->path_recv_bytes;
 
-            hm->path_srtt = path->path_send_ctl->ctl_srtt;
-            hm->path_app_status = path->app_path_status;
+            metrics->path_srtt = path->path_send_ctl->ctl_srtt;
+            metrics->path_app_status = path->app_path_status;
 
             if (send_bytes > 0 || recv_bytes > 0) {
                 aggregate_send_bytes += send_bytes;
@@ -965,9 +965,9 @@ xqc_stream_path_metrics_print(xqc_connection_t *conn, xqc_stream_t *stream, char
 
             /* PR3 §4.3 Rev 4: per-stream path metrics are now sparse.
              * Skip paths that have never had per-stream accounting. */
-            xqc_path_metrics_t *sm =
+            xqc_path_metrics_t *metrics =
                 xqc_stream_path_metrics_find(stream, path->path_id);
-            if (sm == NULL) {
+            if (metrics == NULL) {
                 continue;
             }
 
@@ -989,14 +989,14 @@ xqc_stream_path_metrics_print(xqc_connection_t *conn, xqc_stream_t *stream, char
                            xqc_send_ctl_get_srtt(send_ctl),
                            xqc_send_ctl_get_retrans_rate(send_ctl),
                            xqc_send_ctl_get_spurious_loss_rate(send_ctl),
-                           sm->path_pkt_send_count,
-                           sm->path_pkt_recv_count,
-                           sm->path_send_bytes,
-                           sm->path_send_reinject_bytes,
-                           sm->path_recv_bytes,
-                           sm->path_recv_reinject_bytes,
-                           sm->path_recv_effective_bytes,
-                           sm->path_recv_effective_reinject_bytes);
+                           metrics->path_pkt_send_count,
+                           metrics->path_pkt_recv_count,
+                           metrics->path_send_bytes,
+                           metrics->path_send_reinject_bytes,
+                           metrics->path_recv_bytes,
+                           metrics->path_recv_reinject_bytes,
+                           metrics->path_recv_effective_bytes,
+                           metrics->path_recv_effective_reinject_bytes);
             cursor += ret;
         }
     }
@@ -1012,14 +1012,14 @@ xqc_stream_path_metrics_on_send(xqc_connection_t *conn, xqc_packet_out_t *po)
             xqc_stream_t * stream = xqc_find_stream_by_id(po->po_stream_frames[i].ps_stream_id, conn->streams_hash);
 
             if (stream != NULL) {
-                xqc_path_metrics_t *m =
+                xqc_path_metrics_t *metrics =
                     xqc_stream_path_metrics_get_or_grow(stream, po->po_path_id);
-                if (m != NULL) {
-                    m->path_id = po->po_path_id;
-                    m->path_pkt_send_count += 1;
-                    m->path_send_bytes += po->po_stream_frames[i].ps_length;
+                if (metrics != NULL) {
+                    metrics->path_id = po->po_path_id;
+                    metrics->path_pkt_send_count += 1;
+                    metrics->path_send_bytes += po->po_stream_frames[i].ps_length;
                     if (po->po_flag & XQC_POF_REINJECTED_REPLICA) {
-                        m->path_send_reinject_bytes += po->po_stream_frames[i].ps_length;
+                        metrics->path_send_reinject_bytes += po->po_stream_frames[i].ps_length;
                     }
                 }
             }
@@ -1035,11 +1035,11 @@ xqc_stream_path_metrics_on_send(xqc_connection_t *conn, xqc_packet_out_t *po)
 void
 xqc_stream_path_metrics_on_recv(xqc_connection_t *conn, xqc_stream_t *stream, xqc_packet_in_t *pi)
 {
-    xqc_path_metrics_t *m =
+    xqc_path_metrics_t *metrics =
         xqc_stream_path_metrics_get_or_grow(stream, pi->pi_path_id);
-    if (m != NULL) {
-        m->path_id = pi->pi_path_id;
-        m->path_pkt_recv_count += 1;
+    if (metrics != NULL) {
+        metrics->path_id = pi->pi_path_id;
+        metrics->path_pkt_recv_count += 1;
     }
 }
 
