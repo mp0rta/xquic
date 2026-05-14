@@ -970,7 +970,11 @@ xqc_stream_path_metrics_print(xqc_connection_t *conn, xqc_stream_t *stream, char
                 break;
             }
 
-            if (path->path_id >= XQC_MAX_PATHS_COUNT) {
+            /* PR3 §4.3 Rev 4: per-stream path metrics are now sparse.
+             * Skip paths that have never had per-stream accounting. */
+            xqc_path_metrics_t *sm =
+                xqc_stream_path_metrics_find(stream, path->path_id);
+            if (sm == NULL) {
                 continue;
             }
 
@@ -992,14 +996,14 @@ xqc_stream_path_metrics_print(xqc_connection_t *conn, xqc_stream_t *stream, char
                            xqc_send_ctl_get_srtt(send_ctl),
                            xqc_send_ctl_get_retrans_rate(send_ctl),
                            xqc_send_ctl_get_spurious_loss_rate(send_ctl),
-                           stream->paths_info[path->path_id].path_pkt_send_count,
-                           stream->paths_info[path->path_id].path_pkt_recv_count,
-                           stream->paths_info[path->path_id].path_send_bytes,
-                           stream->paths_info[path->path_id].path_send_reinject_bytes,
-                           stream->paths_info[path->path_id].path_recv_bytes,
-                           stream->paths_info[path->path_id].path_recv_reinject_bytes,
-                           stream->paths_info[path->path_id].path_recv_effective_bytes,
-                           stream->paths_info[path->path_id].path_recv_effective_reinject_bytes);
+                           sm->path_pkt_send_count,
+                           sm->path_pkt_recv_count,
+                           sm->path_send_bytes,
+                           sm->path_send_reinject_bytes,
+                           sm->path_recv_bytes,
+                           sm->path_recv_reinject_bytes,
+                           sm->path_recv_effective_bytes,
+                           sm->path_recv_effective_reinject_bytes);
             cursor += ret;
         }
     }
@@ -1014,13 +1018,16 @@ xqc_stream_path_metrics_on_send(xqc_connection_t *conn, xqc_packet_out_t *po)
         {
             xqc_stream_t * stream = xqc_find_stream_by_id(po->po_stream_frames[i].ps_stream_id, conn->streams_hash);
 
-            if (stream != NULL && po->po_path_id < XQC_MAX_PATHS_COUNT) {
-                stream->paths_info[po->po_path_id].path_id = po->po_path_id;
-                stream->paths_info[po->po_path_id].path_pkt_send_count += 1;
-                stream->paths_info[po->po_path_id].path_send_bytes += po->po_stream_frames[i].ps_length;
-
-                if (po->po_flag & XQC_POF_REINJECTED_REPLICA) {
-                    stream->paths_info[po->po_path_id].path_send_reinject_bytes += po->po_stream_frames[i].ps_length;
+            if (stream != NULL) {
+                xqc_path_metrics_t *m =
+                    xqc_stream_path_metrics_get_or_grow(stream, po->po_path_id);
+                if (m != NULL) {
+                    m->path_id = po->po_path_id;
+                    m->path_pkt_send_count += 1;
+                    m->path_send_bytes += po->po_stream_frames[i].ps_length;
+                    if (po->po_flag & XQC_POF_REINJECTED_REPLICA) {
+                        m->path_send_reinject_bytes += po->po_stream_frames[i].ps_length;
+                    }
                 }
             }
 
@@ -1035,9 +1042,11 @@ xqc_stream_path_metrics_on_send(xqc_connection_t *conn, xqc_packet_out_t *po)
 void
 xqc_stream_path_metrics_on_recv(xqc_connection_t *conn, xqc_stream_t *stream, xqc_packet_in_t *pi)
 {
-    if (pi->pi_path_id < XQC_MAX_PATHS_COUNT) {
-        stream->paths_info[pi->pi_path_id].path_id = pi->pi_path_id;
-        stream->paths_info[pi->pi_path_id].path_pkt_recv_count += 1;
+    xqc_path_metrics_t *m =
+        xqc_stream_path_metrics_get_or_grow(stream, pi->pi_path_id);
+    if (m != NULL) {
+        m->path_id = pi->pi_path_id;
+        m->path_pkt_recv_count += 1;
     }
 }
 
