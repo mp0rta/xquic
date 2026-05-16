@@ -1,3 +1,9 @@
+# mp0rta/xquic — fork notice
+
+This is the **mp0rta/xquic** fork of [alibaba/xquic](https://github.com/alibaba/xquic), adding [draft-ietf-quic-multipath-21](https://datatracker.ietf.org/doc/draft-ietf-quic-multipath/21/) wire compliance for the [mqvpn](https://github.com/mp0rta/mqvpn) project. Per-PR audit findings against the draft live under [`docs/audit-notes/`](docs/audit-notes/). Upstream alibaba/xquic README follows.
+
+---
+
 # XQUIC
 <img src="docs/images/xquic_logo.png" alt="xquic logo" width=585.9 height=309.1/>
 

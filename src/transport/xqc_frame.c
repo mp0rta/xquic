@@ -1823,6 +1823,9 @@ xqc_process_path_response_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_
         && (path->rebinding_addrlen != 0)
         && (path->rebinding_check_response == 1))
     {
+        /* TODO(G-I4): RFC 9000 §9.4 — on confirmed NAT rebind, MUST reset
+         * congestion controller cwnd and RTT estimator. See
+         * docs/audit-notes/pr4-l5a-audit-findings.md row G-I4. */
         /* successfully validate rebinding addr */
         xqc_memcpy(path->peer_addr, path->rebinding_addr, path->rebinding_addrlen);
         path->peer_addrlen = path->rebinding_addrlen;
