@@ -21,6 +21,9 @@
 #include "src/transport/xqc_utils.h"
 #include "src/transport/xqc_datagram.h"
 #include "src/transport/xqc_reinjection.h"
+#include "src/transport/xqc_multipath.h"
+#include "src/transport/xqc_frame_parser.h"
+#include "src/common/utils/vint/xqc_variable_len_int.h"
 
 int 
 xqc_send_ctl_may_remove_unacked_dgram(xqc_connection_t *conn, xqc_packet_out_t *po)
@@ -1230,6 +1233,82 @@ xqc_send_ctl_on_spurious_loss_detected(xqc_send_ctl_t *send_ctl,
             send_ctl->ctl_reordering_packet_threshold, send_ctl->ctl_reordering_time_threshold_shift);
 }
 
+/* G-F19 helper: parse MAX_PATH_ID value from po_payload.
+ * The only writer (xqc_write_max_path_id_to_packet at xqc_packet_out.c:1864)
+ * creates a fresh packet via xqc_write_new_packet and writes a single
+ * MAX_PATH_ID frame at offset 0 of po_payload. So we read two varints
+ * directly: type tag followed by value. If the write-site invariant
+ * changes (e.g., MAX_PATH_ID becomes coalesced with other frames), this
+ * parser MUST be revisited. */
+static xqc_int_t
+xqc_loss_replay_parse_max_path_id(xqc_packet_out_t *po, uint64_t *out)
+{
+    if (po->po_payload == NULL || po->po_used_size == 0) {
+        return -XQC_EPARAM;
+    }
+    const unsigned char *p   = po->po_payload;
+    const unsigned char *end = po->po_buf + po->po_used_size;
+    uint64_t type_tag = 0;
+    int n = xqc_vint_read(p, end, &type_tag);
+    if (n <= 0) {
+        return -XQC_EVINTREAD;
+    }
+    p += n;
+    n = xqc_vint_read(p, end, out);
+    if (n <= 0) {
+        return -XQC_EVINTREAD;
+    }
+    return XQC_OK;
+}
+
+/* G-F9 / G-F19 (draft-21 §4.3 ¶12 / §4.6 ¶8): returns 1 when the lost
+ * packet content has been superseded by newer state and so MUST NOT be
+ * replayed. The caller is xqc_send_ctl_detect_lost; loss counters are
+ * still bumped in the surrounding loop (Rev 3 R4). */
+xqc_int_t
+xqc_loss_replay_should_suppress(xqc_connection_t *conn, xqc_packet_out_t *po)
+{
+    /* G-F9: PATH_STATUS — suppress if older than current path seq, or
+     * if the path is gone (Rev 3 R5). po_path_status_seq is set at
+     * write time AFTER ++app_path_status_send_seq_num, so the first
+     * status packet carries seq 1; seq==0 with the bit set would be a
+     * struct-init bug, but the `<` comparison below handles it safely
+     * (would just replay, which is the conservative default). */
+    if (po->po_frame_types & XQC_FRAME_BIT_PATH_STATUS) {
+        xqc_path_ctx_t *path = xqc_conn_find_path_by_path_id(conn, po->po_path_id);
+        if (path == NULL) {
+            xqc_log(conn->log, XQC_LOG_DEBUG,
+                    "|G-F9 suppress: path gone|po_path_id:%ui|", po->po_path_id);
+            return 1;
+        }
+        if (po->po_path_status_seq < path->app_path_status_send_seq_num) {
+            xqc_log(conn->log, XQC_LOG_DEBUG,
+                    "|G-F9 suppress stale PATH_STATUS|path:%ui|po_seq:%ui|latest:%ui|",
+                    path->path_id, po->po_path_status_seq,
+                    path->app_path_status_send_seq_num);
+            return 1;
+        }
+        /* carried == latest: replay (Rev 3 R2-N4: "no more recent"). */
+    }
+
+    /* G-F19: MAX_PATH_ID — parse value on-demand from payload, compare
+     * to current. carried == conn->local_max_path_id is NOT stale per
+     * spec §4.6 ¶8 ("no more recent MAX_PATH_ID frame has been sent"). */
+    if (po->po_frame_types & XQC_FRAME_BIT_MAX_PATH_ID) {
+        uint64_t carried = 0;
+        if (xqc_loss_replay_parse_max_path_id(po, &carried) == XQC_OK
+            && carried < conn->local_max_path_id)
+        {
+            xqc_log(conn->log, XQC_LOG_DEBUG,
+                    "|G-F19 suppress stale MAX_PATH_ID|po_value:%ui|latest:%ui|",
+                    carried, conn->local_max_path_id);
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 /**
  * DetectAndRemoveLostPackets + OnPacketsLost
  */
@@ -1335,7 +1414,15 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                     || (po->po_flag & XQC_POF_NOTIFY)
                     || repair_dgram == XQC_DGRAM_RETX_ASKED_BY_APP)
                 {
-                    xqc_send_queue_copy_to_lost(po, send_queue, XQC_TRUE);
+                    /* G-F9 / G-F19 (draft-21 §4.3 ¶12 / §4.6 ¶8, Rev 3
+                     * R4): skip copy_to_lost when the carried PATH_STATUS
+                     * seq or MAX_PATH_ID value is already stale; loss
+                     * counters below this branch still bump. */
+                    if (xqc_loss_replay_should_suppress(conn, po)) {
+                        xqc_send_queue_maybe_remove_unacked(po, conn->conn_send_queue, NULL);
+                    } else {
+                        xqc_send_queue_copy_to_lost(po, send_queue, XQC_TRUE);
+                    }
 
                 } else {
                     if (po->po_frame_types & XQC_FRAME_BIT_DATAGRAM) {

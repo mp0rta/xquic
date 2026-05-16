@@ -1452,3 +1452,108 @@ xqc_test_mp21_path_validation_timeout(void)
     xqc_test_mp21_free_conn(conn);
 }
 
+/* ------------------------------------------------------------------
+ * PR6 L5c — G-F9 + G-F19 loss-replay stale-frame suppression
+ *
+ * Spec:
+ *   draft-ietf-quic-multipath-21 §4.3 ¶12 (G-F9):
+ *     "resend [PATH_STATUS] only if it contains the last status sent
+ *      for that path"
+ *   draft-ietf-quic-multipath-21 §4.6 ¶8 (G-F19):
+ *     "MAX_PATH_ID frames ... SHOULD be retransmitted when lost and
+ *      no more recent MAX_PATH_ID frame has been sent."
+ *
+ * The fixture exercises xqc_loss_replay_should_suppress() directly.
+ * The wire-in inside xqc_send_ctl_detect_lost is engine-bound and
+ * covered by the loss-detection integration tests in tests/cases.
+ * ------------------------------------------------------------------ */
+
+#include "src/common/utils/vint/xqc_variable_len_int.h"
+
+/* Encode `[type-varint][value-varint]` MAX_PATH_ID frame into the
+ * caller-supplied scratch buffer and point po_payload at the start.
+ * Test-only helper. */
+static void
+xqc_test_mp21_encode_max_path_id_payload(xqc_packet_out_t *po,
+                                         uint64_t value,
+                                         unsigned char *scratch,
+                                         size_t scratch_cap)
+{
+    po->po_buf      = scratch;
+    po->po_buf_cap  = scratch_cap;
+    po->po_buf_size = (unsigned int)scratch_cap;
+    po->po_payload  = scratch;
+
+    unsigned char *p = scratch;
+
+    uint64_t type = XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21;
+    unsigned type_bits = xqc_vint_get_2bit(type);
+    xqc_vint_write(p, type, type_bits, xqc_vint_len(type_bits));
+    p += xqc_vint_len(type_bits);
+
+    unsigned val_bits = xqc_vint_get_2bit(value);
+    xqc_vint_write(p, value, val_bits, xqc_vint_len(val_bits));
+    p += xqc_vint_len(val_bits);
+
+    po->po_used_size = (unsigned int)(p - scratch);
+}
+
+void
+xqc_test_mp21_loss_replay_should_suppress_stale(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 10,
+        .remote_max_path_id = 10,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->enable_multipath = 1;
+
+    xqc_path_ctx_t *path = xqc_test_helper_path_synthesize(conn, 1,
+                                                           XQC_PATH_STATE_ACTIVE);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+
+    /* === G-F9: PATH_STATUS stale seq → suppress ============================ */
+    path->app_path_status_send_seq_num = 5;
+    xqc_packet_out_t po1 = {0};
+    po1.po_path_id        = path->path_id;
+    po1.po_frame_types    = XQC_FRAME_BIT_PATH_STATUS;
+    po1.po_path_status_seq = 3;  /* older than latest=5 */
+    CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po1), 1);
+
+    po1.po_path_status_seq = 5;  /* equal-to-latest: replay */
+    CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po1), 0);
+
+    /* === G-F9 R5: NULL path (path abandoned) → suppress ==================== */
+    xqc_packet_out_t po2 = {0};
+    po2.po_path_id        = 999;  /* no such path */
+    po2.po_frame_types    = XQC_FRAME_BIT_PATH_STATUS;
+    po2.po_path_status_seq = 1;
+    CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po2), 1);
+
+    /* === G-F19: MAX_PATH_ID stale value → suppress (parsed on-demand) ====== */
+    conn->local_max_path_id = 10;
+
+    unsigned char scratch[16];
+    xqc_packet_out_t po3 = {0};
+    po3.po_frame_types = XQC_FRAME_BIT_MAX_PATH_ID;
+    xqc_test_mp21_encode_max_path_id_payload(&po3, /*value=*/5,
+                                              scratch, sizeof(scratch));
+    CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po3), 1);
+
+    /* === G-F19: current value (carried == latest) → replay (R2-N4) ========= */
+    xqc_test_mp21_encode_max_path_id_payload(&po3, /*value=*/10,
+                                              scratch, sizeof(scratch));
+    CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po3), 0);
+
+    /* === Sanity: neither bit set → never suppress ========================== */
+    xqc_packet_out_t po4 = {0};
+    po4.po_frame_types = XQC_FRAME_BIT_PING;
+    CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po4), 0);
+
+    xqc_test_helper_path_destroy(path);
+    xqc_test_mp21_free_conn(conn);
+}
+
