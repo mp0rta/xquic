@@ -1763,29 +1763,22 @@ xqc_process_path_challenge_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
             path->path_id, path->path_state, XQC_PATH_CHALLENGE_DATA_LEN,
             path_challenge_data, xqc_dcid_str(conn->engine, &packet_in->pi_pkt.pkt_dcid));
 
-    /* draft-21 §3.1 ¶6 (G-P2): "Each endpoint MUST also validate that a
-     * minimum QUIC packet MTU of 1200 bytes is supported on the path."
-     * Receive-side check on the PATH_CHALLENGE-bearing QUIC packet.
-     * Send-side is inherited from xqc_need_padding() which pads any
-     * PATH_CHALLENGE/PATH_RESPONSE-bearing packet to XQC_QUIC_MIN_MSS
-     * unconditionally (xqc_conn.c xqc_need_padding).
-     *
-     * packet_in->buf_size is the remaining-bytes-from-the-current-packet
-     * view of the UDP datagram; for the typical non-coalesced PATH_CHALLENGE
-     * datagram (RFC 9000 §8.2.1 requires 1200B-padded datagrams for these
-     * frames) it equals the original UDP datagram size. See
-     * docs/audit-notes/pr5-l5b-audit.md row "Pre-5 buf_size" for the
-     * coalesce-corner-case conservative-failure note.
-     *
-     * Failure → emit PATH_ABANDON with PATH_UNSTABLE_OR_POOR (least
-     * misleading among the 4 defined codepoints; spec §4.2.1 does not
-     * pin a specific code for MTU validation failure) + transition to
-     * CLOSING. */
+    /* draft-21 §3.1 ¶6 (G-P2): 1200B MTU MUST on validation receive.
+     * Gated on VALIDATING — a stray sub-1200 on an ACTIVE path is the
+     * peer's fault and must not tear down an established path; drop the
+     * challenge instead. See audit memo row G-P2. */
     if (packet_in->buf_size < XQC_QUIC_MIN_MSS) {
+        if (path->path_state == XQC_PATH_STATE_VALIDATING) {
+            xqc_log(conn->log, XQC_LOG_WARN,
+                    "|G-P2 MTU validation failed|path_id:%ui|buf_size:%uz|min:%d|",
+                    path->path_id, packet_in->buf_size, XQC_QUIC_MIN_MSS);
+            (void)xqc_path_request_abandon(path, TRA_PATH_UNSTABLE_OR_POOR);
+            return XQC_OK;
+        }
         xqc_log(conn->log, XQC_LOG_WARN,
-                "|G-P2 MTU validation failed|path_id:%ui|buf_size:%uz|min:%d|",
-                path->path_id, packet_in->buf_size, XQC_QUIC_MIN_MSS);
-        (void)xqc_path_request_abandon(path, TRA_PATH_UNSTABLE_OR_POOR);
+                "|G-P2 stray sub-1200 PATH_CHALLENGE on ACTIVE path, dropping"
+                "|path_id:%ui|state:%d|buf_size:%uz|",
+                path->path_id, path->path_state, packet_in->buf_size);
         return XQC_OK;
     }
 
