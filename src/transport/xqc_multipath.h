@@ -124,6 +124,11 @@ struct xqc_path_ctx_s {
     uint64_t            close_error_code;
     uint8_t             close_requested;
 
+    /* draft-21 §3.1 ¶10 (G-P3): counts consecutive PATH_CHALLENGE
+     * retransmit attempts observed on the loss-detection cycle without
+     * a matching PATH_RESPONSE. Reset to 0 on PATH_RESPONSE match. */
+    uint8_t             path_challenge_attempts;
+
     xqc_path_flag_t     path_flag;
 
     /* application layer path status, sync via PATH_STATUS frame */
@@ -242,6 +247,24 @@ xqc_int_t xqc_path_immediate_close(xqc_path_ctx_t *path);
  * later (matches xqc_path_immediate_close semantics).
  */
 xqc_int_t xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code);
+
+/* G-P3 (draft-21 §3.1 ¶10): after this many consecutive PATH_CHALLENGE
+ * retransmits without a matching PATH_RESPONSE, the path is treated as
+ * failing validation and explicitly closed. Spec does not pin a
+ * specific value; 3 is the implementer-chosen default matching QUIC's
+ * general retry-budget shape. Cadence is the loss-detection cycle
+ * (PTO/RTT-scaled), NOT a fixed wall-clock interval — see
+ * docs/audit-notes/pr5-l5b-audit.md row "Pre-5 cadence". */
+#define XQC_PATH_VALIDATION_MAX_ATTEMPTS  3
+
+/* G-P3 retx-cycle callback: invoked each time a PATH_CHALLENGE on a
+ * VALIDATING path is observed as lost by the loss-detection cycle.
+ * Increments path->path_challenge_attempts; on reaching the threshold,
+ * explicitly closes the path with PATH_UNSTABLE_OR_POOR.
+ *
+ * Returns XQC_OK on success (regardless of whether the threshold
+ * triggered). Idempotent on already-CLOSING paths. */
+xqc_int_t xqc_path_validation_on_retx(xqc_path_ctx_t *path);
 
 /* path state: "ACTIVE/CLOSING/DRAINING" -> "CLOSED" */
 xqc_int_t xqc_path_closed(xqc_path_ctx_t *path);
