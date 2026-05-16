@@ -291,6 +291,47 @@ xqc_send_ctl_reset(xqc_send_ctl_t *send_ctl)
     xqc_log_event(conn->log, REC_PARAMETERS_SET, send_ctl, XQC_kGranularity, conn->conn_settings.cc_params);
 }
 
+/*
+ * Reset cwnd + RTT estimator for one path. Called by the
+ * rebinding-validated branch in xqc_process_path_response_frame()
+ * when the peer's IP has changed. NOT called for port-only changes
+ * - the caller gates on xqc_is_same_ip() per the §9.4 ¶1 carve-out.
+ *
+ * RFC 9000 §9.4 ¶1: "an endpoint MUST immediately reset the
+ * congestion controller and round-trip time estimator for the new
+ * path to initial values (see Appendices A.3 and B.3 of
+ * [QUIC-RECOVERY]) unless the only change in the peer's address is
+ * its port number." Inherited per-path by
+ * draft-ietf-quic-multipath-21 §5.1 ¶5.
+ *
+ * §9.4 ¶2 MUST NOT reset PTO / loss-detection timers - this is
+ * why we cannot reuse xqc_send_ctl_reset(), which zeros
+ * ctl_pto_count. ctl_bytes_in_flight and the loss-detection state
+ * for still-inflight pre-migration packets remain valid.
+ */
+void
+xqc_send_ctl_on_path_migration(xqc_send_ctl_t *send_ctl)
+{
+    xqc_connection_t *conn = send_ctl->ctl_conn;
+    xqc_path_ctx_t   *path = send_ctl->ctl_path;
+
+    /* RTT estimator - match initial values from xqc_send_ctl_reset */
+    send_ctl->ctl_minrtt                = XQC_MAX_UINT32_VALUE;
+    send_ctl->ctl_srtt                  = conn->conn_settings.initial_rtt;
+    send_ctl->ctl_rttvar                = send_ctl->ctl_srtt / 2;
+    send_ctl->ctl_first_rtt_sample_time = 0;
+
+    /* Congestion window - delegate to CC algorithm's reset hook. */
+    if (send_ctl->ctl_cong_callback->xqc_cong_ctl_reset_cwnd) {
+        send_ctl->ctl_max_bytes_in_flight = 0;
+        send_ctl->ctl_cong_callback->xqc_cong_ctl_reset_cwnd(send_ctl->ctl_cong);
+    }
+
+    xqc_log(conn->log, XQC_LOG_INFO,
+            "|path:%ui|MIGRATION|cwnd_rtt_reset|srtt:%ui|",
+            path->path_id, send_ctl->ctl_srtt);
+}
+
 xqc_pn_ctl_t *
 xqc_pn_ctl_create(xqc_connection_t *conn)
 {

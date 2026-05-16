@@ -192,6 +192,7 @@ typedef struct {
 } xqc_path_info_t;
 
 xqc_bool_t xqc_is_same_addr(const struct sockaddr *sa1, const struct sockaddr *sa2);
+xqc_bool_t xqc_is_same_ip(const struct sockaddr *sa1, const struct sockaddr *sa2);
 xqc_bool_t xqc_is_same_addr_as_any_path(xqc_connection_t *conn, const struct sockaddr *peer_addr);
 
 xqc_int_t xqc_generate_path_challenge_data(xqc_connection_t *conn, xqc_path_ctx_t *path);

@@ -1847,14 +1847,38 @@ xqc_process_path_response_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_
         && (path->rebinding_addrlen != 0)
         && (path->rebinding_check_response == 1))
     {
-        /* TODO(G-I4): RFC 9000 §9.4 — on confirmed NAT rebind, MUST reset
-         * congestion controller cwnd and RTT estimator. See
-         * docs/audit-notes/pr4-l5a-audit-findings.md row G-I4. */
+        /* G-I4 (RFC 9000 §9.4 ¶1, inherited per-path by
+         * draft-ietf-quic-multipath-21 §5.1 ¶5): snapshot the OLD
+         * peer_addr before the memcpy below overwrites it, so the
+         * post-update IP-change check can compare against it. */
+        struct sockaddr_storage old_peer;
+        socklen_t old_peer_len = path->peer_addrlen;
+        memset(&old_peer, 0, sizeof(old_peer));
+        if (old_peer_len > 0) {
+            xqc_memcpy(&old_peer, path->peer_addr, old_peer_len);
+        }
+
         /* successfully validate rebinding addr */
         xqc_memcpy(path->peer_addr, path->rebinding_addr, path->rebinding_addrlen);
         path->peer_addrlen = path->rebinding_addrlen;
         path->addr_str_len = 0;
         xqc_log(conn->log, XQC_LOG_INFO, "|path:%ui|REBINDING|validate NAT rebinding addr|path:%s|", path->path_id, xqc_path_addr_str(path));
+
+        /* RFC 9000 §9.4 ¶1 (inherited by mp21 §5.1 ¶5):
+         *   IP change       -> MUST reset cwnd + RTT (initial values).
+         *   Port-only change -> MAY retain (perf-preserving for
+         *                       CGNAT pinhole churn). */
+        if (old_peer_len > 0
+            && !xqc_is_same_ip((struct sockaddr *)&old_peer,
+                               (struct sockaddr *)path->peer_addr))
+        {
+            xqc_send_ctl_on_path_migration(path->path_send_ctl);
+
+        } else {
+            xqc_log(conn->log, XQC_LOG_INFO,
+                    "|path:%ui|REBINDING|port_only_retain|spec:9.4_p1_MAY|",
+                    path->path_id);
+        }
 
         if (conn->enable_multipath
             && (path->path_id != XQC_INITIAL_PATH_ID))
