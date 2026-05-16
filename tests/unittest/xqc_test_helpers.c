@@ -11,6 +11,8 @@
 #include "xqc_mp21_compliance_test.h"
 #include "src/transport/xqc_cid.h"
 #include "src/transport/xqc_multipath.h"
+#include "src/transport/xqc_packet_out.h"
+#include "src/transport/xqc_send_queue.h"
 #include "src/common/xqc_list.h"
 
 /* ------------------------------------------------------------------ */
@@ -171,4 +173,62 @@ xqc_test_helper_path_destroy(struct xqc_path_ctx_s *path)
         xqc_list_del(&path->path_list);
     }
     free(path);
+}
+
+/* ------------------------------------------------------------------ */
+/* L5d send-side helpers (PR7): scan the send queue(s) for queued
+ * packet_out objects matching a frame-type bit. Used by G-P14
+ * (PATH_ABANDON alt-path pin) and G-P16 (PATHS_BLOCKED rate-limit)
+ * assertions.
+ * ------------------------------------------------------------------ */
+static xqc_packet_out_t *
+xqc_test_scan_list_for_frame(xqc_list_head_t *head, uint64_t frame_bit,
+                             int *count_out)
+{
+    xqc_packet_out_t *first = NULL;
+    xqc_list_head_t *pos, *next;
+    if (head == NULL || head->next == NULL) {
+        return NULL;
+    }
+    xqc_list_for_each_safe(pos, next, head) {
+        xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+        if ((po->po_frame_types & frame_bit) != 0) {
+            if (first == NULL) {
+                first = po;
+            }
+            if (count_out) {
+                (*count_out)++;
+            }
+        }
+    }
+    return first;
+}
+
+xqc_packet_out_t *
+xqc_test_find_packet_with_frame(xqc_connection_t *conn, uint64_t frame_bit)
+{
+    if (conn == NULL || conn->conn_send_queue == NULL) {
+        return NULL;
+    }
+    xqc_packet_out_t *hit = xqc_test_scan_list_for_frame(
+        &conn->conn_send_queue->sndq_send_packets_high_pri, frame_bit, NULL);
+    if (hit) {
+        return hit;
+    }
+    return xqc_test_scan_list_for_frame(
+        &conn->conn_send_queue->sndq_send_packets, frame_bit, NULL);
+}
+
+int
+xqc_test_count_packets_with_frame(xqc_connection_t *conn, uint64_t frame_bit)
+{
+    int n = 0;
+    if (conn == NULL || conn->conn_send_queue == NULL) {
+        return 0;
+    }
+    (void)xqc_test_scan_list_for_frame(
+        &conn->conn_send_queue->sndq_send_packets_high_pri, frame_bit, &n);
+    (void)xqc_test_scan_list_for_frame(
+        &conn->conn_send_queue->sndq_send_packets, frame_bit, &n);
+    return n;
 }
