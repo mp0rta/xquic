@@ -248,6 +248,12 @@ void xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl, xqc_packet_out_t *ac
 
 void xqc_send_queue_maybe_remove_unacked(xqc_packet_out_t *packet_out, xqc_send_queue_t *send_queue, xqc_path_ctx_t *path);
 
+/* G-F9 (draft-21 §4.3 ¶12) + G-F19 (§4.6 ¶8): returns 1 if the lost
+ * packet's content is stale (superseded by newer state) and SHOULD NOT
+ * be replayed. Otherwise 0. Called from the XQC_NEED_REPAIR arm of
+ * xqc_send_ctl_detect_lost. */
+xqc_int_t xqc_loss_replay_should_suppress(xqc_connection_t *conn, xqc_packet_out_t *po);
+
 xqc_usec_t xqc_send_ctl_get_pto_time_and_space(xqc_send_ctl_t *send_ctl, xqc_usec_t now, xqc_pkt_num_space_t *pns_ret);
 
 void xqc_send_ctl_set_loss_detection_timer(xqc_send_ctl_t *send_ctl);
