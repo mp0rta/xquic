@@ -1600,8 +1600,8 @@ xqc_client_create_path_socket(xqc_user_path_t *path,
         return XQC_ERROR;
     }
 
-    if (g_test_case == 103 || g_test_case == 104
-        || g_test_case == 105 || g_test_case == 106) {
+    if (g_test_case == 103 || g_test_case == 104 || g_test_case == 106) {
+        /* Cases 103/104/106: kernel-chosen src IP (port-only rebinding). */
         path->rebinding_path_fd = xqc_client_create_socket((g_ipv6 ? AF_INET6 : AF_INET),
                                         path->peer_addr, path->peer_addrlen, path_interface);
         if (path->rebinding_path_fd < 0) {
@@ -1609,26 +1609,41 @@ xqc_client_create_path_socket(xqc_user_path_t *path,
             return XQC_ERROR;
         }
 
-        if (g_test_case == 105) {
-            /* RFC 9000 section 9.4 paragraph 1 IP-change scenario: force
-             * the rebinding probe to come from a different source IP
-             * (127.0.0.2 on lo) so the server's rebinding detection
-             * observes an IP change rather than just a port rotation. */
-            struct sockaddr_in local2;
-            memset(&local2, 0, sizeof(local2));
-            local2.sin_family = AF_INET;
-            local2.sin_addr.s_addr = htonl(0x7F000002);  /* 127.0.0.2 */
-            local2.sin_port = 0;  /* let OS pick port */
-            int one = 1;
-            setsockopt(path->rebinding_path_fd, SOL_SOCKET, SO_REUSEADDR,
-                       &one, sizeof(one));
-            if (bind(path->rebinding_path_fd, (struct sockaddr *)&local2,
-                     sizeof(local2)) < 0) {
-                printf("|case 105 bind 127.0.0.2 failed: %s|",
-                       strerror(errno));
-                return XQC_ERROR;
-            }
+    } else if (g_test_case == 105) {
+        /* Case 105: RFC 9000 §9.4 ¶1 IP-change test. xqc_client_create_socket
+         * calls connect() inline; a UDP socket cannot be bind()-ed after
+         * connect() (EINVAL). So build the rebinding fd manually with the
+         * correct order: socket → setsockopt → bind(127.0.0.2:0) →
+         * connect(peer). This forces the kernel to use 127.0.0.2 as src IP
+         * so the server detects an IP-change rebinding. */
+        int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0) {
+            printf("|case 105 socket failed: %s|", strerror(errno));
+            return XQC_ERROR;
         }
+        int one = 1;
+        int size = 1 * 1024 * 1024;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(int));
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(int));
+        fcntl(fd, F_SETFL, O_NONBLOCK);
+
+        struct sockaddr_in local2;
+        memset(&local2, 0, sizeof(local2));
+        local2.sin_family = AF_INET;
+        local2.sin_addr.s_addr = htonl(0x7F000002);  /* 127.0.0.2 */
+        local2.sin_port = 0;
+        if (bind(fd, (struct sockaddr *)&local2, sizeof(local2)) < 0) {
+            printf("|case 105 bind 127.0.0.2 failed: %s|", strerror(errno));
+            close(fd);
+            return XQC_ERROR;
+        }
+        if (connect(fd, (struct sockaddr *)path->peer_addr, path->peer_addrlen) < 0) {
+            printf("|case 105 connect failed: %s|", strerror(errno));
+            close(fd);
+            return XQC_ERROR;
+        }
+        path->rebinding_path_fd = fd;
     }
 #endif
 

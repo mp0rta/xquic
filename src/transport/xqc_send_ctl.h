@@ -195,6 +195,8 @@ void xqc_send_ctl_destroy(xqc_send_ctl_t *send_ctl);
 
 void xqc_send_ctl_reset(xqc_send_ctl_t *send_ctl);
 
+void xqc_send_ctl_on_path_migration(xqc_send_ctl_t *send_ctl);
+
 xqc_pn_ctl_t *xqc_pn_ctl_create(xqc_connection_t *conn);
 
 void xqc_pn_ctl_destroy(xqc_pn_ctl_t *pn_ctl);

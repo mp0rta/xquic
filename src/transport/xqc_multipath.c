@@ -1212,6 +1212,43 @@ xqc_is_same_addr(const struct sockaddr *sa1, const struct sockaddr *sa2)
     return XQC_TRUE;
 }
 
+/*
+ * IP-only comparator. Mirrors xqc_is_same_addr() minus the port
+ * comparison so callers can detect §9.4 ¶1 port-only changes vs
+ * IP changes on path migration / NAT rebinding validation.
+ */
+xqc_bool_t
+xqc_is_same_ip(const struct sockaddr *sa1, const struct sockaddr *sa2)
+{
+    struct sockaddr_in   *sin1, *sin2;
+    struct sockaddr_in6  *sin61, *sin62;
+
+    if (sa1->sa_family != sa2->sa_family) {
+        return XQC_FALSE;
+    }
+
+    switch (sa1->sa_family) {
+
+        case AF_INET6:
+            sin61 = (struct sockaddr_in6 *) sa1;
+            sin62 = (struct sockaddr_in6 *) sa2;
+
+            /* sin6_scope_id intentionally NOT compared: link-local
+             * cross-iface rebinding is not a supported migration
+             * scenario. Treating "same bytes + different scope_id" as
+             * "same IP" suppresses spurious resets in the rare case
+             * it happens, without affecting correctness. */
+            return memcmp(&sin61->sin6_addr, &sin62->sin6_addr, 16) == 0
+                ? XQC_TRUE : XQC_FALSE;
+
+        default: /* AF_INET */
+            sin1 = (struct sockaddr_in *) sa1;
+            sin2 = (struct sockaddr_in *) sa2;
+            return sin1->sin_addr.s_addr == sin2->sin_addr.s_addr
+                ? XQC_TRUE : XQC_FALSE;
+    }
+}
+
 xqc_bool_t
 xqc_is_same_addr_as_any_path(xqc_connection_t *conn, const struct sockaddr *peer_addr)
 {
