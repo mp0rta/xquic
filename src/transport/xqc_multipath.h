@@ -115,6 +115,15 @@ struct xqc_path_ctx_s {
     xqc_path_state_t    path_state;
     unsigned char       path_challenge_data[XQC_PATH_CHALLENGE_DATA_LEN];
 
+    /* draft-21 §3.1 ¶6 (G-P2) / §3.1 ¶10 (G-P3): when the path is
+     * explicitly closed due to a validation MUST violation, record the
+     * error code that was passed to PATH_ABANDON. close_requested is
+     * set even when conn_send_queue is unavailable (e.g. unit-test
+     * fixture), so observers can confirm "the local endpoint explicitly
+     * closed the path" without depending on wire serialization. */
+    uint64_t            close_error_code;
+    uint8_t             close_requested;
+
     xqc_path_flag_t     path_flag;
 
     /* application layer path status, sync via PATH_STATUS frame */
@@ -221,6 +230,18 @@ void xqc_set_path_state(xqc_path_ctx_t *path, xqc_path_state_t state);
 
 /* path state: "ACTIVE" -> "CLOSING" */
 xqc_int_t xqc_path_immediate_close(xqc_path_ctx_t *path);
+
+/* draft-21 §3.1 ¶6 / §3.1 ¶10: explicitly close a path due to a
+ * validation MUST violation. Records the error code in
+ * path->close_error_code for observability (e.g. unit tests, audit
+ * logs) and enqueues a PATH_ABANDON frame with the specified error
+ * code when conn->conn_send_queue is available. Always transitions
+ * path_state to CLOSING.
+ *
+ * Idempotent: returns XQC_OK immediately if path is already CLOSING or
+ * later (matches xqc_path_immediate_close semantics).
+ */
+xqc_int_t xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code);
 
 /* path state: "ACTIVE/CLOSING/DRAINING" -> "CLOSED" */
 xqc_int_t xqc_path_closed(xqc_path_ctx_t *path);

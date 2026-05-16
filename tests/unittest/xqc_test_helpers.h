@@ -49,4 +49,22 @@ xqc_int_t xqc_test_seed_cids(xqc_connection_t *conn, size_t n);
  */
 void xqc_test_simulate_handshake_done(xqc_connection_t *conn);
 
+/* PR5: synthesize a minimal xqc_path_ctx_t for the mp21 fixture conn.
+ * The full xqc_path_create() requires a real engine + pn_ctl + send_ctl
+ * which the engine-less mp21 fixture cannot provide. This helper
+ * calloc's the struct, wires the parent_conn back-pointer, sets the
+ * path_id + path_state and links it onto conn->conn_paths_list. Caller
+ * may further mutate fields before assertions. Free with
+ * xqc_test_helper_path_destroy() (does NOT touch send_ctl/pn_ctl which
+ * are intentionally left NULL).
+ *
+ * The conn->active_path_count is also incremented when state is ACTIVE
+ * so xqc_set_path_state() bookkeeping stays consistent.
+ */
+struct xqc_path_ctx_s;
+struct xqc_path_ctx_s *xqc_test_helper_path_synthesize(xqc_connection_t *conn,
+                                                       uint64_t path_id,
+                                                       int initial_state);
+void xqc_test_helper_path_destroy(struct xqc_path_ctx_s *path);
+
 #endif /* XQC_TEST_HELPERS_H */

@@ -450,6 +450,44 @@ xqc_set_path_state(xqc_path_ctx_t *path, xqc_path_state_t dst_state)
 }
 
 xqc_int_t
+xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code)
+{
+    if (path == NULL) {
+        return -XQC_EPARAM;
+    }
+
+    /* Idempotent: a path already CLOSING/CLOSED has already had its
+     * ABANDON queued (or its closure recorded); preserve the original
+     * close_error_code rather than overwriting it. */
+    if (path->path_state >= XQC_PATH_STATE_CLOSING) {
+        return XQC_OK;
+    }
+
+    xqc_connection_t *conn = path->parent_conn;
+
+    /* Record closure intent + error code BEFORE writing to wire, so the
+     * observable state survives a missing send_queue (unit tests) or a
+     * write_path_abandon failure. draft-21 §3.1 ¶10 MUST: the endpoint
+     * "explicitly close[s] the path" — the local state transition is
+     * the binding event. */
+    path->close_error_code = error_code;
+    path->close_requested  = 1;
+
+    if (conn != NULL && conn->conn_send_queue != NULL) {
+        xqc_int_t wret = xqc_write_path_abandon_frame_to_packet(conn, path, error_code);
+        if (wret != XQC_OK) {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|xqc_write_path_abandon_frame_to_packet error|ret:%d|err_code:%ui|",
+                    wret, error_code);
+            /* fall through — state transition still happens */
+        }
+    }
+
+    xqc_set_path_state(path, XQC_PATH_STATE_CLOSING);
+    return XQC_OK;
+}
+
+xqc_int_t
 xqc_path_immediate_close(xqc_path_ctx_t *path)
 {
     if (path->path_state >= XQC_PATH_STATE_CLOSING) {
@@ -459,7 +497,7 @@ xqc_path_immediate_close(xqc_path_ctx_t *path)
     xqc_connection_t *conn = path->parent_conn;
     xqc_int_t ret = XQC_OK;
     
-    ret = xqc_write_path_abandon_frame_to_packet(conn, path);
+    ret = xqc_write_path_abandon_frame_to_packet(conn, path, 0);
     if (ret != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_write_path_abandon_frame_to_packet error|ret:%d|", ret);
     }
