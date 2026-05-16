@@ -1318,14 +1318,9 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                     }
                 }
 
-                /* G-P3 (draft-21 §3.1 ¶10): on each loss-detected
-                 * PATH_CHALLENGE on a VALIDATING path, bump the per-path
-                 * attempt counter. On crossing the threshold, the helper
-                 * explicitly closes the path with PATH_UNSTABLE_OR_POOR.
-                 * The cadence here is PTO/RTT-scaled (this function is
-                 * driven by xqc_send_ctl_detect_lost), NOT a fixed wall
-                 * clock — see docs/audit-notes/pr5-l5b-audit.md row
-                 * "Pre-5 cadence" for the threshold rationale. */
+                /* G-P3 (draft-21 §3.1 ¶10): bump validation-attempt counter
+                 * per loss-detected PATH_CHALLENGE; helper closes the path
+                 * at threshold. Cadence is PTO/RTT-scaled. See audit memo. */
                 if (po->po_frame_types & XQC_FRAME_BIT_PATH_CHALLENGE) {
                     xqc_path_ctx_t *vpath =
                         xqc_conn_find_path_by_path_id(conn, po->po_path_id);
