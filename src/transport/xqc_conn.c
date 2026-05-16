@@ -5265,17 +5265,49 @@ xqc_conn_try_add_new_conn_id(xqc_connection_t *conn, uint64_t retire_prior_to)
             xqc_list_for_each_safe(pos, next, &conn->scid_set.cid_set_list) {
                 inner_set = xqc_list_entry(pos, xqc_cid_set_inner_t, next);
                 if (inner_set->set_state == XQC_CID_SET_USED) {
-                    while (inner_set 
+                    while (inner_set
                            && (inner_set->unused_cnt + inner_set->used_cnt) < conn->remote_settings.active_connection_id_limit
-                           && inner_set->unused_cnt < unused_limit) 
+                           && inner_set->unused_cnt < unused_limit)
                     {
                         ret = xqc_write_mp_new_conn_id_frame_to_packet(conn, retire_prior_to, inner_set->path_id);
                         if (ret != XQC_OK) {
-                            xqc_log(conn->log, XQC_LOG_ERROR, 
-                                    "|xqc_write_mp_new_conn_id_frame_to_packet error|path_id:%ui|", 
+                            xqc_log(conn->log, XQC_LOG_ERROR,
+                                    "|xqc_write_mp_new_conn_id_frame_to_packet error|path_id:%ui|",
                                     inner_set->path_id);
                             return ret;
                         }
+                    }
+                }
+            }
+
+            /* G-P10 (draft-21 §3.2.1 ¶1 RECOMMENDED): proactively issue
+             * at least one CID for EVERY UNUSED path_id up to
+             * curr_max_path_id, not just the first. Principle #1
+             * (xqc_get_next_unused_path_cid_set) returns only the first
+             * UNUSED inner set; principle #3 covers the remaining
+             * UNUSED sets when curr_max_path_id grew (handshake-complete
+             * or MAX_PATH_ID credit) by more than one path. */
+            xqc_cid_set_inner_t *first_unused = xqc_get_next_unused_path_cid_set(&conn->scid_set);
+            xqc_list_for_each_safe(pos, next, &conn->scid_set.cid_set_list) {
+                inner_set = xqc_list_entry(pos, xqc_cid_set_inner_t, next);
+                if (inner_set == first_unused) {
+                    continue;  /* principle #1 already handled */
+                }
+                if (inner_set->set_state != XQC_CID_SET_UNUSED) {
+                    continue;
+                }
+                if (inner_set->path_id > conn->curr_max_path_id) {
+                    continue;
+                }
+                while ((inner_set->unused_cnt + inner_set->used_cnt) < conn->remote_settings.active_connection_id_limit
+                       && inner_set->unused_cnt < unused_limit)
+                {
+                    ret = xqc_write_mp_new_conn_id_frame_to_packet(conn, retire_prior_to, inner_set->path_id);
+                    if (ret != XQC_OK) {
+                        xqc_log(conn->log, XQC_LOG_ERROR,
+                                "|G-P10 write_mp_new_conn_id error|path_id:%ui|",
+                                inner_set->path_id);
+                        return ret;
                     }
                 }
             }

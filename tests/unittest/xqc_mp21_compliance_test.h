@@ -75,4 +75,12 @@ void xqc_test_mp21_path_validation_timeout(void);
 /* PR6 L5c loss-replay correctness — draft-21 §4.3 ¶12 / §4.6 ¶8 SHOULDs. */
 void xqc_test_mp21_loss_replay_should_suppress_stale(void);
 
+/* PR7 L5d send-side RECOMMENDEDs.
+ *  - G-P10 (§3.2.1 ¶1): proactive CID per unused path_id.
+ *  - G-P14 (§3.4 ¶3):   PATH_ABANDON on an alternate open path.
+ */
+void xqc_test_mp21_gp10_iteration_visits_all_unused(void);
+void xqc_test_mp21_gp10_skips_above_curr_max(void);
+void xqc_test_mp21_gp14_pick_alt_active_path(void);
+
 #endif /* _XQC_MP21_COMPLIANCE_TEST_H */
