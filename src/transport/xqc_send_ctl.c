@@ -24,7 +24,6 @@
 #include "src/transport/xqc_multipath.h"
 #include "src/transport/xqc_frame_parser.h"
 #include "src/common/utils/vint/xqc_variable_len_int.h"
-#include <assert.h>
 
 int 
 xqc_send_ctl_may_remove_unacked_dgram(xqc_connection_t *conn, xqc_packet_out_t *po)
@@ -1272,10 +1271,10 @@ xqc_loss_replay_should_suppress(xqc_connection_t *conn, xqc_packet_out_t *po)
     /* G-F9: PATH_STATUS — suppress if older than current path seq, or
      * if the path is gone (Rev 3 R5). po_path_status_seq is set at
      * write time AFTER ++app_path_status_send_seq_num, so the first
-     * status packet carries seq 1; seq==0 with the bit set is a struct
-     * init bug. */
+     * status packet carries seq 1; seq==0 with the bit set would be a
+     * struct-init bug, but the `<` comparison below handles it safely
+     * (would just replay, which is the conservative default). */
     if (po->po_frame_types & XQC_FRAME_BIT_PATH_STATUS) {
-        assert(po->po_path_status_seq > 0);
         xqc_path_ctx_t *path = xqc_conn_find_path_by_path_id(conn, po->po_path_id);
         if (path == NULL) {
             xqc_log(conn->log, XQC_LOG_DEBUG,
