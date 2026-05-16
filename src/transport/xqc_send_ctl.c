@@ -1234,24 +1234,13 @@ xqc_send_ctl_on_spurious_loss_detected(xqc_send_ctl_t *send_ctl,
             send_ctl->ctl_reordering_packet_threshold, send_ctl->ctl_reordering_time_threshold_shift);
 }
 
-/* G-F19 helper: walk the packet payload looking for a MAX_PATH_ID frame
- * (draft-21 codepoint 0x3e7a or experimental 0x15228c0c) and extract its
- * varint value into *out. MAX_PATH_ID frame is just [type-varint][value-
- * varint], so we only need to find the type tag; we don't have to fully
- * parse the rest of the payload. Returns XQC_OK on success.
- *
- * Coalesced packets: po->po_payload may contain other frames besides
- * MAX_PATH_ID. We do not implement a full frame walker here — parsing
- * each frame type generically would replicate xqc_process_frames. Per
- * Rev 3 plan §Chunk 1 review checkpoint we accept the simpler approach:
- * iterate the payload one byte at a time, attempt a varint read at each
- * position, and check whether it matches a known MAX_PATH_ID type tag.
- * The frame body is value-varint only so this is safe: a "false match"
- * would require the preceding frame's body bytes to encode exactly one
- * of these two large type values, which is overwhelmingly unlikely for
- * the frames that can coalesce with MAX_PATH_ID at write time (the
- * caller — xqc_write_max_path_id_to_packet — creates a fresh packet).
- */
+/* G-F19 helper: parse MAX_PATH_ID value from po_payload.
+ * The only writer (xqc_write_max_path_id_to_packet at xqc_packet_out.c:1864)
+ * creates a fresh packet via xqc_write_new_packet and writes a single
+ * MAX_PATH_ID frame at offset 0 of po_payload. So we read two varints
+ * directly: type tag followed by value. If the write-site invariant
+ * changes (e.g., MAX_PATH_ID becomes coalesced with other frames), this
+ * parser MUST be revisited. */
 static xqc_int_t
 xqc_loss_replay_parse_max_path_id(xqc_packet_out_t *po, uint64_t *out)
 {
@@ -1260,31 +1249,17 @@ xqc_loss_replay_parse_max_path_id(xqc_packet_out_t *po, uint64_t *out)
     }
     const unsigned char *p   = po->po_payload;
     const unsigned char *end = po->po_buf + po->po_used_size;
-    if (end <= p) {
-        return -XQC_EPARAM;
+    uint64_t type_tag = 0;
+    int n = xqc_vint_read(p, end, &type_tag);
+    if (n <= 0) {
+        return -XQC_EVINTREAD;
     }
-
-    while (p < end) {
-        uint64_t frame_type = 0;
-        int vlen = xqc_vint_read(p, end, &frame_type);
-        if (vlen <= 0) {
-            return -XQC_EVINTREAD;
-        }
-        if (frame_type == XQC_TRANS_FRAME_TYPE_MAX_PATH_ID
-            || frame_type == XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21)
-        {
-            const unsigned char *vp = p + vlen;
-            uint64_t value = 0;
-            int vlen2 = xqc_vint_read(vp, end, &value);
-            if (vlen2 <= 0) {
-                return -XQC_EVINTREAD;
-            }
-            *out = value;
-            return XQC_OK;
-        }
-        p++;
+    p += n;
+    n = xqc_vint_read(p, end, out);
+    if (n <= 0) {
+        return -XQC_EVINTREAD;
     }
-    return -XQC_EPARAM;
+    return XQC_OK;
 }
 
 /* G-F9 / G-F19 (draft-21 §4.3 ¶12 / §4.6 ¶8): returns 1 when the lost
