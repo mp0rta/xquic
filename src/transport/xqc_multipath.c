@@ -450,6 +450,33 @@ xqc_set_path_state(xqc_path_ctx_t *path, xqc_path_state_t dst_state)
 }
 
 xqc_int_t
+xqc_path_validation_on_retx(xqc_path_ctx_t *path)
+{
+    if (path == NULL) {
+        return -XQC_EPARAM;
+    }
+
+    /* Once the path has left VALIDATING (ACTIVE on response match,
+     * CLOSING/CLOSED on explicit close), the counter is irrelevant. */
+    if (path->path_state != XQC_PATH_STATE_VALIDATING) {
+        return XQC_OK;
+    }
+
+    if (path->path_challenge_attempts < UINT8_MAX) {
+        path->path_challenge_attempts++;
+    }
+
+    if (path->path_challenge_attempts >= XQC_PATH_VALIDATION_MAX_ATTEMPTS) {
+        xqc_connection_t *conn = path->parent_conn;
+        xqc_log(conn ? conn->log : NULL, XQC_LOG_WARN,
+                "|G-P3 validation timeout|path_id:%ui|attempts:%ud|",
+                path->path_id, (unsigned)path->path_challenge_attempts);
+        return xqc_path_request_abandon(path, TRA_PATH_UNSTABLE_OR_POOR);
+    }
+    return XQC_OK;
+}
+
+xqc_int_t
 xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code)
 {
     if (path == NULL) {

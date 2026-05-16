@@ -1414,10 +1414,45 @@ xqc_test_mp21_path_challenge_1200b_validation(void)
     xqc_test_mp21_free_conn(conn);
 }
 
-/* G-P3 timeout test wired in Chunk 2 once xqc_path_validation_on_retx()
- * helper exists. Stub defined here so the header forward-decl resolves. */
+/* G-P3 (draft-21 §3.1 ¶10): N consecutive PATH_CHALLENGE retx attempts
+ * without a matching PATH_RESPONSE MUST cause the endpoint to explicitly
+ * close the path. The threshold is XQC_PATH_VALIDATION_MAX_ATTEMPTS (3).
+ *
+ * The retx cadence in production is the loss-detection cycle
+ * (PTO/RTT-scaled). The unit test calls the path-level callback
+ * directly to keep the harness engine-less. */
 void
 xqc_test_mp21_path_validation_timeout(void)
 {
-    /* deferred to Chunk 2 */
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 4,
+        .remote_max_path_id = 4,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->enable_multipath = 1;
+
+    xqc_path_ctx_t *path = xqc_test_helper_path_synthesize(conn, 1,
+                                                           XQC_PATH_STATE_VALIDATING);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+
+    /* Attempt 1 + 2: path remains in VALIDATING. */
+    CU_ASSERT_EQUAL(xqc_path_validation_on_retx(path), XQC_OK);
+    CU_ASSERT_EQUAL(path->path_challenge_attempts, 1);
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_VALIDATING);
+
+    CU_ASSERT_EQUAL(xqc_path_validation_on_retx(path), XQC_OK);
+    CU_ASSERT_EQUAL(path->path_challenge_attempts, 2);
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_VALIDATING);
+
+    /* Attempt 3 crosses the threshold → explicit close. */
+    CU_ASSERT_EQUAL(xqc_path_validation_on_retx(path), XQC_OK);
+    CU_ASSERT(path->path_state >= XQC_PATH_STATE_CLOSING);
+    CU_ASSERT_EQUAL(path->close_requested, 1);
+    CU_ASSERT_EQUAL(path->close_error_code, TRA_PATH_UNSTABLE_OR_POOR);
+
+    xqc_test_helper_path_destroy(path);
+    xqc_test_mp21_free_conn(conn);
 }

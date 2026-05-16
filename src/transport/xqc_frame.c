@@ -1844,6 +1844,10 @@ xqc_process_path_response_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_
         return XQC_OK;
     }
 
+    /* G-P3 (draft-21 §3.1 ¶10): matched PATH_RESPONSE confirms the
+     * validation succeeded — reset the retx-attempt counter. */
+    path->path_challenge_attempts = 0;
+
     xqc_path_validate(path);
 
     if (conn->conn_type == XQC_CONN_TYPE_SERVER
