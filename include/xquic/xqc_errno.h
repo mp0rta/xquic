@@ -36,6 +36,13 @@ typedef enum {
 #define TRA_PATH_RESOURCE_LIMIT_REACHED     0x3e75ULL
 #define TRA_PATH_UNSTABLE_OR_POOR           0x3e76ULL
 #define TRA_NO_CID_AVAILABLE_FOR_PATH       0x3e77ULL
+
+/* PR5 G-P2: pin the wire codepoint against future upstream drift.
+ * draft-ietf-quic-multipath-21 §4.2.1 defines PATH_UNSTABLE_OR_POOR =
+ * 0x3e76; xquic emits this code from xqc_path_request_abandon() on
+ * MTU validation failure (§3.1 ¶6) and validation timeout (§3.1 ¶10). */
+_Static_assert(TRA_PATH_UNSTABLE_OR_POOR == 0x3e76ULL,
+               "draft-21 §4.2.1: PATH_UNSTABLE_OR_POOR wire codepoint pin");
 /* TODO(G-F6): draft-21 §4.2.1 names additional codepoints
  * (STATELESS_RESET, MIGRATION_REFUSED, NO_ERROR). Receive-side parser
  * is tolerant; send-side has no current emitter. Add named constants

@@ -1624,7 +1624,8 @@ error:
 
 
 xqc_int_t
-xqc_write_path_abandon_frame_to_packet(xqc_connection_t *conn, xqc_path_ctx_t *path)
+xqc_write_path_abandon_frame_to_packet(xqc_connection_t *conn, xqc_path_ctx_t *path,
+                                       uint64_t error_code)
 {
     xqc_int_t ret = XQC_ERROR;
 
@@ -1636,7 +1637,7 @@ xqc_write_path_abandon_frame_to_packet(xqc_connection_t *conn, xqc_path_ctx_t *p
 
     uint64_t path_id = path->path_id;
 
-    ret = xqc_gen_path_abandon_frame(conn, packet_out, path_id, 0);
+    ret = xqc_gen_path_abandon_frame(conn, packet_out, path_id, error_code);
     if (ret < 0) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_gen_path_abandon_frame error|%d|", ret);
         goto error;

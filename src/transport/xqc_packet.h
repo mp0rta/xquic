@@ -13,6 +13,11 @@
 #define XQC_FEC_SPACE                       12
 #define XQC_HEADER_SPACE                    28
 #define XQC_QUIC_MIN_MSS                    1200
+/* PR5 G-P2: pin spec MTU value against future upstream xquic drift
+ * (e.g. DPLPMTUD adoption). draft-ietf-quic-multipath-21 §3.1 ¶6
+ * mandates a 1200B minimum QUIC packet MTU on each path. */
+_Static_assert(XQC_QUIC_MIN_MSS == 1200,
+               "draft-21 §3.1 ¶6: MTU MUST = 1200B");
 /* 1500 - 40 (IPv6) - 8 (UDP) - 16 (ACK) - 16 (AEAD) */
 #define XQC_QUIC_MAX_MSS                    1420
 #define XQC_MSS                             (XQC_QUIC_MAX_MSS + XQC_ACK_SPACE)

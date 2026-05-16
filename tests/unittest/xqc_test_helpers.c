@@ -10,6 +10,7 @@
 #include "xqc_common_test.h"
 #include "xqc_mp21_compliance_test.h"
 #include "src/transport/xqc_cid.h"
+#include "src/transport/xqc_multipath.h"
 #include "src/common/xqc_list.h"
 
 /* ------------------------------------------------------------------ */
@@ -121,4 +122,53 @@ xqc_test_simulate_handshake_done(xqc_connection_t *conn)
     }
     conn->conn_state = XQC_CONN_STATE_ESTABED;
     conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_COMPLETED;
+}
+
+/* ------------------------------------------------------------------ */
+/* TEST FIXTURE ONLY — bypasses xqc_path_create + leaves send_ctl /
+ * pn_ctl / CIDs NULL. Use only for state-machine assertions where the
+ * missing infrastructure is not exercised. For tests that need real
+ * path resources, use xqc_test_helper_conn_create + xqc_path_create.
+ * ------------------------------------------------------------------ */
+struct xqc_path_ctx_s *
+xqc_test_helper_path_synthesize(xqc_connection_t *conn, uint64_t path_id,
+                                int initial_state)
+{
+    if (conn == NULL) {
+        return NULL;
+    }
+    xqc_path_ctx_t *path = calloc(1, sizeof(xqc_path_ctx_t));
+    if (path == NULL) {
+        return NULL;
+    }
+    path->parent_conn = conn;
+    path->path_id     = path_id;
+    path->path_state  = (xqc_path_state_t)initial_state;
+    path->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+
+    for (xqc_send_type_t t = 0; t < XQC_SEND_TYPE_N; t++) {
+        xqc_init_list_head(&path->path_schedule_buf[t]);
+    }
+    xqc_init_list_head(&path->path_reinj_tmp_buf);
+
+    xqc_list_add_tail(&path->path_list, &conn->conn_paths_list);
+    conn->create_path_count++;
+
+    if (initial_state == XQC_PATH_STATE_ACTIVE) {
+        conn->active_path_count++;
+    }
+    return path;
+}
+
+void
+xqc_test_helper_path_destroy(struct xqc_path_ctx_s *path)
+{
+    if (path == NULL) {
+        return;
+    }
+    /* path was added to conn_paths_list during synthesize; unlink. */
+    if (path->path_list.next != NULL && path->path_list.prev != NULL) {
+        xqc_list_del(&path->path_list);
+    }
+    free(path);
 }

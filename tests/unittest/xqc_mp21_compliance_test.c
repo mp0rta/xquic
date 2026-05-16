@@ -17,6 +17,9 @@
 #include "src/tls/xqc_tls.h"
 #include "src/common/xqc_log.h"
 #include "xqc_mp21_compliance_test.h"
+#include "xqc_test_helpers.h"
+#include "src/transport/xqc_frame.h"
+#include "xquic/xqc_errno.h"
 
 /* ------------------------------------------------------------------
  * Chunk 4 Task 13b: shared minimal connection fixture.
@@ -1339,3 +1342,113 @@ xqc_test_mp21_max_path_id_grant_rate_limited(void)
     mp21_free_grant_stubs(path, sc_buf);
     xqc_test_mp21_free_conn(conn);
 }
+
+/* ------------------------------------------------------------------
+ * PR5 L5b validation hardening — draft-21 §3.1 MUSTs.
+ * ------------------------------------------------------------------ */
+
+/* Forge a minimal PATH_CHALLENGE-bearing QUIC packet view, with the
+ * UDP-datagram size faked via packet_in->buf_size. The wire payload
+ * is the 1-byte frame type followed by 8 bytes of opaque data; the
+ * receive-side MTU check inspects buf_size (the bytes-from-pos count)
+ * not the parsed-payload length, so a short payload is sufficient to
+ * trigger the validation.
+ */
+static void
+mp21_forge_path_challenge_packet_in(xqc_packet_in_t *pi,
+                                    unsigned char *frame_buf,
+                                    size_t frame_buf_len,
+                                    size_t fake_datagram_size,
+                                    uint64_t path_id)
+{
+    /* frame layout: type byte (0x1a / PATH_CHALLENGE) + 8 data bytes. */
+    frame_buf[0] = 0x1a;
+    memset(frame_buf + 1, 0xab, XQC_PATH_CHALLENGE_DATA_LEN);
+
+    memset(pi, 0, sizeof(*pi));
+    pi->buf      = frame_buf;
+    pi->buf_size = fake_datagram_size;
+    pi->pos      = frame_buf;
+    pi->last     = frame_buf + frame_buf_len;
+    pi->pi_path_id = path_id;
+}
+
+/* G-P2 (draft-21 §3.1 ¶6): a PATH_CHALLENGE received on a datagram
+ * smaller than the 1200B minimum MTU MUST cause the receiver to
+ * explicitly close the path via PATH_ABANDON. */
+void
+xqc_test_mp21_path_challenge_1200b_validation(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 4,
+        .remote_max_path_id = 4,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->enable_multipath = 1;
+
+    /* Synthesize a VALIDATING path that the frame handler will resolve. */
+    xqc_path_ctx_t *path = xqc_test_helper_path_synthesize(conn, 1,
+                                                           XQC_PATH_STATE_VALIDATING);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+
+    /* RFC 9000 §19.17: PATH_CHALLENGE = 1 type byte + 8 data bytes. */
+    unsigned char frame_buf[1 + XQC_PATH_CHALLENGE_DATA_LEN];
+    xqc_packet_in_t pi;
+
+    /* Sub-1200 datagram → path state advances to CLOSING (explicit close). */
+    mp21_forge_path_challenge_packet_in(&pi, frame_buf, sizeof(frame_buf),
+                                        /*fake_datagram_size=*/1199,
+                                        path->path_id);
+
+    xqc_int_t ret = xqc_process_path_challenge_frame(conn, &pi);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT(path->path_state >= XQC_PATH_STATE_CLOSING);
+
+    xqc_test_helper_path_destroy(path);
+    xqc_test_mp21_free_conn(conn);
+}
+
+/* G-P3 (draft-21 §3.1 ¶10): N consecutive PATH_CHALLENGE retx attempts
+ * without a matching PATH_RESPONSE MUST cause the endpoint to explicitly
+ * close the path. The threshold is XQC_PATH_VALIDATION_MAX_ATTEMPTS (3).
+ *
+ * The retx cadence in production is the loss-detection cycle
+ * (PTO/RTT-scaled). The unit test calls the path-level callback
+ * directly to keep the harness engine-less. */
+void
+xqc_test_mp21_path_validation_timeout(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 4,
+        .remote_max_path_id = 4,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->enable_multipath = 1;
+
+    xqc_path_ctx_t *path = xqc_test_helper_path_synthesize(conn, 1,
+                                                           XQC_PATH_STATE_VALIDATING);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+
+    /* Attempt 1 + 2: path remains in VALIDATING. */
+    CU_ASSERT_EQUAL(xqc_path_validation_on_retx(path), XQC_OK);
+    CU_ASSERT_EQUAL(path->path_challenge_attempts, 1);
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_VALIDATING);
+
+    CU_ASSERT_EQUAL(xqc_path_validation_on_retx(path), XQC_OK);
+    CU_ASSERT_EQUAL(path->path_challenge_attempts, 2);
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_VALIDATING);
+
+    /* Attempt 3 crosses the threshold → explicit close. */
+    CU_ASSERT_EQUAL(xqc_path_validation_on_retx(path), XQC_OK);
+    CU_ASSERT(path->path_state >= XQC_PATH_STATE_CLOSING);
+
+    xqc_test_helper_path_destroy(path);
+    xqc_test_mp21_free_conn(conn);
+}
+

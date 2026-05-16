@@ -1318,9 +1318,22 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                     }
                 }
 
-                if (XQC_NEED_REPAIR(po->po_frame_types) 
+                /* G-P3 (draft-21 §3.1 ¶10): bump validation-attempt counter
+                 * per loss-detected PATH_CHALLENGE; helper closes the path
+                 * at threshold. Cadence is PTO/RTT-scaled. See audit memo. */
+                if (po->po_frame_types & XQC_FRAME_BIT_PATH_CHALLENGE) {
+                    xqc_path_ctx_t *vpath =
+                        xqc_conn_find_path_by_path_id(conn, po->po_path_id);
+                    if (vpath != NULL
+                        && vpath->path_state == XQC_PATH_STATE_VALIDATING)
+                    {
+                        (void)xqc_path_validation_on_retx(vpath);
+                    }
+                }
+
+                if (XQC_NEED_REPAIR(po->po_frame_types)
                     || (po->po_flag & XQC_POF_NOTIFY)
-                    || repair_dgram == XQC_DGRAM_RETX_ASKED_BY_APP) 
+                    || repair_dgram == XQC_DGRAM_RETX_ASKED_BY_APP)
                 {
                     xqc_send_queue_copy_to_lost(po, send_queue, XQC_TRUE);
 

@@ -450,6 +450,61 @@ xqc_set_path_state(xqc_path_ctx_t *path, xqc_path_state_t dst_state)
 }
 
 xqc_int_t
+xqc_path_validation_on_retx(xqc_path_ctx_t *path)
+{
+    if (path == NULL) {
+        return -XQC_EPARAM;
+    }
+
+    /* Once the path has left VALIDATING (ACTIVE on response match,
+     * CLOSING/CLOSED on explicit close), the counter is irrelevant. */
+    if (path->path_state != XQC_PATH_STATE_VALIDATING) {
+        return XQC_OK;
+    }
+
+    if (path->path_challenge_attempts < UINT8_MAX) {
+        path->path_challenge_attempts++;
+    }
+
+    if (path->path_challenge_attempts >= XQC_PATH_VALIDATION_MAX_ATTEMPTS) {
+        xqc_connection_t *conn = path->parent_conn;
+        xqc_log(conn ? conn->log : NULL, XQC_LOG_WARN,
+                "|G-P3 validation timeout|path_id:%ui|attempts:%ud|",
+                path->path_id, (unsigned)path->path_challenge_attempts);
+        return xqc_path_request_abandon(path, TRA_PATH_UNSTABLE_OR_POOR);
+    }
+    return XQC_OK;
+}
+
+xqc_int_t
+xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code)
+{
+    if (path == NULL) {
+        return -XQC_EPARAM;
+    }
+
+    /* Idempotent: already-closing path has ABANDON queued (or closure recorded). */
+    if (path->path_state >= XQC_PATH_STATE_CLOSING) {
+        return XQC_OK;
+    }
+
+    xqc_connection_t *conn = path->parent_conn;
+
+    if (conn != NULL && conn->conn_send_queue != NULL) {
+        xqc_int_t wret = xqc_write_path_abandon_frame_to_packet(conn, path, error_code);
+        if (wret != XQC_OK) {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|xqc_write_path_abandon_frame_to_packet error|ret:%d|err_code:%ui|",
+                    wret, error_code);
+            /* fall through — state transition still happens */
+        }
+    }
+
+    xqc_set_path_state(path, XQC_PATH_STATE_CLOSING);
+    return XQC_OK;
+}
+
+xqc_int_t
 xqc_path_immediate_close(xqc_path_ctx_t *path)
 {
     if (path->path_state >= XQC_PATH_STATE_CLOSING) {
@@ -459,7 +514,7 @@ xqc_path_immediate_close(xqc_path_ctx_t *path)
     xqc_connection_t *conn = path->parent_conn;
     xqc_int_t ret = XQC_OK;
     
-    ret = xqc_write_path_abandon_frame_to_packet(conn, path);
+    ret = xqc_write_path_abandon_frame_to_packet(conn, path, 0);
     if (ret != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_write_path_abandon_frame_to_packet error|ret:%d|", ret);
     }
