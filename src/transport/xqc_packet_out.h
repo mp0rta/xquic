@@ -131,6 +131,12 @@ typedef struct xqc_packet_out_s {
 
     uint64_t                po_new_cid_seq;
     uint32_t                po_new_cid_path;
+
+    /* G-F9 (draft-21 §4.3 ¶12): PATH_STATUS sequence carried by this
+     * packet. Only meaningful when XQC_FRAME_BIT_PATH_STATUS is set on
+     * po_frame_types. Compared against path->app_path_status_send_seq_num
+     * at loss-replay time so stale PATH_STATUS frames are suppressed. */
+    uint64_t                po_path_status_seq;
 } xqc_packet_out_t;
 
 xqc_bool_t xqc_packet_out_on_specific_path(xqc_connection_t *conn, 

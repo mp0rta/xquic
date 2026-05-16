@@ -1514,6 +1514,9 @@ xqc_write_path_challenge_frame_to_packet(xqc_connection_t *conn,
 
     if (attach_path_status) {
         path->app_path_status_send_seq_num++;
+        /* G-F9 (draft-21 §4.3 ¶12): track this packet's PATH_STATUS seq
+         * so a later loss-replay can suppress stale carries. */
+        packet_out->po_path_status_seq = path->app_path_status_send_seq_num;
         ret = xqc_gen_path_status_frame(conn, packet_out, path->path_id,
                                         path->app_path_status_send_seq_num,
                                         path->app_path_status);
@@ -1522,12 +1525,12 @@ xqc_write_path_challenge_frame_to_packet(xqc_connection_t *conn,
             xqc_log(conn->log, XQC_LOG_ERROR, "|attach status error|%d|", ret);
 
         } else {
-            xqc_log(conn->log, XQC_LOG_DEBUG, 
+            xqc_log(conn->log, XQC_LOG_DEBUG,
                     "|initial_path_status|status:%d|frames:%s|",
-                    path->app_path_status, 
+                    path->app_path_status,
                     xqc_frame_type_2_str(conn->engine, packet_out->po_frame_types));
             packet_out->po_used_size += ret;
-        }        
+        }
     }
 
     xqc_send_queue_move_to_high_pri(&packet_out->po_list, conn->conn_send_queue);
@@ -1670,6 +1673,9 @@ xqc_write_path_status_frame_to_packet(xqc_connection_t *conn, xqc_path_ctx_t *pa
     }
 
     path->app_path_status_send_seq_num++;
+    /* G-F9 (draft-21 §4.3 ¶12): mirror the seq on the packet so loss
+     * replay can suppress stale carries. */
+    packet_out->po_path_status_seq = path->app_path_status_send_seq_num;
 
     ret = xqc_gen_path_status_frame(conn, packet_out, path->path_id,
                                     path->app_path_status_send_seq_num,
