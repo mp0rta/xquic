@@ -125,9 +125,10 @@ xqc_test_simulate_handshake_done(xqc_connection_t *conn)
 }
 
 /* ------------------------------------------------------------------ */
-/* PR5: synthesize a path without engine/pn_ctl/send_ctl. Used by the
- * G-P2 + G-P3 validation tests which assert state transitions but
- * never serialize PATH_ABANDON to wire (conn_send_queue stays NULL).
+/* TEST FIXTURE ONLY — bypasses xqc_path_create + leaves send_ctl /
+ * pn_ctl / CIDs NULL. Use only for state-machine assertions where the
+ * missing infrastructure is not exercised. For tests that need real
+ * path resources, use xqc_test_helper_conn_create + xqc_path_create.
  * ------------------------------------------------------------------ */
 struct xqc_path_ctx_s *
 xqc_test_helper_path_synthesize(xqc_connection_t *conn, uint64_t path_id,
