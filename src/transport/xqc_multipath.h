@@ -115,15 +115,6 @@ struct xqc_path_ctx_s {
     xqc_path_state_t    path_state;
     unsigned char       path_challenge_data[XQC_PATH_CHALLENGE_DATA_LEN];
 
-    /* draft-21 §3.1 ¶6 (G-P2) / §3.1 ¶10 (G-P3): when the path is
-     * explicitly closed due to a validation MUST violation, record the
-     * error code that was passed to PATH_ABANDON. close_requested is
-     * set even when conn_send_queue is unavailable (e.g. unit-test
-     * fixture), so observers can confirm "the local endpoint explicitly
-     * closed the path" without depending on wire serialization. */
-    uint64_t            close_error_code;
-    uint8_t             close_requested;
-
     /* draft-21 §3.1 ¶10 (G-P3): counts consecutive PATH_CHALLENGE
      * retransmit attempts observed on the loss-detection cycle without
      * a matching PATH_RESPONSE. Reset to 0 on PATH_RESPONSE match. */
@@ -237,15 +228,9 @@ void xqc_set_path_state(xqc_path_ctx_t *path, xqc_path_state_t state);
 xqc_int_t xqc_path_immediate_close(xqc_path_ctx_t *path);
 
 /* draft-21 §3.1 ¶6 / §3.1 ¶10: explicitly close a path due to a
- * validation MUST violation. Records the error code in
- * path->close_error_code for observability (e.g. unit tests, audit
- * logs) and enqueues a PATH_ABANDON frame with the specified error
- * code when conn->conn_send_queue is available. Always transitions
- * path_state to CLOSING.
- *
- * Idempotent: returns XQC_OK immediately if path is already CLOSING or
- * later (matches xqc_path_immediate_close semantics).
- */
+ * validation MUST violation. Enqueues PATH_ABANDON (best-effort) and
+ * transitions path_state to CLOSING. Idempotent for paths already
+ * >= CLOSING. */
 xqc_int_t xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code);
 
 /* G-P3 (draft-21 §3.1 ¶10): after this many consecutive PATH_CHALLENGE

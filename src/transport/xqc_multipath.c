@@ -483,22 +483,12 @@ xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code)
         return -XQC_EPARAM;
     }
 
-    /* Idempotent: a path already CLOSING/CLOSED has already had its
-     * ABANDON queued (or its closure recorded); preserve the original
-     * close_error_code rather than overwriting it. */
+    /* Idempotent: already-closing path has ABANDON queued (or closure recorded). */
     if (path->path_state >= XQC_PATH_STATE_CLOSING) {
         return XQC_OK;
     }
 
     xqc_connection_t *conn = path->parent_conn;
-
-    /* Record closure intent + error code BEFORE writing to wire, so the
-     * observable state survives a missing send_queue (unit tests) or a
-     * write_path_abandon failure. draft-21 §3.1 ¶10 MUST: the endpoint
-     * "explicitly close[s] the path" — the local state transition is
-     * the binding event. */
-    path->close_error_code = error_code;
-    path->close_requested  = 1;
 
     if (conn != NULL && conn->conn_send_queue != NULL) {
         xqc_int_t wret = xqc_write_path_abandon_frame_to_packet(conn, path, error_code);

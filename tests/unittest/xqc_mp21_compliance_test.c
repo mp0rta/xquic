@@ -1398,8 +1398,7 @@ xqc_test_mp21_path_challenge_1200b_validation(void)
     unsigned char frame_buf[1 + XQC_PATH_CHALLENGE_DATA_LEN];
     xqc_packet_in_t pi;
 
-    /* Sub-1200 datagram → explicit close requested with
-     * PATH_UNSTABLE_OR_POOR, path state advances to CLOSING. */
+    /* Sub-1200 datagram → path state advances to CLOSING (explicit close). */
     mp21_forge_path_challenge_packet_in(&pi, frame_buf, sizeof(frame_buf),
                                         /*fake_datagram_size=*/1199,
                                         path->path_id);
@@ -1407,8 +1406,6 @@ xqc_test_mp21_path_challenge_1200b_validation(void)
     xqc_int_t ret = xqc_process_path_challenge_frame(conn, &pi);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT(path->path_state >= XQC_PATH_STATE_CLOSING);
-    CU_ASSERT_EQUAL(path->close_requested, 1);
-    CU_ASSERT_EQUAL(path->close_error_code, TRA_PATH_UNSTABLE_OR_POOR);
 
     xqc_test_helper_path_destroy(path);
     xqc_test_mp21_free_conn(conn);
@@ -1450,8 +1447,6 @@ xqc_test_mp21_path_validation_timeout(void)
     /* Attempt 3 crosses the threshold → explicit close. */
     CU_ASSERT_EQUAL(xqc_path_validation_on_retx(path), XQC_OK);
     CU_ASSERT(path->path_state >= XQC_PATH_STATE_CLOSING);
-    CU_ASSERT_EQUAL(path->close_requested, 1);
-    CU_ASSERT_EQUAL(path->close_error_code, TRA_PATH_UNSTABLE_OR_POOR);
 
     xqc_test_helper_path_destroy(path);
     xqc_test_mp21_free_conn(conn);
