@@ -71,5 +71,6 @@ void xqc_test_mp21_max_path_id_grant_rate_limited(void);
 /* PR5 L5b validation hardening — draft-21 §3.1 path-validation MUSTs. */
 void xqc_test_mp21_path_challenge_1200b_validation(void);
 void xqc_test_mp21_path_validation_timeout(void);
+void xqc_test_mp21_migration_same_path_id_invariant(void);
 
 #endif /* _XQC_MP21_COMPLIANCE_TEST_H */

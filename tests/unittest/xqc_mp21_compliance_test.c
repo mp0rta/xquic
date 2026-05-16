@@ -1456,3 +1456,64 @@ xqc_test_mp21_path_validation_timeout(void)
     xqc_test_helper_path_destroy(path);
     xqc_test_mp21_free_conn(conn);
 }
+
+/* G-P5 (draft-21 §3.1.2 ¶2): migration MUST be treated as path
+ * migration with the constraint that all connection IDs used during
+ * path migration MUST be associated with the current path ID of the
+ * path being migrated.
+ *
+ * Verdict from grep audit: clean by construction. See
+ * docs/audit-notes/pr5-l5b-audit.md. xquic's multipath CID lookups all
+ * thread path_id explicitly through xqc_get_unused_cid() and
+ * xqc_cid_in_cid_set(); the only legacy single-path CID lookup site
+ * (xqc_write_retire_conn_id_frame_to_packet at xqc_packet_out.c:1453)
+ * hardcodes XQC_INITIAL_PATH_ID which is correct for the !MP case
+ * (single path = path_id 0). Server-side NAT rebinding (RFC 9000 §9.5)
+ * reuses the existing path->path_dcid; no new CID lookup happens.
+ *
+ * This test pins the invariant for the multipath fast path: a CID
+ * inserted into dcid_set for path_id X is found back via
+ * xqc_cid_in_cid_set(set, cid, X) with its inner->path_id == X. */
+void
+xqc_test_mp21_migration_same_path_id_invariant(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 4,
+        .remote_max_path_id = 4,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    /* Seed CIDs for path_id 0..2 (uses the existing helper). */
+    CU_ASSERT_EQUAL(xqc_test_seed_cids(conn, 3), XQC_OK);
+
+    /* For each seeded path_id, the CID retrieves back with the matching
+     * path_id; cross-path_id lookups MUST NOT match. */
+    for (uint64_t pid = 0; pid < 3; pid++) {
+        xqc_cid_t probe;
+        memset(&probe, 0, sizeof(probe));
+        probe.cid_len = XQC_DEFAULT_CID_LEN;
+        probe.path_id = pid;
+        probe.cid_buf[0] = (unsigned char)(pid & 0xff);
+        probe.cid_buf[1] = (unsigned char)'d';
+        for (size_t i = 2; i < XQC_DEFAULT_CID_LEN; i++) {
+            probe.cid_buf[i] = (unsigned char)((pid * 0x11u + i) & 0xff);
+        }
+
+        xqc_cid_inner_t *found = xqc_cid_in_cid_set(&conn->dcid_set, &probe, pid);
+        CU_ASSERT_PTR_NOT_NULL(found);
+        if (found != NULL) {
+            CU_ASSERT_EQUAL(found->cid.path_id, pid);
+        }
+
+        /* The same CID looked up against a DIFFERENT path_id MUST NOT
+         * resolve — confirms the per-path_id scoping of the inner set. */
+        uint64_t other_pid = (pid + 1) % 3;
+        xqc_cid_inner_t *cross = xqc_cid_in_cid_set(&conn->dcid_set, &probe, other_pid);
+        CU_ASSERT_PTR_NULL(cross);
+    }
+
+    xqc_test_mp21_free_conn(conn);
+}
