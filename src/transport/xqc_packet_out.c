@@ -1648,6 +1648,20 @@ xqc_write_path_abandon_frame_to_packet(xqc_connection_t *conn, xqc_path_ctx_t *p
 
     packet_out->po_used_size += ret;
 
+    /* G-P14 (draft-21 §3.4 ¶3 RECOMMENDED): send PATH_ABANDON on an
+     * alternate open path when one exists. Falls back to the abandoned
+     * path itself (default po_path_id selection) if no alt is available
+     * (single-path tail). The packet is freshly allocated above and is
+     * not a stream-frame coalesce target (no po_stream_frames_idx),
+     * so pinning po_path_id here is safe. */
+    xqc_path_ctx_t *alt = xqc_conn_pick_alt_active_path(conn, path);
+    if (alt != NULL) {
+        packet_out->po_path_id = alt->path_id;
+        xqc_log(conn->log, XQC_LOG_DEBUG,
+                "|G-P14 abandon on alt-path|abandon:%ui|alt:%ui|",
+                path->path_id, alt->path_id);
+    }
+
     xqc_send_queue_move_to_high_pri(&packet_out->po_list, conn->conn_send_queue);
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|path:%ui|path_id:%ui|",

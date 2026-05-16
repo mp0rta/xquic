@@ -1508,6 +1508,35 @@ xqc_path_is_full(xqc_path_ctx_t *path)
     return (bytes_on_path + xqc_conn_get_mss(path->parent_conn)) > cwnd;
 }
 
+xqc_path_ctx_t *
+xqc_conn_pick_alt_active_path(xqc_connection_t *conn, xqc_path_ctx_t *exclude)
+{
+    xqc_path_ctx_t *best = NULL;
+    xqc_path_ctx_t *path;
+    xqc_list_head_t *pos, *next;
+
+    if (conn == NULL) {
+        return NULL;
+    }
+
+    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
+        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+        if (path == exclude) {
+            continue;
+        }
+        if (path->path_state != XQC_PATH_STATE_ACTIVE) {
+            continue;
+        }
+        if (path->app_path_status != XQC_APP_PATH_STATUS_AVAILABLE) {
+            continue;
+        }
+        if (best == NULL || path->path_id < best->path_id) {
+            best = path;
+        }
+    }
+    return best;
+}
+
 xqc_int_t
 xqc_set_application_path_status(xqc_path_ctx_t *path, xqc_app_path_status_t status, xqc_bool_t is_tx)
 {
