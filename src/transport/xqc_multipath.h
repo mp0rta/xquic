@@ -265,11 +265,12 @@ void xqc_path_send_buffer_clear(xqc_connection_t *conn, xqc_path_ctx_t *path, xq
 
 xqc_int_t xqc_set_application_path_status(xqc_path_ctx_t *path, xqc_app_path_status_t status, xqc_bool_t is_tx);
 
-/* G-P14 (draft-21 §3.4 ¶3 RECOMMENDED): pick an ACTIVE path other than
- * `exclude` whose app_path_status is AVAILABLE, preferring the lowest
- * path_id for deterministic selection. Returns NULL if no candidate
- * exists. Used by PATH_ABANDON emission to send the frame on an alt
- * open path. */
+/* G-P14 (draft-21 §3.4 ¶3 RECOMMENDED): pick an open path other than
+ * `exclude`, preferring AVAILABLE over STANDBY (lowest path_id within
+ * each tier for deterministic selection). Open = path_state == ACTIVE
+ * per draft-21 §3 state model (CLOSING / CLOSED / VALIDATING excluded).
+ * Returns NULL if no candidate exists. Used by PATH_ABANDON emission
+ * to send the frame on an alt open path. */
 xqc_path_ctx_t *xqc_conn_pick_alt_active_path(xqc_connection_t *conn, xqc_path_ctx_t *exclude);
 
 /* path statistics */
