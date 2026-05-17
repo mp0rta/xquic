@@ -67,4 +67,21 @@ struct xqc_path_ctx_s *xqc_test_helper_path_synthesize(xqc_connection_t *conn,
                                                        int initial_state);
 void xqc_test_helper_path_destroy(struct xqc_path_ctx_s *path);
 
+/* L5d send-side test helpers (PR7).
+ *
+ * Walk conn->conn_send_queue->sndq_send_packets_high_pri AND
+ * sndq_send_packets looking for a queued xqc_packet_out_t whose
+ * po_frame_types intersects `frame_bit`. find_ returns the first such
+ * packet (or NULL); count_ returns the total count across both queues.
+ *
+ * Safe to call on engine-less mp21 fixtures provided the test seeded
+ * conn->conn_send_queue (xqc_send_queue_create); otherwise returns
+ * NULL / 0.
+ */
+struct xqc_packet_out_s;
+struct xqc_packet_out_s *xqc_test_find_packet_with_frame(xqc_connection_t *conn,
+                                                         uint64_t frame_bit);
+int                       xqc_test_count_packets_with_frame(xqc_connection_t *conn,
+                                                            uint64_t frame_bit);
+
 #endif /* XQC_TEST_HELPERS_H */

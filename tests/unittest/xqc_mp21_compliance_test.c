@@ -1557,3 +1557,169 @@ xqc_test_mp21_loss_replay_should_suppress_stale(void)
     xqc_test_mp21_free_conn(conn);
 }
 
+/* ------------------------------------------------------------------
+ * PR7 / L5d
+ *
+ * G-P10 (draft-21 §3.2.1 ¶1 RECOMMENDED):
+ *   "An endpoint that supports multipath SHOULD proactively issue at
+ *    least one Connection ID for each unused path ID up to the minimum
+ *    of the peer's and the local maximum path ID limits."
+ *
+ * The send-side write path requires an xqc_engine_t to allocate packet
+ * buffers and a registered conn-hash to insert generated CIDs. The mp21
+ * fixture is engine-less, so we cannot drive xqc_conn_try_add_new_conn_id
+ * end-to-end here; instead we validate the iteration **predicate** that
+ * principle #3 uses to select inner sets, by replicating the same walk
+ * over a hand-built scid_set. Compile-time co-location with the impl
+ * means a divergent change would surface in code review of this file.
+ * ------------------------------------------------------------------ */
+static int
+xqc_test_count_g_p10_candidates(xqc_connection_t *conn)
+{
+    int n = 0;
+    xqc_cid_set_inner_t *first_unused =
+        xqc_get_next_unused_path_cid_set(&conn->scid_set);
+    xqc_list_head_t *pos, *next;
+    xqc_list_for_each_safe(pos, next, &conn->scid_set.cid_set_list) {
+        xqc_cid_set_inner_t *iset = xqc_list_entry(pos, xqc_cid_set_inner_t, next);
+        if (iset == first_unused) continue;
+        if (iset->set_state != XQC_CID_SET_UNUSED) continue;
+        if (iset->path_id > conn->curr_max_path_id) continue;
+        n++;
+    }
+    return n;
+}
+
+void
+xqc_test_mp21_gp10_iteration_visits_all_unused(void)
+{
+    /* 4 UNUSED inner sets at path_ids 0..3, curr_max=3.
+     * first_unused == path_id 0 (first list entry).
+     * Principle #3 must visit the remaining 3 (path_ids 1,2,3). */
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 3,
+        .remote_max_path_id = 3,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    for (uint64_t pid = 0; pid <= 3; pid++) {
+        CU_ASSERT(xqc_cid_set_add_path(&conn->scid_set, pid) == XQC_OK);
+    }
+    /* xqc_cid_set_add_path leaves new inner sets in UNUSED state. */
+
+    int n = xqc_test_count_g_p10_candidates(conn);
+    CU_ASSERT_EQUAL(n, 3);
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_gp10_skips_above_curr_max(void)
+{
+    /* 5 UNUSED inner sets at path_ids 0..4 but curr_max=2.
+     * first_unused == path_id 0. Principle #3 must visit only
+     * path_ids 1,2 (path_ids 3,4 exceed curr_max and are skipped). */
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id  = 2,
+        .remote_max_path_id = 2,
+        .scid_len           = 8,
+        .dcid_len           = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    for (uint64_t pid = 0; pid <= 4; pid++) {
+        CU_ASSERT(xqc_cid_set_add_path(&conn->scid_set, pid) == XQC_OK);
+    }
+
+    int n = xqc_test_count_g_p10_candidates(conn);
+    CU_ASSERT_EQUAL(n, 2);
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+/* G-P14 (draft-21 §3.4 ¶3 RECOMMENDED): PATH_ABANDON SHOULD be sent on
+ * an open path other than the one being abandoned. Validates the helper
+ * xqc_conn_pick_alt_active_path used at the PATH_ABANDON writer site. */
+void
+xqc_test_mp21_gp14_pick_alt_active_path(void)
+{
+    xqc_connection_t *conn = xqc_test_helper_conn_create(NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_path_ctx_t *p1 = xqc_test_helper_path_synthesize(conn, 1, XQC_PATH_STATE_ACTIVE);
+    xqc_path_ctx_t *p2 = xqc_test_helper_path_synthesize(conn, 2, XQC_PATH_STATE_ACTIVE);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(p1);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(p2);
+    p1->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+    p2->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+
+    /* Excluding p1, alt should be p2 (lowest path_id among ACTIVE
+     * AVAILABLE != exclude). */
+    xqc_path_ctx_t *alt = xqc_conn_pick_alt_active_path(conn, p1);
+    CU_ASSERT_PTR_EQUAL(alt, p2);
+
+    /* Excluding p2 returns p1. */
+    alt = xqc_conn_pick_alt_active_path(conn, p2);
+    CU_ASSERT_PTR_EQUAL(alt, p1);
+
+    /* STANDBY is acceptable as a 2nd-tier choice (§3 state model:
+     * STANDBY is still an "open" path). When the only non-exclude path is
+     * STANDBY, it must be returned rather than NULL — otherwise PATH_ABANDON
+     * would be forced onto the to-be-abandoned (possibly broken) path. */
+    p2->app_path_status = XQC_APP_PATH_STATUS_STANDBY;
+    alt = xqc_conn_pick_alt_active_path(conn, p1);
+    CU_ASSERT_PTR_EQUAL(alt, p2);
+
+    /* AVAILABLE wins over STANDBY when both exist. Add a third path. */
+    xqc_path_ctx_t *p3 = xqc_test_helper_path_synthesize(conn, 3, XQC_PATH_STATE_ACTIVE);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(p3);
+    p3->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+    /* p2=STANDBY, p3=AVAILABLE — excluding p1 should prefer p3 (AVAILABLE). */
+    alt = xqc_conn_pick_alt_active_path(conn, p1);
+    CU_ASSERT_PTR_EQUAL(alt, p3);
+
+    /* Restore + downgrade p2 to non-ACTIVE state — must disqualify
+     * regardless of app_path_status. With p3 removed below, only-STANDBY
+     * non-ACTIVE leaves no candidate. */
+    xqc_test_helper_path_destroy(p3);
+    p2->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+    p2->path_state      = XQC_PATH_STATE_VALIDATING;
+    alt = xqc_conn_pick_alt_active_path(conn, p1);
+    CU_ASSERT_PTR_NULL(alt);
+
+    /* Single-path connection: excluding the only path returns NULL. */
+    p2->path_state = XQC_PATH_STATE_ACTIVE;
+    alt = xqc_conn_pick_alt_active_path(conn, p1);
+    CU_ASSERT_PTR_EQUAL(alt, p2);
+    /* Now exclude p2 also — but p1 is still ACTIVE+AVAILABLE, so p1 wins. */
+    alt = xqc_conn_pick_alt_active_path(conn, p2);
+    CU_ASSERT_PTR_EQUAL(alt, p1);
+
+    xqc_test_helper_path_destroy(p1);
+    xqc_test_helper_path_destroy(p2);
+    xqc_test_helper_conn_destroy(conn);
+}
+
+/* G-P14: single-path connection — excluding the only path returns NULL
+ * (no fallback available). */
+void
+xqc_test_mp21_gp14_pick_alt_active_path_single(void)
+{
+    xqc_connection_t *conn = xqc_test_helper_conn_create(NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_path_ctx_t *only = xqc_test_helper_path_synthesize(conn, 0, XQC_PATH_STATE_ACTIVE);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(only);
+    only->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+
+    xqc_path_ctx_t *alt = xqc_conn_pick_alt_active_path(conn, only);
+    CU_ASSERT_PTR_NULL(alt);
+
+    xqc_test_helper_path_destroy(only);
+    xqc_test_helper_conn_destroy(conn);
+}
+
