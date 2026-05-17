@@ -84,4 +84,8 @@ void xqc_test_mp21_gp10_skips_above_curr_max(void);
 void xqc_test_mp21_gp14_pick_alt_active_path(void);
 void xqc_test_mp21_gp14_pick_alt_active_path_single(void);
 
+/* Wire round-trip parser test — V21 PATH_STATUS codepoints
+ * (regression guard for L1+ parser dual-codepoint omission). */
+void xqc_test_mp21_parse_path_status_v21_codepoints(void);
+
 #endif /* _XQC_MP21_COMPLIANCE_TEST_H */

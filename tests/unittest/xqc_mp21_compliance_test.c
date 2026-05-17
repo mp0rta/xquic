@@ -984,6 +984,87 @@ void xqc_test_mp21_gen_path_status_dual_version(void)
     xqc_test_mp21_gen_teardown(conn, po);
 }
 
+/* ----------------------------------------------------------------------
+ * Wire round-trip for PATH_STATUS V21 codepoints.
+ *
+ * Generates PATH_STATUS_BACKUP (0x3e76) and PATH_STATUS_AVAILABLE (0x3e77)
+ * via xqc_gen_path_status_frame in XQC_MULTIPATH_3E mode, then parses back
+ * via xqc_parse_path_status_frame. Asserts the parser accepts the V21
+ * codepoints rather than returning -XQC_EILLEGAL_FRAME.
+ *
+ * Would have caught the L1+ parser dual-codepoint omission (V21 codepoints
+ * fell through to default → FRAME_ENCODING_ERROR on wire) before PR7 G-P15
+ * lifecycle glue exposed it via mqvpn netns e2e.
+ * ---------------------------------------------------------------------- */
+void xqc_test_mp21_parse_path_status_v21_codepoints(void)
+{
+    unsigned char buf[64];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+    xqc_int_t ret;
+    uint64_t path_id, seq_num, status;
+    xqc_packet_in_t pi;
+
+    /* (a) PATH_STATUS_BACKUP round-trip */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_path_status_frame(conn, po, 1, 42, XQC_APP_PATH_STATUS_STANDBY);
+    CU_ASSERT(written > 0);
+    /* Confirm the generator emitted the V21 codepoint we want to parse. */
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x76);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    path_id = seq_num = status = 0;
+    ret = xqc_parse_path_status_frame(&pi, &path_id, &seq_num, &status);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(path_id, 1);
+    CU_ASSERT_EQUAL(seq_num, 42);
+    CU_ASSERT_EQUAL(status, XQC_APP_PATH_STATUS_STANDBY);
+    CU_ASSERT_TRUE(pi.pi_frame_types & XQC_FRAME_BIT_PATH_STANDBY);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) PATH_STATUS_AVAILABLE_V21 round-trip */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_path_status_frame(conn, po, 3, 99, XQC_APP_PATH_STATUS_AVAILABLE);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x77);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    path_id = seq_num = status = 0;
+    ret = xqc_parse_path_status_frame(&pi, &path_id, &seq_num, &status);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(path_id, 3);
+    CU_ASSERT_EQUAL(seq_num, 99);
+    CU_ASSERT_EQUAL(status, XQC_APP_PATH_STATUS_AVAILABLE);
+    CU_ASSERT_TRUE(pi.pi_frame_types & XQC_FRAME_BIT_PATH_AVAILABLE);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (c) draft-10 MP_STANDBY round-trip — regression guard for V10 path */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_path_status_frame(conn, po, 2, 5, XQC_APP_PATH_STATUS_STANDBY);
+    CU_ASSERT(written > 0);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    path_id = seq_num = status = 0;
+    ret = xqc_parse_path_status_frame(&pi, &path_id, &seq_num, &status);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(path_id, 2);
+    CU_ASSERT_EQUAL(seq_num, 5);
+    CU_ASSERT_EQUAL(status, XQC_APP_PATH_STATUS_STANDBY);
+    xqc_test_mp21_gen_teardown(conn, po);
+}
+
 void xqc_test_mp21_gen_mp_new_conn_id_dual_version(void)
 {
     unsigned char buf[64];
