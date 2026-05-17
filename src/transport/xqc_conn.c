@@ -1529,6 +1529,11 @@ xqc_conn_destroy(xqc_connection_t *xc)
             );
     xqc_log_event(xc->log, CON_CONNECTION_CLOSED, xc);
 
+    /* PR3 §4.3 Rev 4: paths_info is heap-allocated by
+     * xqc_conn_get_stats_internal; free here since this internal logging
+     * path discards the stats. */
+    xqc_free(conn_stats.paths_info);
+
     xqc_engine_remove_wakeup_queue(xc->engine, xc);
 
     xqc_list_head_t *pos, *next;
