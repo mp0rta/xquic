@@ -5305,7 +5305,7 @@ xqc_conn_try_add_new_conn_id(xqc_connection_t *conn, uint64_t retire_prior_to)
                     ret = xqc_write_mp_new_conn_id_frame_to_packet(conn, retire_prior_to, inner_set->path_id);
                     if (ret != XQC_OK) {
                         xqc_log(conn->log, XQC_LOG_ERROR,
-                                "|g_p10_write_mp_new_conn_id error|path_id:%ui|",
+                                "|G-P10 write_mp_new_conn_id error|path_id:%ui|",
                                 inner_set->path_id);
                         return ret;
                     }
