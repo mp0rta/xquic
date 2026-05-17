@@ -214,6 +214,14 @@ xqc_int_t xqc_parse_mp_retire_conn_id_frame(xqc_packet_in_t *packet_in, uint64_t
 ssize_t xqc_gen_max_path_id_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out, uint64_t max_path_id);
 xqc_int_t xqc_parse_max_path_id_frame(xqc_packet_in_t *packet_in, uint64_t *max_path_id);
 
+/* draft-21 §4.7 PATHS_BLOCKED generator: 1 varint frame type (0x3e7b)
+ * + 1 varint payload (Maximum Path Identifier). Writes into a raw buffer
+ * (no conn/packet_out indirection — the trigger site in xqc_multipath.c
+ * wraps this in xqc_write_paths_blocked_frame_to_packet). Returns the
+ * number of bytes written, or a negative xqc_int_t error code if the
+ * buffer is too small. */
+ssize_t xqc_gen_paths_blocked_frame(unsigned char *buf, size_t buf_len, uint64_t max_path_id);
+
 /* draft-21 §4.7 PATHS_BLOCKED: 1 varint payload (Maximum Path Identifier). */
 xqc_int_t xqc_parse_paths_blocked_frame(xqc_packet_in_t *packet_in, uint64_t *max_path_id);
 

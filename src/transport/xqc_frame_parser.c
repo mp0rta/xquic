@@ -3114,6 +3114,50 @@ xqc_parse_max_path_id_frame(xqc_packet_in_t *packet_in, uint64_t *max_path_id)
     return XQC_OK;
 }
 
+/* draft-21 §4.7 PATHS_BLOCKED generator: mirrors xqc_gen_max_path_id_frame
+ * encoding (frame type varint + payload varint) but writes into a raw
+ * buffer. The trigger site (xqc_multipath.c path-create-fail branch) wraps
+ * this in xqc_write_paths_blocked_frame_to_packet which acquires a
+ * packet_out from the send queue and OR's in XQC_FRAME_BIT_PATHS_BLOCKED.
+ *
+ * Wire layout:
+ *     Type (i) = 0x3e7b (PATHS_BLOCKED is V21-only, no V10 codepoint)
+ *     Maximum Path Identifier (i)
+ *
+ * Returns bytes written, or -XQC_ENOBUF if buf_len is too small.
+ */
+/* Pin the wire codepoint: draft-21 §4.7 mandates 0x3e7b. The companion
+ * bit-shift _Static_assert lives in xqc_frame.h next to the bitmap. */
+_Static_assert(XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED == 0x3e7bULL,
+               "draft-21 §4.7: PATHS_BLOCKED frame type must be 0x3e7b");
+
+ssize_t
+xqc_gen_paths_blocked_frame(unsigned char *buf, size_t buf_len, uint64_t max_path_id)
+{
+    const uint64_t frame_type = XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED;
+
+    unsigned frame_type_bits = xqc_vint_get_2bit(frame_type);
+    unsigned frame_type_len  = xqc_vint_len(frame_type_bits);
+
+    unsigned max_paths_bits  = xqc_vint_get_2bit(max_path_id);
+    unsigned max_paths_len   = xqc_vint_len(max_paths_bits);
+
+    if (buf_len < (size_t)(frame_type_len + max_paths_len)) {
+        return -XQC_ENOBUF;
+    }
+
+    unsigned char *dst_buf = buf;
+    const unsigned char *begin = dst_buf;
+
+    xqc_vint_write(dst_buf, frame_type, frame_type_bits, frame_type_len);
+    dst_buf += frame_type_len;
+
+    xqc_vint_write(dst_buf, max_path_id, max_paths_bits, max_paths_len);
+    dst_buf += max_paths_len;
+
+    return dst_buf - begin;
+}
+
 /* draft-21 §4.7 PATHS_BLOCKED:
  *     Type (i) = 0x3e7b
  *     Maximum Path Identifier (i)
