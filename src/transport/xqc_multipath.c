@@ -1511,7 +1511,15 @@ xqc_path_is_full(xqc_path_ctx_t *path)
 xqc_path_ctx_t *
 xqc_conn_pick_alt_active_path(xqc_connection_t *conn, xqc_path_ctx_t *exclude)
 {
-    xqc_path_ctx_t *best = NULL;
+    /* draft-21 §3.4 ¶3 RECOMMENDS sending PATH_ABANDON on "another open path".
+     * The §3 path state model treats both AVAILABLE and STANDBY as open
+     * (non-CLOSING/CLOSED) paths usable for control traffic. Prefer AVAILABLE
+     * (lowest path_id) when present; otherwise fall back to STANDBY
+     * (lowest path_id). This avoids returning NULL — and thus emitting on the
+     * to-be-abandoned (possibly broken) path — when the only AVAILABLE path
+     * is the exclude target but a healthy STANDBY exists. */
+    xqc_path_ctx_t *best_available = NULL;
+    xqc_path_ctx_t *best_standby   = NULL;
     xqc_path_ctx_t *path;
     xqc_list_head_t *pos, *next;
 
@@ -1527,14 +1535,21 @@ xqc_conn_pick_alt_active_path(xqc_connection_t *conn, xqc_path_ctx_t *exclude)
         if (path->path_state != XQC_PATH_STATE_ACTIVE) {
             continue;
         }
-        if (path->app_path_status != XQC_APP_PATH_STATUS_AVAILABLE) {
-            continue;
-        }
-        if (best == NULL || path->path_id < best->path_id) {
-            best = path;
+        if (path->app_path_status == XQC_APP_PATH_STATUS_AVAILABLE) {
+            if (best_available == NULL || path->path_id < best_available->path_id) {
+                best_available = path;
+            }
+        } else if (path->app_path_status == XQC_APP_PATH_STATUS_STANDBY) {
+            if (best_standby == NULL || path->path_id < best_standby->path_id) {
+                best_standby = path;
+            }
         }
     }
-    return best;
+
+    if (best_available != NULL) {
+        return best_available;
+    }
+    return best_standby;
 }
 
 xqc_int_t

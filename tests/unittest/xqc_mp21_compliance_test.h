@@ -82,5 +82,6 @@ void xqc_test_mp21_loss_replay_should_suppress_stale(void);
 void xqc_test_mp21_gp10_iteration_visits_all_unused(void);
 void xqc_test_mp21_gp10_skips_above_curr_max(void);
 void xqc_test_mp21_gp14_pick_alt_active_path(void);
+void xqc_test_mp21_gp14_pick_alt_active_path_single(void);
 
 #endif /* _XQC_MP21_COMPLIANCE_TEST_H */

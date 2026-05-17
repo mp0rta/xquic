@@ -1666,19 +1666,60 @@ xqc_test_mp21_gp14_pick_alt_active_path(void)
     alt = xqc_conn_pick_alt_active_path(conn, p2);
     CU_ASSERT_PTR_EQUAL(alt, p1);
 
-    /* Non-AVAILABLE app status disqualifies a candidate. */
+    /* STANDBY is acceptable as a 2nd-tier choice (§3 state model:
+     * STANDBY is still an "open" path). When the only non-exclude path is
+     * STANDBY, it must be returned rather than NULL — otherwise PATH_ABANDON
+     * would be forced onto the to-be-abandoned (possibly broken) path. */
     p2->app_path_status = XQC_APP_PATH_STATUS_STANDBY;
     alt = xqc_conn_pick_alt_active_path(conn, p1);
-    CU_ASSERT_PTR_NULL(alt);
+    CU_ASSERT_PTR_EQUAL(alt, p2);
 
-    /* Restore + downgrade p2 to non-ACTIVE state — must also disqualify. */
+    /* AVAILABLE wins over STANDBY when both exist. Add a third path. */
+    xqc_path_ctx_t *p3 = xqc_test_helper_path_synthesize(conn, 3, XQC_PATH_STATE_ACTIVE);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(p3);
+    p3->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+    /* p2=STANDBY, p3=AVAILABLE — excluding p1 should prefer p3 (AVAILABLE). */
+    alt = xqc_conn_pick_alt_active_path(conn, p1);
+    CU_ASSERT_PTR_EQUAL(alt, p3);
+
+    /* Restore + downgrade p2 to non-ACTIVE state — must disqualify
+     * regardless of app_path_status. With p3 removed below, only-STANDBY
+     * non-ACTIVE leaves no candidate. */
+    xqc_test_helper_path_destroy(p3);
     p2->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
     p2->path_state      = XQC_PATH_STATE_VALIDATING;
     alt = xqc_conn_pick_alt_active_path(conn, p1);
     CU_ASSERT_PTR_NULL(alt);
 
+    /* Single-path connection: excluding the only path returns NULL. */
+    p2->path_state = XQC_PATH_STATE_ACTIVE;
+    alt = xqc_conn_pick_alt_active_path(conn, p1);
+    CU_ASSERT_PTR_EQUAL(alt, p2);
+    /* Now exclude p2 also — but p1 is still ACTIVE+AVAILABLE, so p1 wins. */
+    alt = xqc_conn_pick_alt_active_path(conn, p2);
+    CU_ASSERT_PTR_EQUAL(alt, p1);
+
     xqc_test_helper_path_destroy(p1);
     xqc_test_helper_path_destroy(p2);
+    xqc_test_helper_conn_destroy(conn);
+}
+
+/* G-P14: single-path connection — excluding the only path returns NULL
+ * (no fallback available). */
+void
+xqc_test_mp21_gp14_pick_alt_active_path_single(void)
+{
+    xqc_connection_t *conn = xqc_test_helper_conn_create(NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_path_ctx_t *only = xqc_test_helper_path_synthesize(conn, 0, XQC_PATH_STATE_ACTIVE);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(only);
+    only->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+
+    xqc_path_ctx_t *alt = xqc_conn_pick_alt_active_path(conn, only);
+    CU_ASSERT_PTR_NULL(alt);
+
+    xqc_test_helper_path_destroy(only);
     xqc_test_helper_conn_destroy(conn);
 }
 
