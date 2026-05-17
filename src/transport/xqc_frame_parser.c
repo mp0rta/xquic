@@ -2798,16 +2798,18 @@ xqc_parse_path_status_frame(xqc_packet_in_t *packet_in,
     packet_in->pos = p;
 
     switch (frame_type) {
-        case XQC_TRANS_FRAME_TYPE_MP_STANDBY: 
+        case XQC_TRANS_FRAME_TYPE_MP_STANDBY:
+        case XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP:        /* draft-21 §4.4 */
             *path_status = XQC_APP_PATH_STATUS_STANDBY;
             packet_in->pi_frame_types |= XQC_FRAME_BIT_PATH_STANDBY;
             break;
         case XQC_TRANS_FRAME_TYPE_MP_AVAILABLE:
+        case XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21: /* draft-21 §4.4 */
             *path_status = XQC_APP_PATH_STATUS_AVAILABLE;
             packet_in->pi_frame_types |= XQC_FRAME_BIT_PATH_AVAILABLE;
             break;
         case XQC_TRANS_FRAME_TYPE_MP_FROZEN:
-            /* xquic vendor extension — see xqc_frame_parser.h comment. */
+            /* xquic vendor extension — V10 only, see xqc_frame_parser.h comment. */
             *path_status = XQC_APP_PATH_STATUS_FROZEN;
             packet_in->pi_frame_types |= XQC_FRAME_BIT_PATH_FROZEN;
             break;

@@ -5291,18 +5291,7 @@ xqc_conn_try_add_new_conn_id(xqc_connection_t *conn, uint64_t retire_prior_to)
              * (xqc_get_next_unused_path_cid_set) returns only the first
              * UNUSED inner set; principle #3 covers the remaining
              * UNUSED sets when curr_max_path_id grew (handshake-complete
-             * or MAX_PATH_ID credit) by more than one path.
-             *
-             * Throttle the burst to avoid a thundering herd: the peer's
-             * dcid_set expands incrementally per frame received, and
-             * emitting many frames in one tick can outpace its state
-             * expansion (observed with init_max_path_id=64 → ~126
-             * frames/tick → server FRAME_ENCODING_ERROR via the
-             * xqc_engine catch-all). Remaining issuance carries over
-             * to subsequent xqc_engine_main_logic ticks. */
-            int issued_this_call = 0;
-            const int per_tick_budget = 4;
-
+             * or MAX_PATH_ID credit) by more than one path. */
             xqc_cid_set_inner_t *first_unused = xqc_get_next_unused_path_cid_set(&conn->scid_set);
             xqc_list_for_each_safe(pos, next, &conn->scid_set.cid_set_list) {
                 inner_set = xqc_list_entry(pos, xqc_cid_set_inner_t, next);
@@ -5318,12 +5307,6 @@ xqc_conn_try_add_new_conn_id(xqc_connection_t *conn, uint64_t retire_prior_to)
                 while ((inner_set->unused_cnt + inner_set->used_cnt) < conn->remote_settings.active_connection_id_limit
                        && inner_set->unused_cnt < unused_limit)
                 {
-                    if (issued_this_call >= per_tick_budget) {
-                        xqc_log(conn->log, XQC_LOG_DEBUG,
-                                "|g_p10_burst_budget_reached|issued:%d|defer|",
-                                issued_this_call);
-                        return XQC_OK;
-                    }
                     ret = xqc_write_mp_new_conn_id_frame_to_packet(conn, retire_prior_to, inner_set->path_id);
                     if (ret != XQC_OK) {
                         xqc_log(conn->log, XQC_LOG_ERROR,
@@ -5331,7 +5314,6 @@ xqc_conn_try_add_new_conn_id(xqc_connection_t *conn, uint64_t retire_prior_to)
                                 inner_set->path_id);
                         return ret;
                     }
-                    issued_this_call++;
                 }
             }
 
