@@ -208,18 +208,18 @@ xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid, xqc_cid_t *dcid, uint64
                 path_id, conn->remote_settings.init_max_path_id,
                 conn->local_max_path_id);
 
-        /* G-P16 (draft-21 §3.2.1 ¶7 / §4.7): signal the peer that our
-         * local endpoint has hit the negotiated path cap. Rate-limit to
-         * one per PTO so a burst of failed path_create attempts cannot
-         * flood the wire. observed_cap mirrors the accept-cap above
-         * (max of remote init and local grant). */
+        /* G-P16 (draft-21 §3.2.1 ¶7 / §4.7): signal the peer that we
+         * are blocked. Note: local_max_path_id here tracks peer grants
+         * (raised via received MAX_PATH_ID), so the OR branch above is
+         * still "peer's cap exceeded" — not a self-imposed cap. */
         xqc_usec_t now = xqc_monotonic_timestamp();
         xqc_usec_t pto = xqc_conn_get_max_pto(conn);
-        if (now - conn->last_paths_blocked_sent_time >= pto) {
+        if (conn->last_paths_blocked_sent_us == 0
+            || (now - conn->last_paths_blocked_sent_us) >= pto) {
             uint64_t observed_cap = xqc_max(conn->remote_settings.init_max_path_id,
                                             conn->local_max_path_id);
             if (xqc_write_paths_blocked_frame_to_packet(conn, observed_cap) == XQC_OK) {
-                conn->last_paths_blocked_sent_time = now;
+                conn->last_paths_blocked_sent_us = now;
                 xqc_log(conn->log, XQC_LOG_INFO,
                         "|PATHS_BLOCKED sent|max_path_id:%ui|", observed_cap);
             }

@@ -425,10 +425,8 @@ struct xqc_connection_s {
      * rate-limit grants to one per PTO. Zero = no grant has fired yet. */
     xqc_usec_t                      last_max_path_id_grant_us;
 
-    /* G-P16 (draft-21 §3.2.1 ¶7 / §4.7): monotonic timestamp (us) of the
-     * most recent PATHS_BLOCKED frame emitted on path-create-fail. Used
-     * to PTO-rate-limit PATHS_BLOCKED bursts. Zero = never sent. */
-    xqc_usec_t                      last_paths_blocked_sent_time;
+    /* G-P16 PATHS_BLOCKED PTO rate-limit; zero = never sent. */
+    xqc_usec_t                      last_paths_blocked_sent_us;
 
     /* for qlog */
     uint32_t                        MTU_updated_count;    
