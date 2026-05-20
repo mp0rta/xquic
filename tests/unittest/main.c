@@ -244,7 +244,9 @@ main()
         !CU_add_test(pSuite, "xqc_test_hp_sample_boundary",
                      xqc_test_hp_sample_boundary) ||
         !CU_add_test(pSuite, "xqc_test_packet_encrypt_hp_sample_boundary",
-                     xqc_test_packet_encrypt_hp_sample_boundary)
+                     xqc_test_packet_encrypt_hp_sample_boundary) ||
+        !CU_add_test(pSuite, "xqc_test_check_transport_params_cids",
+                     xqc_test_check_transport_params_cids)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();
