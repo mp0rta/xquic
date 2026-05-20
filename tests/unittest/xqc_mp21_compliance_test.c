@@ -1804,3 +1804,21 @@ xqc_test_mp21_gp14_pick_alt_active_path_single(void)
     xqc_test_helper_conn_destroy(conn);
 }
 
+/* PR8 L5e G-P16: draft-21 §4.7 PATHS_BLOCKED raw-buffer generator.
+ *
+ * Wire layout (1 varint frame type + 1 varint payload):
+ *   Type (i) = 0x3e7b              — 2-byte varint, encoded as 0x7e 0x7b
+ *   Maximum Path Identifier (i)    — 1-byte varint (value 5 -> 0x05)
+ *
+ * Total expected length for max_path_id=5: 3 bytes. */
+void
+xqc_test_mp21_gen_paths_blocked_frame(void)
+{
+    unsigned char buf[16] = {0};
+    ssize_t n = xqc_gen_paths_blocked_frame(buf, sizeof(buf), /* max_path_id = */ 5);
+    CU_ASSERT_EQUAL(n, 3);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);   /* 2-byte varint: 0x40 | (0x3e7b>>8) = 0x7e */
+    CU_ASSERT_EQUAL(buf[1], 0x7b);
+    CU_ASSERT_EQUAL(buf[2], 0x05);   /* max_path_id=5, 1-byte varint */
+}
+

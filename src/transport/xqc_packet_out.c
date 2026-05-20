@@ -1902,6 +1902,39 @@ error:
     return -XQC_EWRITE_PKT;
 }
 
+/* G-P16 (draft-21 §4.7): emit a PATHS_BLOCKED control frame in a fresh
+ * short-header packet. Mirrors xqc_write_max_path_id_to_packet but routes
+ * the raw-buffer gen helper xqc_gen_paths_blocked_frame. PATHS_BLOCKED is
+ * a path-0-scoped frame (§3.2.1 ¶7), so po_path_id is pinned to 0. */
+xqc_int_t
+xqc_write_paths_blocked_frame_to_packet(xqc_connection_t *conn, uint64_t max_path_id)
+{
+    ssize_t ret = XQC_ERROR;
+    xqc_packet_out_t *packet_out;
+    xqc_log(conn->log, XQC_LOG_DEBUG, "|paths_blocked max_path_id:%ui|", max_path_id);
+
+    packet_out = xqc_write_new_packet(conn, XQC_PTYPE_SHORT_HEADER);
+    if (packet_out == NULL) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_write_new_packet error|");
+        return -XQC_EWRITE_PKT;
+    }
+
+    ret = xqc_gen_paths_blocked_frame(packet_out->po_buf + packet_out->po_used_size,
+                                      packet_out->po_buf_size - packet_out->po_used_size,
+                                      max_path_id);
+    if (ret < 0) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_gen_paths_blocked_frame error|");
+        xqc_maybe_recycle_packet_out(packet_out, conn);
+        return -XQC_EWRITE_PKT;
+    }
+
+    packet_out->po_used_size += ret;
+    packet_out->po_frame_types |= XQC_FRAME_BIT_PATHS_BLOCKED;
+    packet_out->po_path_id = 0;
+    xqc_send_queue_move_to_high_pri(&packet_out->po_list, conn->conn_send_queue);
+    return XQC_OK;
+}
+
 int
 xqc_write_ack_ext_to_one_packet(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
     xqc_pkt_num_space_t pns, xqc_bool_t is_new_pkt)
