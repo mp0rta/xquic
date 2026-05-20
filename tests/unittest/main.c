@@ -240,7 +240,11 @@ main()
         !CU_add_test(pSuite, "xqc_test_rfc9001_server_initial_keys",
                      xqc_test_rfc9001_server_initial_keys) ||
         !CU_add_test(pSuite, "xqc_test_stream_frame_offset_overflow",
-                     xqc_test_stream_frame_offset_overflow)
+                     xqc_test_stream_frame_offset_overflow) ||
+        !CU_add_test(pSuite, "xqc_test_hp_sample_boundary",
+                     xqc_test_hp_sample_boundary) ||
+        !CU_add_test(pSuite, "xqc_test_packet_encrypt_hp_sample_boundary",
+                     xqc_test_packet_encrypt_hp_sample_boundary)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();

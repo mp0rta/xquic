@@ -6,6 +6,7 @@
 #define _XQC_CRYPTO_TEST_INCLUDE_
 
 void xqc_test_crypto();
+void xqc_test_hp_sample_boundary();
 
 /* RFC 9001 Appendix A test vector verification */
 void xqc_test_rfc9001_initial_secret();
