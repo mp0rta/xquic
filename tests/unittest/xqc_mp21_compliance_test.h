@@ -88,4 +88,10 @@ void xqc_test_mp21_gp14_pick_alt_active_path_single(void);
  * (regression guard for L1+ parser dual-codepoint omission). */
 void xqc_test_mp21_parse_path_status_v21_codepoints(void);
 
+/* PR8 L5e send-side PATHS_BLOCKED (G-P16).
+ *  - Raw-buffer generator: encodes frame type 0x3e7b + Maximum Path Identifier
+ *    varint per draft-21 §4.7.
+ */
+void xqc_test_mp21_gen_paths_blocked_frame(void);
+
 #endif /* _XQC_MP21_COMPLIANCE_TEST_H */

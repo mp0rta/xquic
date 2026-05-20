@@ -49,6 +49,7 @@ typedef enum {
     XQC_FRAME_Extension,
     XQC_FRAME_SID,
     XQC_FRAME_REPAIR_SYMBOL,
+    XQC_FRAME_PATHS_BLOCKED,
     XQC_FRAME_NUM,
 } xqc_frame_type_t;
 
@@ -94,6 +95,7 @@ typedef uint64_t xqc_frame_type_bit_t;
 #define XQC_FRAME_BIT_Extension               ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_Extension)
 #define XQC_FRAME_BIT_SID                     ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_SID)
 #define XQC_FRAME_BIT_REPAIR_SYMBOL           ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_REPAIR_SYMBOL)
+#define XQC_FRAME_BIT_PATHS_BLOCKED           ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_PATHS_BLOCKED)
 #define XQC_FRAME_BIT_NUM                     ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_NUM)
 
 /* Compile-time guards: regression here would silently break Windows FEC. */
@@ -130,6 +132,15 @@ _Static_assert(XQC_FRAME_BIT_MAX_PATH_ID == ((xqc_frame_type_bit_t)1ULL << XQC_F
                "XQC_FRAME_BIT_MAX_PATH_ID shift must match enum value");
 _Static_assert(XQC_FRAME_BIT_PATH_FROZEN == ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_PATH_FROZEN),
                "XQC_FRAME_BIT_PATH_FROZEN shift must match enum value");
+/* draft-21 §4.7 PATHS_BLOCKED (G-P16, PR8 L5e): pin bitmap shift. MSVC
+ * enum truncation would silently zero this bit if it lands above INT_MAX
+ * (PATHS_BLOCKED is the highest pre-NUM ordinal); this guards against
+ * that and against an enum reorder desyncing the bit value from the
+ * shift expression. The matching frame-type-codepoint assert lives in
+ * xqc_frame_parser.c (where XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED is in
+ * scope) so xqc_frame.h doesn't have to pull xqc_frame_parser.h. */
+_Static_assert(XQC_FRAME_BIT_PATHS_BLOCKED == ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_PATHS_BLOCKED),
+               "XQC_FRAME_BIT_PATHS_BLOCKED shift must match enum value");
 /* Enum ordering pin: MP frame ordinals must stay contiguous and within
  * INT_MAX (bit 31) so plain-int enum compilers don't truncate. If a new
  * MP frame is inserted above ACK_MP, both these asserts and the bit-31

@@ -425,6 +425,9 @@ struct xqc_connection_s {
      * rate-limit grants to one per PTO. Zero = no grant has fired yet. */
     xqc_usec_t                      last_max_path_id_grant_us;
 
+    /* G-P16 PATHS_BLOCKED PTO rate-limit; zero = never sent. */
+    xqc_usec_t                      last_paths_blocked_sent_us;
+
     /* for qlog */
     uint32_t                        MTU_updated_count;    
     uint32_t                        packet_dropped_count;

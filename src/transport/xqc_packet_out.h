@@ -244,6 +244,10 @@ xqc_int_t xqc_write_mp_retire_conn_id_frame_to_packet(xqc_connection_t *conn, ui
 
 int xqc_write_max_path_id_to_packet(xqc_connection_t *conn, uint64_t max_path_id);
 
+/* G-P16 (draft-21 §4.7): emit PATHS_BLOCKED on path-create-fail.
+ * PTO rate-limited by caller via conn->last_paths_blocked_sent_time. */
+xqc_int_t xqc_write_paths_blocked_frame_to_packet(xqc_connection_t *conn, uint64_t max_path_id);
+
 /**
  * @brief Get remained space size in packet out buff.
  * 
