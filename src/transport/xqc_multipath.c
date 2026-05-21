@@ -682,6 +682,26 @@ xqc_conn_create_path(xqc_engine_t *engine, const xqc_cid_t *scid, uint64_t *new_
         conn->conn_flag |= XQC_CONN_FLAG_MP_WAIT_MP_READY;
         xqc_log(conn->log, XQC_LOG_WARN,
                 "|don't have available cid for new path|");
+
+        /* G-P16 (draft-21 §3.2.1 ¶7 / §4.7): we are unable to create a new
+         * path because the path_id namespace is exhausted (peer has not
+         * issued CIDs for higher path_ids, which only happens when the
+         * negotiated cap is reached). Signal peer to expand the cap.
+         * PTO-rate-limited like the Stage 1 site so retry storms don't
+         * flood the wire. */
+        xqc_usec_t now = xqc_monotonic_timestamp();
+        xqc_usec_t pto = xqc_conn_get_max_pto(conn);
+        if (conn->last_paths_blocked_sent_us == 0
+            || (now - conn->last_paths_blocked_sent_us) >= pto) {
+            uint64_t observed_cap = xqc_max(conn->remote_settings.init_max_path_id,
+                                            conn->local_max_path_id);
+            if (xqc_write_paths_blocked_frame_to_packet(conn, observed_cap) == XQC_OK) {
+                conn->last_paths_blocked_sent_us = now;
+                xqc_log(conn->log, XQC_LOG_INFO,
+                        "|PATHS_BLOCKED sent|max_path_id:%ui|", observed_cap);
+            }
+        }
+
         return -XQC_EMP_NO_AVAIL_PATH_ID;
     }
 
