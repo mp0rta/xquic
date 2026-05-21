@@ -3182,6 +3182,7 @@ xqc_parse_paths_blocked_frame(xqc_packet_in_t *packet_in, uint64_t *max_path_id)
     }
     p += vlen;
 
+    packet_in->pi_frame_types |= XQC_FRAME_BIT_PATHS_BLOCKED;
     packet_in->pos = p;
     return XQC_OK;
 }
@@ -3218,6 +3219,9 @@ xqc_parse_path_cids_blocked_frame(xqc_packet_in_t *packet_in,
     }
     p += vlen;
 
+    /* TODO(mp21): bump pi_frame_types here once XQC_FRAME_BIT_PATH_CIDS_BLOCKED
+     * (and its enum constant) lands. Same "receive packet with no frame" PV
+     * trip applies if a PATH_CIDS_BLOCKED arrives alone in a datagram. */
     packet_in->pos = p;
     return XQC_OK;
 }
