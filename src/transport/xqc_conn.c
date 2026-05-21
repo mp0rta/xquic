@@ -264,10 +264,15 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
 
     if (settings->init_max_path_id == 0) {
         engine->default_conn_settings.init_max_path_id = XQC_DEFAULT_INIT_MAX_PATH_ID;
-        
+
     } else {
         engine->default_conn_settings.init_max_path_id = settings->init_max_path_id;
     }
+
+    /* draft-21 §3.2.1 ¶7 PATHS_BLOCKED auto-grant opt-in. 0 = disabled
+     * (no auto-grant); >0 = cap. Copy verbatim so server applications can
+     * enable per-connection MAX_PATH_ID grants via the engine default. */
+    engine->default_conn_settings.max_path_id_grant_max_value = settings->max_path_id_grant_max_value;
 
     engine->default_conn_settings.close_dgram_redundancy = settings->close_dgram_redundancy;
 
