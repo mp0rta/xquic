@@ -79,6 +79,7 @@ main()
     }
 
     if (!CU_add_test(pSuite, "xqc_test_get_random", xqc_test_get_random) ||
+        !CU_add_test(pSuite, "xqc_test_reno_init_cwnd", xqc_test_reno_init_cwnd) ||
         !CU_add_test(pSuite, "xqc_test_engine_create", xqc_test_engine_create) ||
         !CU_add_test(pSuite, "xqc_test_conn_create", xqc_test_conn_create) ||
         !CU_add_test(pSuite, "xqc_test_pq", xqc_test_pq) ||
