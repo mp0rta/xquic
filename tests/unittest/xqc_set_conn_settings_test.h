@@ -1,20 +1,24 @@
 /**
- * @copyright Copyright (c) 2022, Alibaba Group Holding Limited
+ * @copyright Copyright (c) 2026, Alibaba Group Holding Limited
  */
 
 #ifndef _XQC_SET_CONN_SETTINGS_TEST_H
 #define _XQC_SET_CONN_SETTINGS_TEST_H
 
 /* PR8 G-N6 test gap #c. Pins xqc_server_set_conn_settings field
- * propagation for the subset of xqc_conn_settings_t fields that
- * mqvpn (the primary downstream consumer) actually sets.
+ * propagation for the 14 xqc_conn_settings_t fields that mqvpn (the
+ * primary downstream consumer) actually sets today.
  *
- * Adding a new field that mqvpn consumes? Three places must update
- * together, or this test will go red:
- *   (1) xqc_conn_settings_t in include/xquic/xquic.h
- *   (2) corresponding copy line in xqc_server_set_conn_settings
- *       (src/transport/xqc_conn.c)
- *   (3) a new row / assertion in this test file
+ * What this test catches: deleting / breaking a copy line for one of
+ * the 14 fields in src/transport/xqc_conn.c — the matching field's
+ * sentinel won't land in engine->default_conn_settings, an assertion
+ * trips.
+ *
+ * What it does NOT catch: adding a new field to xqc_conn_settings_t
+ * and forgetting to either propagate it in the SUT or extend this
+ * test. Value-probe coverage is bounded by the probes it writes.
+ * Reviewers of any future field-adding PR remain the gate for
+ * extending both sides in lock-step.
  */
 void xqc_test_server_set_conn_settings_propagation(void);
 void xqc_test_server_set_conn_settings_zero_defaults(void);
