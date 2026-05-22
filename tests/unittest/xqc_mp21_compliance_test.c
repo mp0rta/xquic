@@ -1210,9 +1210,14 @@ mp21_make_conn_for_blocked(uint64_t local_max)
     return conn;
 }
 
+/* `seed` becomes the starting pi_frame_types: pass XQC_FRAME_BIT_PING to
+ * mask draft-21 §12.4's no-frame PROTOCOL_VIOLATION check, or 0 to
+ * exercise it (solo-frame-in-datagram tests). `out_frame_types` is
+ * optional. */
 static void
 mp21_run_frame(xqc_connection_t *conn, const unsigned char *payload, size_t payload_len,
-               xqc_int_t *out_ret)
+               xqc_frame_type_bit_t seed, xqc_int_t *out_ret,
+               xqc_frame_type_bit_t *out_frame_types)
 {
     unsigned char buf[32];
     CU_ASSERT_FATAL(payload_len <= sizeof(buf));
@@ -1226,9 +1231,12 @@ mp21_run_frame(xqc_connection_t *conn, const unsigned char *payload, size_t payl
     packet_in.pos = buf;
     packet_in.last = buf + payload_len;
     packet_in.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
-    packet_in.pi_frame_types = XQC_FRAME_BIT_PING;
+    packet_in.pi_frame_types = seed;
 
     *out_ret = xqc_process_frames(conn, &packet_in);
+    if (out_frame_types != NULL) {
+        *out_frame_types = packet_in.pi_frame_types;
+    }
 }
 
 /* PATHS_BLOCKED case A: peer_max == local_max -> ignore (XQC_OK, no err). */
@@ -1240,7 +1248,7 @@ xqc_test_mp21_paths_blocked_validation(void)
     static const unsigned char buf_eq[] = {0x80, 0x00, 0x3e, 0x7b, 0x08};
     xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/8);
     xqc_int_t ret = XQC_ERROR;
-    mp21_run_frame(conn, buf_eq, sizeof(buf_eq), &ret);
+    mp21_run_frame(conn, buf_eq, sizeof(buf_eq), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, 0);
     CU_ASSERT_EQUAL(conn->local_max_path_id, 8);  /* unchanged (grant disabled) */
@@ -1249,7 +1257,7 @@ xqc_test_mp21_paths_blocked_validation(void)
     /* case B: peer_max < local_max -> ignore. */
     static const unsigned char buf_lt[] = {0x80, 0x00, 0x3e, 0x7b, 0x04};
     conn = mp21_make_conn_for_blocked(/*local_max*/8);
-    mp21_run_frame(conn, buf_lt, sizeof(buf_lt), &ret);
+    mp21_run_frame(conn, buf_lt, sizeof(buf_lt), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, 0);
     xqc_test_mp21_free_conn(conn);
@@ -1257,7 +1265,7 @@ xqc_test_mp21_paths_blocked_validation(void)
     /* case C: peer_max > local_max -> PROTOCOL_VIOLATION (spec §4.7 MUST). */
     static const unsigned char buf_gt[] = {0x80, 0x00, 0x3e, 0x7b, 0x09};
     conn = mp21_make_conn_for_blocked(/*local_max*/8);
-    mp21_run_frame(conn, buf_gt, sizeof(buf_gt), &ret);
+    mp21_run_frame(conn, buf_gt, sizeof(buf_gt), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
     xqc_test_mp21_free_conn(conn);
@@ -1271,7 +1279,7 @@ xqc_test_mp21_path_cids_blocked_validation(void)
     /* case A: path_id == local_max (8), seq=0 <= next_expected(0) -> OK ignore. */
     static const unsigned char buf_ok[] = {0x80, 0x00, 0x3e, 0x7c, 0x08, 0x00};
     xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/8);
-    mp21_run_frame(conn, buf_ok, sizeof(buf_ok), &ret);
+    mp21_run_frame(conn, buf_ok, sizeof(buf_ok), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, 0);
     xqc_test_mp21_free_conn(conn);
@@ -1279,7 +1287,7 @@ xqc_test_mp21_path_cids_blocked_validation(void)
     /* case B: path_id > local_max -> PROTOCOL_VIOLATION (gate). */
     static const unsigned char buf_pid_gt[] = {0x80, 0x00, 0x3e, 0x7c, 0x09, 0x00};
     conn = mp21_make_conn_for_blocked(/*local_max*/8);
-    mp21_run_frame(conn, buf_pid_gt, sizeof(buf_pid_gt), &ret);
+    mp21_run_frame(conn, buf_pid_gt, sizeof(buf_pid_gt), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
     xqc_test_mp21_free_conn(conn);
@@ -1288,7 +1296,7 @@ xqc_test_mp21_path_cids_blocked_validation(void)
     static const unsigned char buf_aban[] = {0x80, 0x00, 0x3e, 0x7c, 0x02, 0x00};
     conn = mp21_make_conn_for_blocked(/*local_max*/8);
     xqc_conn_mark_path_abandoned(conn, 2);
-    mp21_run_frame(conn, buf_aban, sizeof(buf_aban), &ret);
+    mp21_run_frame(conn, buf_aban, sizeof(buf_aban), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, 0);
     xqc_test_mp21_free_conn(conn);
@@ -1297,7 +1305,7 @@ xqc_test_mp21_path_cids_blocked_validation(void)
     static const unsigned char buf_seq_gt[] = {0x80, 0x00, 0x3e, 0x7c, 0x01, 0x02};
     conn = mp21_make_conn_for_blocked(/*local_max*/8);
     /* no scid issued for path 1 -> next_expected = 0; peer claims 2 -> violation */
-    mp21_run_frame(conn, buf_seq_gt, sizeof(buf_seq_gt), &ret);
+    mp21_run_frame(conn, buf_seq_gt, sizeof(buf_seq_gt), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
     xqc_test_mp21_free_conn(conn);
@@ -1305,7 +1313,7 @@ xqc_test_mp21_path_cids_blocked_validation(void)
     /* case E: next_seq == next_expected (both 0, missing path) -> ignore OK. */
     static const unsigned char buf_seq_eq[] = {0x80, 0x00, 0x3e, 0x7c, 0x01, 0x00};
     conn = mp21_make_conn_for_blocked(/*local_max*/8);
-    mp21_run_frame(conn, buf_seq_eq, sizeof(buf_seq_eq), &ret);
+    mp21_run_frame(conn, buf_seq_eq, sizeof(buf_seq_eq), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, 0);
     xqc_test_mp21_free_conn(conn);
@@ -1343,6 +1351,46 @@ xqc_test_mp21_blocked_frames_pi_frame_types(void)
     CU_ASSERT_EQUAL(a, 1);
     CU_ASSERT_EQUAL(b, 0);
     CU_ASSERT_TRUE((pi.pi_frame_types & XQC_FRAME_BIT_PATH_CIDS_BLOCKED) != 0);
+}
+
+/* draft-21 §4.7 + RFC 9000 §12.4: a datagram carrying only a PATHS_BLOCKED
+ * or PATH_CIDS_BLOCKED frame must not trip the no-frame PROTOCOL_VIOLATION
+ * check — catches the regression where a parser forgets to bump
+ * pi_frame_types. Negative control proves the check is fixture-reachable. */
+void
+xqc_test_mp21_solo_frame_in_datagram_no_pv(void)
+{
+    xqc_int_t ret = XQC_ERROR;
+    xqc_frame_type_bit_t fbits = 0;
+    xqc_connection_t *conn;
+
+    /* (a) PATHS_BLOCKED solo: peer_max == local_max (8) -> ignore branch. */
+    static const unsigned char buf_pb[] = {0x80, 0x00, 0x3e, 0x7b, 0x08};
+    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    mp21_run_frame(conn, buf_pb, sizeof(buf_pb), /*seed*/0, &ret, &fbits);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    CU_ASSERT_TRUE((fbits & XQC_FRAME_BIT_PATHS_BLOCKED) != 0);
+    xqc_test_mp21_free_conn(conn);
+
+    /* (b) PATH_CIDS_BLOCKED solo: path_id=8 (local_max), seq=0 -> ignore. */
+    static const unsigned char buf_pcb[] = {0x80, 0x00, 0x3e, 0x7c, 0x08, 0x00};
+    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    mp21_run_frame(conn, buf_pcb, sizeof(buf_pcb), /*seed*/0, &ret, &fbits);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    CU_ASSERT_TRUE((fbits & XQC_FRAME_BIT_PATH_CIDS_BLOCKED) != 0);
+    xqc_test_mp21_free_conn(conn);
+
+    /* (c) negative control: empty payload -> PROTOCOL_VIOLATION. Guards
+     * against future changes that would short-circuit the no-frame check
+     * before (a)/(b) reach it, which would silently mask parser bugs. */
+    static const unsigned char buf_empty[1] = {0};
+    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    mp21_run_frame(conn, buf_empty, /*payload_len*/0, /*seed*/0, &ret, &fbits);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
+    CU_ASSERT_EQUAL(fbits, 0);
+    xqc_test_mp21_free_conn(conn);
 }
 
 /* mp21 L2 M3 — MAX_PATH_ID credit grant tests. Tests exercise the
