@@ -49,6 +49,7 @@
 #include "xqc_crypto_frame_test.h"
 #include "xqc_dos_e2e_test.h"
 #include "xqc_wlb_test.h"
+#include "xqc_send_ctl_test.h"
 
 static int
 xqc_init_suite(void)
@@ -303,6 +304,10 @@ main()
                         xqc_test_wlb_recovery_prefer_skips_initial_path_addition)
         || !CU_add_test(pSuite, "xqc_test_wlb_recovery_prefer_fires_after_real_failover",
                         xqc_test_wlb_recovery_prefer_fires_after_real_failover)
+        || !CU_add_test(pSuite, "xqc_test_pto_uses_remote_max_ack_delay",
+                        xqc_test_pto_uses_remote_max_ack_delay)
+        || !CU_add_test(pSuite, "xqc_test_pto_remote_default_when_unset",
+                        xqc_test_pto_remote_default_when_unset)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();
