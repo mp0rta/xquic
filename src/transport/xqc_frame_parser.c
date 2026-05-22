@@ -3192,6 +3192,11 @@ xqc_parse_paths_blocked_frame(xqc_packet_in_t *packet_in, uint64_t *max_path_id)
  *     Path Identifier (i)
  *     Next Sequence Number (i)
  */
+/* Pin the wire codepoint: draft-21 §4.7 mandates 0x3e7c. Companion
+ * bit-shift _Static_assert lives in xqc_frame.h next to the bitmap. */
+_Static_assert(XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED == 0x3e7cULL,
+               "draft-21 §4.7: PATH_CIDS_BLOCKED frame type must be 0x3e7c");
+
 xqc_int_t
 xqc_parse_path_cids_blocked_frame(xqc_packet_in_t *packet_in,
     uint64_t *path_id, uint64_t *next_seq)
@@ -3219,9 +3224,7 @@ xqc_parse_path_cids_blocked_frame(xqc_packet_in_t *packet_in,
     }
     p += vlen;
 
-    /* TODO(mp21): bump pi_frame_types here once XQC_FRAME_BIT_PATH_CIDS_BLOCKED
-     * (and its enum constant) lands. Same "receive packet with no frame" PV
-     * trip applies if a PATH_CIDS_BLOCKED arrives alone in a datagram. */
+    packet_in->pi_frame_types |= XQC_FRAME_BIT_PATH_CIDS_BLOCKED;
     packet_in->pos = p;
     return XQC_OK;
 }
