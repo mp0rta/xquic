@@ -45,6 +45,7 @@
 #include "xqc_mp21_compliance_test.h"
 #include "xqc_test_helpers.h"
 #include "xqc_test_path_hard_cap.h"
+#include "xqc_set_conn_settings_test.h"
 
 static int xqc_init_suite(void) { return 0; }
 static int xqc_clean_suite(void) { return 0; }
@@ -126,6 +127,9 @@ main()
         || !CU_add_test(pSuite, "test_path_create_hard_cap_stress", test_path_create_hard_cap_stress)
         || !CU_add_test(pSuite, "test_conn_stats_dynamic_paths_info", test_conn_stats_dynamic_paths_info)
         || !CU_add_test(pSuite, "test_dos_peer_init_max_path_id_max_valid", test_dos_peer_init_max_path_id_max_valid)
+        || !CU_add_test(pSuite, "xqc_test_server_set_conn_settings_propagation", xqc_test_server_set_conn_settings_propagation)
+        || !CU_add_test(pSuite, "xqc_test_server_set_conn_settings_zero_defaults", xqc_test_server_set_conn_settings_zero_defaults)
+        || !CU_add_test(pSuite, "xqc_test_server_set_conn_settings_clamp", xqc_test_server_set_conn_settings_clamp)
         || !CU_add_test(pSuite, "xqc_test_empty_pkt", xqc_test_empty_pkt)
         || !CU_add_test(pSuite, "xqc_test_engine_packet_process", xqc_test_engine_packet_process)
         || !CU_add_test(pSuite, "xqc_test_stream_frame", xqc_test_stream_frame)
