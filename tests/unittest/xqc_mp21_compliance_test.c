@@ -1311,6 +1311,40 @@ xqc_test_mp21_path_cids_blocked_validation(void)
     xqc_test_mp21_free_conn(conn);
 }
 
+/* draft-21 §4.7: parsers must set pi_frame_types so the "datagram contains
+ * no frames" PROTOCOL_VIOLATION check (a packet carrying ONLY a PATHS_BLOCKED
+ * or PATH_CIDS_BLOCKED frame must still be considered as containing a frame)
+ * doesn't trip. Pin the bit at the parser call site to catch regressions
+ * before they slip past process_frames. */
+void
+xqc_test_mp21_blocked_frames_pi_frame_types(void)
+{
+    xqc_packet_in_t pi;
+    uint64_t a = 0, b = 0;
+
+    /* PATHS_BLOCKED: type 0x3e7b + Max Path ID = 8 */
+    static unsigned char buf_pb[] = {0x80, 0x00, 0x3e, 0x7b, 0x08};
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf_pb;
+    pi.last = buf_pb + sizeof(buf_pb);
+    CU_ASSERT_EQUAL(xqc_parse_paths_blocked_frame(&pi, &a), XQC_OK);
+    CU_ASSERT_EQUAL(a, 8);
+    /* != 0 cast: CU_ASSERT_TRUE truncates uint64_t args to int, dropping
+     * bits 32+. PATHS_BLOCKED/PATH_CIDS_BLOCKED bits sit at 33/34. */
+    CU_ASSERT_TRUE((pi.pi_frame_types & XQC_FRAME_BIT_PATHS_BLOCKED) != 0);
+
+    /* PATH_CIDS_BLOCKED: type 0x3e7c + path_id=1 + next_seq=0 */
+    static unsigned char buf_pcb[] = {0x80, 0x00, 0x3e, 0x7c, 0x01, 0x00};
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf_pcb;
+    pi.last = buf_pcb + sizeof(buf_pcb);
+    a = b = 0;
+    CU_ASSERT_EQUAL(xqc_parse_path_cids_blocked_frame(&pi, &a, &b), XQC_OK);
+    CU_ASSERT_EQUAL(a, 1);
+    CU_ASSERT_EQUAL(b, 0);
+    CU_ASSERT_TRUE((pi.pi_frame_types & XQC_FRAME_BIT_PATH_CIDS_BLOCKED) != 0);
+}
+
 /* mp21 L2 M3 — MAX_PATH_ID credit grant tests. Tests exercise the
  * xqc_try_grant_max_path_id() gate directly so they don't depend on a
  * fully-wired send queue. PATHS_BLOCKED end-to-end emission is covered

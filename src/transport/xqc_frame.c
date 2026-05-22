@@ -56,6 +56,8 @@ static const char * const frame_type_2_str[XQC_FRAME_NUM] = {
     [XQC_FRAME_Extension]            = "Extension",
     [XQC_FRAME_SID]                  = "FEC_SID",
     [XQC_FRAME_REPAIR_SYMBOL]        = "FEC_REPAIR",
+    [XQC_FRAME_PATHS_BLOCKED]        = "PATHS_BLOCKED",
+    [XQC_FRAME_PATH_CIDS_BLOCKED]    = "PATH_CIDS_BLOCKED",
 };
 
 const char *
