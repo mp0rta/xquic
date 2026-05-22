@@ -310,6 +310,9 @@ main()
                         xqc_test_pto_remote_default_when_unset)
         || !CU_add_test(pSuite, "xqc_test_conn_idle_timeout", xqc_test_conn_idle_timeout)
         || !CU_add_test(pSuite, "xqc_test_conn_early_data_reject", xqc_test_conn_early_data_reject)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_update_rtt_ack_delay_cap",
+                        xqc_test_send_ctl_update_rtt_ack_delay_cap)
+        /* ADD TESTS HERE */)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();
