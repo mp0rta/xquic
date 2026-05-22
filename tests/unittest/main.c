@@ -309,6 +309,7 @@ main()
         || !CU_add_test(pSuite, "xqc_test_pto_remote_default_when_unset",
                         xqc_test_pto_remote_default_when_unset)
         || !CU_add_test(pSuite, "xqc_test_conn_idle_timeout", xqc_test_conn_idle_timeout)
+        || !CU_add_test(pSuite, "xqc_test_conn_early_data_reject", xqc_test_conn_early_data_reject)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();
