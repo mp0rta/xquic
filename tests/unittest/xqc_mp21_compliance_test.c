@@ -1345,6 +1345,78 @@ xqc_test_mp21_blocked_frames_pi_frame_types(void)
     CU_ASSERT_TRUE((pi.pi_frame_types & XQC_FRAME_BIT_PATH_CIDS_BLOCKED) != 0);
 }
 
+/* Sister of mp21_run_frame() that does NOT pre-set XQC_FRAME_BIT_PING.
+ * mp21_run_frame() masks the "datagram contains no frames" PROTOCOL_VIOLATION
+ * check at xqc_frame.c:543 by seeding the bitmap, which is exactly the
+ * check we want to exercise for solo-frame datagrams. Returns the final
+ * pi_frame_types so the caller can pin the parser-set bit. */
+static void
+mp21_run_frame_solo(xqc_connection_t *conn, const unsigned char *payload, size_t payload_len,
+                    xqc_int_t *out_ret, xqc_frame_type_bit_t *out_frame_types)
+{
+    unsigned char buf[32];
+    CU_ASSERT_FATAL(payload_len <= sizeof(buf));
+    memset(buf, 0, sizeof(buf));
+    memcpy(buf, payload, payload_len);
+
+    xqc_packet_in_t packet_in;
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.buf = buf;
+    packet_in.buf_size = sizeof(buf);
+    packet_in.pos = buf;
+    packet_in.last = buf + payload_len;
+    packet_in.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+    packet_in.pi_frame_types = 0;
+
+    *out_ret = xqc_process_frames(conn, &packet_in);
+    *out_frame_types = packet_in.pi_frame_types;
+}
+
+/* draft-21 §4.7 + RFC 9000 §12.4: a datagram containing only a single
+ * PATHS_BLOCKED or PATH_CIDS_BLOCKED frame must not trip the
+ * "packet with no frames -> PROTOCOL_VIOLATION" check. This catches the
+ * regression where a parser forgets to bump pi_frame_types: validation
+ * handler returns XQC_OK, but the end-of-frame check at xqc_frame.c:543
+ * still closes the conn. */
+void
+xqc_test_mp21_solo_frame_in_datagram_no_pv(void)
+{
+    xqc_int_t ret = XQC_ERROR;
+    xqc_frame_type_bit_t fbits = 0;
+    xqc_connection_t *conn;
+
+    /* (a) PATHS_BLOCKED solo: peer_max == local_max (8) -> ignore branch.
+     *     Type 0x3e7b (4B varint) + Max Path ID = 8. */
+    static const unsigned char buf_pb[] = {0x80, 0x00, 0x3e, 0x7b, 0x08};
+    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    mp21_run_frame_solo(conn, buf_pb, sizeof(buf_pb), &ret, &fbits);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    CU_ASSERT_TRUE((fbits & XQC_FRAME_BIT_PATHS_BLOCKED) != 0);
+    xqc_test_mp21_free_conn(conn);
+
+    /* (b) PATH_CIDS_BLOCKED solo: path_id=8 (local_max), seq=0 -> ignore.
+     *     Type 0x3e7c + path_id=8 + next_seq=0. */
+    static const unsigned char buf_pcb[] = {0x80, 0x00, 0x3e, 0x7c, 0x08, 0x00};
+    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    mp21_run_frame_solo(conn, buf_pcb, sizeof(buf_pcb), &ret, &fbits);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    CU_ASSERT_TRUE((fbits & XQC_FRAME_BIT_PATH_CIDS_BLOCKED) != 0);
+    xqc_test_mp21_free_conn(conn);
+
+    /* (c) negative control: truly empty payload -> PROTOCOL_VIOLATION.
+     *     Confirms the no-frame check at xqc_frame.c:543 is actually
+     *     reachable from this fixture; without it, (a)/(b) could pass
+     *     trivially if some other path were short-circuiting the check. */
+    static const unsigned char buf_empty[1] = {0};
+    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    mp21_run_frame_solo(conn, buf_empty, /*payload_len*/0, &ret, &fbits);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
+    CU_ASSERT_EQUAL(fbits, 0);
+    xqc_test_mp21_free_conn(conn);
+}
+
 /* mp21 L2 M3 — MAX_PATH_ID credit grant tests. Tests exercise the
  * xqc_try_grant_max_path_id() gate directly so they don't depend on a
  * fully-wired send queue. PATHS_BLOCKED end-to-end emission is covered

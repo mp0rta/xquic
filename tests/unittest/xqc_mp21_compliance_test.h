@@ -62,6 +62,7 @@ void xqc_test_mp21_gen_ack_mp_dual_version(void);
 void xqc_test_mp21_paths_blocked_validation(void);
 void xqc_test_mp21_path_cids_blocked_validation(void);
 void xqc_test_mp21_blocked_frames_pi_frame_types(void);
+void xqc_test_mp21_solo_frame_in_datagram_no_pv(void);
 
 /* mp21 L2 M3 — MAX_PATH_ID credit grant gate behaviour. */
 void xqc_test_mp21_max_path_id_grant_disabled_by_default(void);
