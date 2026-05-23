@@ -90,6 +90,12 @@ void xqc_test_mp21_gp14_pick_alt_active_path_single(void);
  * (regression guard for L1+ parser dual-codepoint omission). */
 void xqc_test_mp21_parse_path_status_v21_codepoints(void);
 
+/* Wire round-trip parser tests — V21 PATH_NEW/RETIRE_CONNECTION_ID
+ * codepoints (PR8 G-N6 test gap #e). Pin gen-then-parse symmetry so
+ * a future codepoint rename / dispatch table edit cannot silently
+ * drop one direction. */
+void xqc_test_mp21_parse_mp_new_retire_conn_id_v21_codepoints(void);
+
 /* PR8 L5e send-side PATHS_BLOCKED (G-P16).
  *  - Raw-buffer generator: encodes frame type 0x3e7b + Maximum Path Identifier
  *    varint per draft-21 §4.7.

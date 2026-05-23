@@ -1065,6 +1065,121 @@ void xqc_test_mp21_parse_path_status_v21_codepoints(void)
     xqc_test_mp21_gen_teardown(conn, po);
 }
 
+/* PR8 G-N6 test gap #e — gen→parse round-trip for the V21 codepoints of
+ * PATH_NEW_CONNECTION_ID (0x3e78) and PATH_RETIRE_CONNECTION_ID (0x3e79),
+ * plus a V10 regression guard. Symmetric to
+ * xqc_test_mp21_parse_path_status_v21_codepoints. Catches: codepoint dropped
+ * from parser dispatch, parser field order regression, V10/V21 selector
+ * inverted in xqc_mp_select_codepoint(). */
+void xqc_test_mp21_parse_mp_new_retire_conn_id_v21_codepoints(void)
+{
+    unsigned char buf[64];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+    xqc_int_t ret;
+    xqc_cid_t cid_in, cid_out;
+    uint8_t sr_token_in[XQC_STATELESS_RESET_TOKENLEN];
+    uint64_t parsed_path_id, parsed_seq;
+    uint64_t parsed_retire_prior_to;
+    xqc_packet_in_t pi;
+
+    /* Prime an input cid with a recognisable byte pattern + token. */
+    memset(&cid_in, 0, sizeof(cid_in));
+    cid_in.cid_len = 8;
+    cid_in.cid_seq_num = 7;
+    for (int i = 0; i < cid_in.cid_len; i++) cid_in.cid_buf[i] = (uint8_t)(0xA0 + i);
+    for (int i = 0; i < XQC_STATELESS_RESET_TOKENLEN; i++) sr_token_in[i] = (uint8_t)(0x10 + i);
+
+    /* (a) MP_NEW_CONN_ID V21 (PATH_NEW_CONNECTION_ID 0x3e78) round-trip */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_mp_new_conn_id_frame(conn, po, &cid_in,
+                                           /*retire_prior_to*/3, sr_token_in,
+                                           /*path_id*/2);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x78);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    memset(&cid_out, 0, sizeof(cid_out));
+    parsed_path_id = parsed_retire_prior_to = 0;
+    ret = xqc_parse_mp_new_conn_id_frame(&pi, &cid_out, &parsed_retire_prior_to,
+                                         &parsed_path_id, conn);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(parsed_path_id, 2);
+    CU_ASSERT_EQUAL(parsed_retire_prior_to, 3);
+    CU_ASSERT_EQUAL(cid_out.cid_seq_num, 7);
+    CU_ASSERT_EQUAL(cid_out.cid_len, 8);
+    CU_ASSERT_EQUAL(memcmp(cid_out.cid_buf, cid_in.cid_buf, cid_in.cid_len), 0);
+    CU_ASSERT_EQUAL(memcmp(cid_out.sr_token, sr_token_in,
+                           XQC_STATELESS_RESET_TOKENLEN), 0);
+    CU_ASSERT_TRUE((pi.pi_frame_types & XQC_FRAME_BIT_MP_NEW_CONNECTION_ID) != 0);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) MP_NEW_CONN_ID V10 (0x15228c09) regression guard */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_mp_new_conn_id_frame(conn, po, &cid_in,
+                                           /*retire_prior_to*/3, sr_token_in,
+                                           /*path_id*/2);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[3], 0x09);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    memset(&cid_out, 0, sizeof(cid_out));
+    parsed_path_id = parsed_retire_prior_to = 0;
+    ret = xqc_parse_mp_new_conn_id_frame(&pi, &cid_out, &parsed_retire_prior_to,
+                                         &parsed_path_id, conn);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(parsed_path_id, 2);
+    CU_ASSERT_EQUAL(parsed_retire_prior_to, 3);
+    CU_ASSERT_EQUAL(cid_out.cid_seq_num, 7);
+    CU_ASSERT_EQUAL(memcmp(cid_out.cid_buf, cid_in.cid_buf, cid_in.cid_len), 0);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (c) MP_RETIRE_CONN_ID V21 (PATH_RETIRE_CONNECTION_ID 0x3e79) round-trip */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_mp_retire_conn_id_frame(conn, po, /*seq*/11, /*path_id*/5);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x79);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    parsed_path_id = parsed_seq = 0;
+    ret = xqc_parse_mp_retire_conn_id_frame(&pi, &parsed_seq, &parsed_path_id);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(parsed_seq, 11);
+    CU_ASSERT_EQUAL(parsed_path_id, 5);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (d) MP_RETIRE_CONN_ID V10 (0x15228c0a) regression guard */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_mp_retire_conn_id_frame(conn, po, /*seq*/11, /*path_id*/5);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[3], 0x0a);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    parsed_path_id = parsed_seq = 0;
+    ret = xqc_parse_mp_retire_conn_id_frame(&pi, &parsed_seq, &parsed_path_id);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(parsed_seq, 11);
+    CU_ASSERT_EQUAL(parsed_path_id, 5);
+    xqc_test_mp21_gen_teardown(conn, po);
+}
+
 void xqc_test_mp21_gen_mp_new_conn_id_dual_version(void)
 {
     unsigned char buf[64];
