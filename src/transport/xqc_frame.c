@@ -2381,6 +2381,17 @@ xqc_process_max_path_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
     }
 
     conn->remote_max_path_id = max_path_id;
+
+    /* Implementation policy: mirror peer's cap so curr_max_path_id can
+     * advance (draft-21 §3.2.1 — peer MUST NOT issue CIDs above our limit).
+     * Inherits peer's grant bound (max_path_id_grant_max_value). */
+    if (max_path_id > conn->local_max_path_id) {
+        conn->local_max_path_id = max_path_id;
+        (void)xqc_write_max_path_id_to_packet(conn, max_path_id);
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|MAX_PATH_ID reciprocal grant|new_local_max:%ui|", max_path_id);
+    }
+
     new_max_path_id = xqc_min(conn->local_max_path_id, conn->remote_max_path_id);
     if (new_max_path_id > conn->curr_max_path_id) {
         if (xqc_conn_add_path_cid_sets(conn, conn->curr_max_path_id + 1, new_max_path_id) != XQC_OK) {
@@ -2439,8 +2450,7 @@ xqc_process_paths_blocked_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_
     uint64_t grant_value = xqc_try_grant_max_path_id(conn);
     if (grant_value > 0) {
         xqc_log(conn->log, XQC_LOG_INFO,
-                "|MAX_PATH_ID auto-grant|new_local_max:%ui|",
-                grant_value);
+                "|MAX_PATH_ID auto-grant|new_local_max:%ui|", grant_value);
         (void)xqc_write_max_path_id_to_packet(conn, grant_value);
     }
 
