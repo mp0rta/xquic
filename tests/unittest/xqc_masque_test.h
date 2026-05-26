@@ -1,3 +1,7 @@
+/**
+ * @copyright Copyright (c) 2026, mp0rta
+ */
+
 #ifndef XQUIC_XQC_MASQUE_TEST_H
 #define XQUIC_XQC_MASQUE_TEST_H
 

@@ -1,5 +1,5 @@
 /**
- * @copyright Copyright (c) 2026, Alibaba Group Holding Limited
+ * @copyright Copyright (c) 2026, mp0rta
  */
 
 #ifndef _XQC_SET_CONN_SETTINGS_TEST_H

@@ -1,3 +1,7 @@
+/**
+ * @copyright Copyright (c) 2026, mp0rta
+ */
+
 #include <CUnit/CUnit.h>
 #include <string.h>
 #include <stdlib.h>
@@ -36,7 +40,7 @@ xqc_test_mp21_make_conn(const xqc_test_mp21_conn_params_t *p)
     if (log == NULL) {
         return NULL;
     }
-    log->log_level = XQC_LOG_FATAL;   /* suppress per-test noise */
+    log->log_level = XQC_LOG_FATAL; /* suppress per-test noise */
 
     xqc_connection_t *conn = calloc(1, sizeof(xqc_connection_t));
     if (conn == NULL) {
@@ -46,18 +50,18 @@ xqc_test_mp21_make_conn(const xqc_test_mp21_conn_params_t *p)
     conn->log = log;
     conn->conn_settings.multipath_version = XQC_MULTIPATH_3E;
 
-    conn->local_max_path_id  = p ? p->local_max_path_id  : 8;
+    conn->local_max_path_id = p ? p->local_max_path_id : 8;
     conn->remote_max_path_id = p ? p->remote_max_path_id : 8;
-    conn->curr_max_path_id   = (conn->local_max_path_id < conn->remote_max_path_id)
-                                ? conn->local_max_path_id
-                                : conn->remote_max_path_id;
+    conn->curr_max_path_id = (conn->local_max_path_id < conn->remote_max_path_id)
+                                 ? conn->local_max_path_id
+                                 : conn->remote_max_path_id;
     conn->remote_settings.init_max_path_id = conn->remote_max_path_id;
     conn->local_settings.enable_multipath = 1;
     conn->remote_settings.enable_multipath = 1;
     conn->local_settings.multipath_version = XQC_MULTIPATH_3E;
     conn->remote_settings.multipath_version = XQC_MULTIPATH_3E;
 
-    conn->scid_set.user_scid.cid_len    = p ? p->scid_len : 8;
+    conn->scid_set.user_scid.cid_len = p ? p->scid_len : 8;
     conn->dcid_set.current_dcid.cid_len = p ? p->dcid_len : 8;
 
     /* Initialize lists that xqc_process_frames and post-frame path lookup
@@ -86,10 +90,10 @@ void
 xqc_test_mp21_validate_recv_path_id(void)
 {
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = 4,
+        .local_max_path_id = 4,
         .remote_max_path_id = 4,
-        .scid_len           = 8,
-        .dcid_len           = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
     };
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
@@ -126,15 +130,16 @@ xqc_test_mp21_drive_path_new_cid_parser(uint8_t len_byte)
     unsigned char buf[64];
     memset(buf, 0, sizeof(buf));
     size_t off = 0;
-    buf[off++] = 0x7e; buf[off++] = 0x78;   /* type varint */
-    buf[off++] = 0x01;                       /* path_id */
-    buf[off++] = 0x00;                       /* seq_num */
-    buf[off++] = 0x00;                       /* retire_prior_to */
-    buf[off++] = len_byte;                   /* Length */
+    buf[off++] = 0x7e;
+    buf[off++] = 0x78;     /* type varint */
+    buf[off++] = 0x01;     /* path_id */
+    buf[off++] = 0x00;     /* seq_num */
+    buf[off++] = 0x00;     /* retire_prior_to */
+    buf[off++] = len_byte; /* Length */
     size_t cid_bytes = len_byte;
-    if (cid_bytes > 21) cid_bytes = 21;      /* cap for buffer safety */
-    off += cid_bytes;                        /* CID body — zeros */
-    off += 16;                               /* sr_token — zeros */
+    if (cid_bytes > 21) cid_bytes = 21; /* cap for buffer safety */
+    off += cid_bytes;                   /* CID body — zeros */
+    off += 16;                          /* sr_token — zeros */
 
     xqc_packet_in_t packet_in;
     memset(&packet_in, 0, sizeof(packet_in));
@@ -146,8 +151,8 @@ xqc_test_mp21_drive_path_new_cid_parser(uint8_t len_byte)
     xqc_cid_t new_cid;
     memset(&new_cid, 0, sizeof(new_cid));
     uint64_t retire_prior_to = 0, path_id = 0;
-    return (int)xqc_parse_mp_new_conn_id_frame(&packet_in, &new_cid,
-                                               &retire_prior_to, &path_id, NULL);
+    return (int)xqc_parse_mp_new_conn_id_frame(&packet_in, &new_cid, &retire_prior_to,
+                                               &path_id, NULL);
 }
 
 void
@@ -167,8 +172,8 @@ xqc_test_mp21_path_new_conn_id_cid_len_guard(void)
 
 /* Forward decl — xqc_path_create lives in xqc_multipath.c but its
  * prototype is buried in an internal header. */
-extern xqc_path_ctx_t *xqc_path_create(xqc_connection_t *conn,
-    xqc_cid_t *scid, xqc_cid_t *dcid, uint64_t path_id);
+extern xqc_path_ctx_t *xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid,
+                                       xqc_cid_t *dcid, uint64_t path_id);
 
 void
 xqc_test_mp21_path_create_refuses_abandoned(void)
@@ -185,10 +190,10 @@ xqc_test_mp21_path_create_refuses_abandoned(void)
      * subsequently growing remote_max_path_id to 8 cannot lift the refusal.
      */
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = 8,
+        .local_max_path_id = 8,
         .remote_max_path_id = 8,
-        .scid_len           = 8,
-        .dcid_len           = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
     };
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
@@ -202,7 +207,7 @@ xqc_test_mp21_path_create_refuses_abandoned(void)
 
     /* Refusal survives across MAX_PATH_ID growth simulations. */
     conn->remote_max_path_id = 16;
-    conn->curr_max_path_id   = 8;
+    conn->curr_max_path_id = 8;
     CU_ASSERT_PTR_NULL(xqc_path_create(conn, NULL, NULL, 2));
 
     /* Sanity: a different, non-abandoned path_id passes the bitmap
@@ -216,10 +221,10 @@ void
 xqc_test_mp21_abandoned_path_silently_ignored(void)
 {
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = 64,
+        .local_max_path_id = 64,
         .remote_max_path_id = 64,
-        .scid_len           = 8,
-        .dcid_len           = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
     };
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
@@ -278,10 +283,10 @@ xqc_test_mp21_duplicate_path_abandon_short_circuit(void)
      *       the redundant set on the still-falls-through first call.
      */
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = 64,
+        .local_max_path_id = 64,
         .remote_max_path_id = 64,
-        .scid_len           = 8,
-        .dcid_len           = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
     };
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
@@ -327,14 +332,17 @@ void
 xqc_test_mp21_aead_nonce_min_length(void)
 {
     /* MP disabled: any noncelen accepted (opt-out path). */
-    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(0, 8),  XQC_OK);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(0, 8), XQC_OK);
     CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(0, 11), XQC_OK);
     CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(0, 12), XQC_OK);
 
     /* MP enabled: < 12 rejected. */
-    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 0),  -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR);
-    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 8),  -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR);
-    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 11), -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 0),
+                    -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 8),
+                    -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 11),
+                    -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR);
 
     /* MP enabled: >= 12 accepted (AES-GCM = 12, ChaCha20-Poly1305 = 12). */
     CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 12), XQC_OK);
@@ -359,9 +367,12 @@ xqc_test_mp21_mp_frame_1rtt_only(void)
     CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN));
     CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21));
     CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP));
-    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21));
-    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21));
-    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21));
+    CU_ASSERT_TRUE(
+        xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21));
+    CU_ASSERT_TRUE(
+        xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21));
+    CU_ASSERT_TRUE(
+        xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21));
     CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21));
     CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED));
     CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED));
@@ -372,12 +383,12 @@ xqc_test_mp21_mp_frame_1rtt_only(void)
     CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_MAX_PATH_ID));
 
     /* Non-MP frame types must NOT be classified as MP. */
-    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x00));                     /* PADDING */
-    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x02));                     /* ACK */
-    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x06));                     /* CRYPTO */
-    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x18));                     /* NEW_CID */
-    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x1a));                     /* PATH_CHALLENGE */
-    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x30));                     /* DATAGRAM */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x00)); /* PADDING */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x02)); /* ACK */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x06)); /* CRYPTO */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x18)); /* NEW_CID */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x1a)); /* PATH_CHALLENGE */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x30)); /* DATAGRAM */
     CU_ASSERT_FALSE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_ACK_EXT));
 }
 
@@ -394,8 +405,8 @@ xqc_test_mp21_init_max_path_id_upper_bound(void)
      *   actually 0xFFFFFFFF doesn't fit in 4-byte varint (max 0x3FFFFFFF);
      *   needs 8-byte varint: 0xc0 0x00 0x00 0x00 0xff 0xff 0xff 0xff. */
     uint8_t accept_buf[] = {
-        0x3e, 0x08,                                     /* id, len=8 */
-        0xc0, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff  /* val = 0xFFFFFFFF */
+        0x3e, 0x08,                                    /* id, len=8 */
+        0xc0, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff /* val = 0xFFFFFFFF */
     };
     xqc_init_transport_params(&params);
     xqc_int_t ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_CLIENT_HELLO,
@@ -406,12 +417,12 @@ xqc_test_mp21_init_max_path_id_upper_bound(void)
 
     /* Reject 0x100000000 — one past spec maximum. */
     uint8_t reject_buf[] = {
-        0x3e, 0x08,                                     /* id, len=8 */
-        0xc0, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00  /* val = 0x100000000 */
+        0x3e, 0x08,                                    /* id, len=8 */
+        0xc0, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00 /* val = 0x100000000 */
     };
     xqc_init_transport_params(&params);
-    ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_CLIENT_HELLO,
-                                      reject_buf, sizeof(reject_buf));
+    ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_CLIENT_HELLO, reject_buf,
+                                      sizeof(reject_buf));
     CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
 }
 
@@ -419,10 +430,10 @@ void
 xqc_test_mp21_max_path_id_validation(void)
 {
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = 100,
+        .local_max_path_id = 100,
         .remote_max_path_id = 8,
-        .scid_len           = 8,
-        .dcid_len           = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
     };
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
@@ -436,18 +447,14 @@ xqc_test_mp21_max_path_id_validation(void)
                     XQC_MAX_PATH_ID_BAD_TOO_LARGE);
 
     /* (b) value < init_max_path_id — receiver cannot drop the cap. */
-    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 3),
-                    XQC_MAX_PATH_ID_BAD_BELOW_INIT);
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 3), XQC_MAX_PATH_ID_BAD_BELOW_INIT);
 
     /* (c) value <= remote_max_path_id — silent ignore (stale dup). */
-    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 8),
-                    XQC_MAX_PATH_ID_IGNORE_STALE);
-    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 4),
-                    XQC_MAX_PATH_ID_IGNORE_STALE);
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 8), XQC_MAX_PATH_ID_IGNORE_STALE);
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 4), XQC_MAX_PATH_ID_IGNORE_STALE);
 
     /* (d) accept + boundary at 2^32-1. */
-    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 16),
-                    XQC_MAX_PATH_ID_ACCEPT);
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 16), XQC_MAX_PATH_ID_ACCEPT);
     CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 0xffffffffULL),
                     XQC_MAX_PATH_ID_ACCEPT);
 
@@ -458,10 +465,10 @@ void
 xqc_test_mp21_fixture_smoke(void)
 {
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = 4,
+        .local_max_path_id = 4,
         .remote_max_path_id = 6,
-        .scid_len           = 8,
-        .dcid_len           = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
     };
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
@@ -483,9 +490,8 @@ xqc_test_mp21_fixture_smoke(void)
  * version once Task 7 fix lands; for the RED test this argument is unused.
  */
 static int
-xqc_test_parse_path_abandon(unsigned char *buf, size_t len,
-    uint64_t *path_id, uint64_t *error_code, size_t *consumed,
-    uint8_t mp_version)
+xqc_test_parse_path_abandon(unsigned char *buf, size_t len, uint64_t *path_id,
+                            uint64_t *error_code, size_t *consumed, uint8_t mp_version)
 {
     xqc_packet_in_t packet_in;
     memset(&packet_in, 0, sizeof(packet_in));
@@ -493,14 +499,16 @@ xqc_test_parse_path_abandon(unsigned char *buf, size_t len,
     packet_in.buf_size = len;
     packet_in.pos = buf;
     packet_in.last = buf + len;
-    xqc_int_t ret = xqc_parse_path_abandon_frame(&packet_in, path_id, error_code, mp_version);
+    xqc_int_t ret =
+        xqc_parse_path_abandon_frame(&packet_in, path_id, error_code, mp_version);
     if (consumed) {
         *consumed = (size_t)(packet_in.pos - buf);
     }
     return (int)ret;
 }
 
-void xqc_test_mp21_version_enum(void)
+void
+xqc_test_mp21_version_enum(void)
 {
     /* XQC_MULTIPATH_3E must exist and equal 0x3e */
     CU_ASSERT_EQUAL((int)XQC_MULTIPATH_3E, 0x3e);
@@ -508,32 +516,34 @@ void xqc_test_mp21_version_enum(void)
     CU_ASSERT_EQUAL((int)XQC_MULTIPATH_10, 0x0a);
 }
 
-void xqc_test_mp21_frame_type_constants(void)
+void
+xqc_test_mp21_frame_type_constants(void)
 {
     /* draft-21 frame type values (IANA-assigned final codepoints) */
-    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_ACK,                      0x3eULL);
-    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN,                  0x3fULL);
-    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21,              0x3e75ULL);
-    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP,            0x3e76ULL);
-    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21,     0x3e77ULL);
-    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21,    0x3e78ULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_ACK, 0x3eULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN, 0x3fULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21, 0x3e75ULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP, 0x3e76ULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21, 0x3e77ULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21, 0x3e78ULL);
     CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21, 0x3e79ULL);
-    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21,               0x3e7aULL);
-    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED,                 0x3e7bULL);
-    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED,             0x3e7cULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21, 0x3e7aULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED, 0x3e7bULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED, 0x3e7cULL);
     /* draft-10 constants must still exist for dual-version dispatch */
-    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_MP_ACK0,                       0x15228c00ULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_MP_ACK0, 0x15228c00ULL);
 
     /* draft-21 error code constants (PATH_ABANDON Error Code field) */
-    CU_ASSERT_EQUAL(TRA_APPLICATION_ABANDON_PATH,    0x3eULL);
+    CU_ASSERT_EQUAL(TRA_APPLICATION_ABANDON_PATH, 0x3eULL);
     CU_ASSERT_EQUAL(TRA_PATH_RESOURCE_LIMIT_REACHED, 0x3e75ULL);
-    CU_ASSERT_EQUAL(TRA_PATH_UNSTABLE_OR_POOR,       0x3e76ULL);
-    CU_ASSERT_EQUAL(TRA_NO_CID_AVAILABLE_FOR_PATH,   0x3e77ULL);
+    CU_ASSERT_EQUAL(TRA_PATH_UNSTABLE_OR_POOR, 0x3e76ULL);
+    CU_ASSERT_EQUAL(TRA_NO_CID_AVAILABLE_FOR_PATH, 0x3e77ULL);
     /* legacy error code must still exist */
     CU_ASSERT_EQUAL((uint64_t)TRA_PROTOCOL_VIOLATION, 0x0aULL);
 }
 
-void xqc_test_mp21_path_abandon_recv_no_reason(void)
+void
+xqc_test_mp21_path_abandon_recv_no_reason(void)
 {
     /* draft-21 wire: { Type, Path ID, Error Code } -- no Reason Phrase.
      *
@@ -544,16 +554,16 @@ void xqc_test_mp21_path_abandon_recv_no_reason(void)
      */
     unsigned char buf[16] = {0};
     size_t off = 0;
-    buf[off++] = 0x7e; buf[off++] = 0x75;   /* type varint = 0x3e75 */
-    buf[off++] = 0x01;                       /* path_id varint = 1 */
-    buf[off++] = 0x3e;                       /* error_code varint = 0x3e */
-    buf[off++] = 0x00;                       /* next frame: PADDING */
+    buf[off++] = 0x7e;
+    buf[off++] = 0x75; /* type varint = 0x3e75 */
+    buf[off++] = 0x01; /* path_id varint = 1 */
+    buf[off++] = 0x3e; /* error_code varint = 0x3e */
+    buf[off++] = 0x00; /* next frame: PADDING */
 
     uint64_t path_id = 0, error_code = 0;
     size_t consumed = 0;
-    int ret = xqc_test_parse_path_abandon(buf, sizeof(buf), &path_id,
-                                          &error_code, &consumed,
-                                          XQC_MULTIPATH_3E);
+    int ret = xqc_test_parse_path_abandon(buf, sizeof(buf), &path_id, &error_code,
+                                          &consumed, XQC_MULTIPATH_3E);
 
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(path_id, 1);
@@ -565,7 +575,8 @@ void xqc_test_mp21_path_abandon_recv_no_reason(void)
     CU_ASSERT_EQUAL(consumed, 4);
 }
 
-void xqc_test_mp10_path_abandon_recv_with_reason_still_works(void)
+void
+xqc_test_mp10_path_abandon_recv_with_reason_still_works(void)
 {
     /* draft-10 layout: { Type, Path ID, Error Code, Reason Phrase Length,
      * Reason Phrase }. xquic always emits reason_len=0, so wire is
@@ -578,16 +589,16 @@ void xqc_test_mp10_path_abandon_recv_with_reason_still_works(void)
      */
     unsigned char buf[16] = {0};
     size_t off = 0;
-    buf[off++] = 0x7e; buf[off++] = 0x75;   /* type varint */
-    buf[off++] = 0x01;                       /* path_id */
-    buf[off++] = 0x3e;                       /* error_code */
-    buf[off++] = 0x00;                       /* reason_len = 0 (draft-10) */
+    buf[off++] = 0x7e;
+    buf[off++] = 0x75; /* type varint */
+    buf[off++] = 0x01; /* path_id */
+    buf[off++] = 0x3e; /* error_code */
+    buf[off++] = 0x00; /* reason_len = 0 (draft-10) */
 
     uint64_t path_id = 0, error_code = 0;
     size_t consumed = 0;
-    int ret = xqc_test_parse_path_abandon(buf, sizeof(buf), &path_id,
-                                          &error_code, &consumed,
-                                          XQC_MULTIPATH_10);
+    int ret = xqc_test_parse_path_abandon(buf, sizeof(buf), &path_id, &error_code,
+                                          &consumed, XQC_MULTIPATH_10);
 
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(path_id, 1);
@@ -600,13 +611,14 @@ void xqc_test_mp10_path_abandon_recv_with_reason_still_works(void)
  * negative error code.
  */
 static ssize_t
-xqc_test_gen_path_abandon(unsigned char *out_buf, size_t out_cap,
-    uint64_t path_id, uint64_t error_code, uint8_t mp_version)
+xqc_test_gen_path_abandon(unsigned char *out_buf, size_t out_cap, uint64_t path_id,
+                          uint64_t error_code, uint8_t mp_version)
 {
     xqc_connection_t *conn = calloc(1, sizeof(xqc_connection_t));
-    xqc_packet_out_t *po   = calloc(1, sizeof(xqc_packet_out_t));
+    xqc_packet_out_t *po = calloc(1, sizeof(xqc_packet_out_t));
     if (!conn || !po) {
-        free(conn); free(po);
+        free(conn);
+        free(po);
         return -1;
     }
     conn->conn_settings.multipath_version = mp_version;
@@ -623,26 +635,28 @@ xqc_test_gen_path_abandon(unsigned char *out_buf, size_t out_cap,
     return ret;
 }
 
-void xqc_test_mp21_path_abandon_gen_no_reason(void)
+void
+xqc_test_mp21_path_abandon_gen_no_reason(void)
 {
     /* draft-21: generator must emit exactly 4 bytes — 2-byte type 0x3e75
      * varint + 1-byte path_id + 1-byte error_code. The 5th buffer byte
      * must NOT be touched (legacy code emitted a trailing 0x00 reason_len). */
     unsigned char buf[16];
-    memset(buf, 0xaa, sizeof(buf));   /* sentinel */
+    memset(buf, 0xaa, sizeof(buf)); /* sentinel */
 
-    ssize_t written = xqc_test_gen_path_abandon(buf, sizeof(buf),
-                                                1, 0x3e, XQC_MULTIPATH_3E);
+    ssize_t written =
+        xqc_test_gen_path_abandon(buf, sizeof(buf), 1, 0x3e, XQC_MULTIPATH_3E);
 
     CU_ASSERT_EQUAL(written, 4);
-    CU_ASSERT_EQUAL(buf[0], 0x7e);    /* type high byte */
-    CU_ASSERT_EQUAL(buf[1], 0x75);    /* type low byte */
-    CU_ASSERT_EQUAL(buf[2], 0x01);    /* path_id */
-    CU_ASSERT_EQUAL(buf[3], 0x3e);    /* error_code */
-    CU_ASSERT_EQUAL(buf[4], 0xaa);    /* sentinel preserved — no reason_len */
+    CU_ASSERT_EQUAL(buf[0], 0x7e); /* type high byte */
+    CU_ASSERT_EQUAL(buf[1], 0x75); /* type low byte */
+    CU_ASSERT_EQUAL(buf[2], 0x01); /* path_id */
+    CU_ASSERT_EQUAL(buf[3], 0x3e); /* error_code */
+    CU_ASSERT_EQUAL(buf[4], 0xaa); /* sentinel preserved — no reason_len */
 }
 
-void xqc_test_mp21_dual_version_dispatch(void)
+void
+xqc_test_mp21_dual_version_dispatch(void)
 {
     /* The xqc_process_frames switch was extended in Task 9 with draft-21
      * case labels alongside the draft-10 labels. We cannot exercise the
@@ -681,14 +695,10 @@ void xqc_test_mp21_dual_version_dispatch(void)
 
     /* None of the draft-21 codepoints may collide with draft-10. */
     uint64_t v10_types[] = {
-        XQC_TRANS_FRAME_TYPE_MP_ACK0,
-        XQC_TRANS_FRAME_TYPE_MP_ACK1,
-        XQC_TRANS_FRAME_TYPE_MP_ABANDON,
-        XQC_TRANS_FRAME_TYPE_MP_STANDBY,
-        XQC_TRANS_FRAME_TYPE_MP_AVAILABLE,
-        XQC_TRANS_FRAME_TYPE_MP_FROZEN,
-        XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID,
-        XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID,
+        XQC_TRANS_FRAME_TYPE_MP_ACK0,        XQC_TRANS_FRAME_TYPE_MP_ACK1,
+        XQC_TRANS_FRAME_TYPE_MP_ABANDON,     XQC_TRANS_FRAME_TYPE_MP_STANDBY,
+        XQC_TRANS_FRAME_TYPE_MP_AVAILABLE,   XQC_TRANS_FRAME_TYPE_MP_FROZEN,
+        XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID, XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID,
         XQC_TRANS_FRAME_TYPE_MAX_PATH_ID,
     };
     size_t m = sizeof(v10_types) / sizeof(v10_types[0]);
@@ -699,7 +709,8 @@ void xqc_test_mp21_dual_version_dispatch(void)
     }
 }
 
-void xqc_test_mp21_path_ack_ecn_parse_skip(void)
+void
+xqc_test_mp21_path_ack_ecn_parse_skip(void)
 {
     /* draft-21 §4.1 PATH_ACK_ECN wire layout:
      *   Type (= 0x3f, 1B varint)
@@ -722,20 +733,20 @@ void xqc_test_mp21_path_ack_ecn_parse_skip(void)
      */
     unsigned char buf[16] = {0};
     size_t off = 0;
-    buf[off++] = 0x3f;  /* type varint = 0x3f (PATH_ACK_ECN) */
-    buf[off++] = 0x01;  /* path_id = 1 */
-    buf[off++] = 0x0a;  /* largest_ack = 10 */
-    buf[off++] = 0x00;  /* ack_delay = 0 */
-    buf[off++] = 0x00;  /* ack_range_count = 0 */
-    buf[off++] = 0x00;  /* first_ack_range = 0 */
-    buf[off++] = 0x00;  /* ECT0 Count = 0 */
-    buf[off++] = 0x00;  /* ECT1 Count = 0 */
-    buf[off++] = 0x00;  /* CE Count = 0 */
-    buf[off++] = 0xaa;  /* sentinel — must NOT be consumed */
+    buf[off++] = 0x3f; /* type varint = 0x3f (PATH_ACK_ECN) */
+    buf[off++] = 0x01; /* path_id = 1 */
+    buf[off++] = 0x0a; /* largest_ack = 10 */
+    buf[off++] = 0x00; /* ack_delay = 0 */
+    buf[off++] = 0x00; /* ack_range_count = 0 */
+    buf[off++] = 0x00; /* first_ack_range = 0 */
+    buf[off++] = 0x00; /* ECT0 Count = 0 */
+    buf[off++] = 0x00; /* ECT1 Count = 0 */
+    buf[off++] = 0x00; /* CE Count = 0 */
+    buf[off++] = 0xaa; /* sentinel — must NOT be consumed */
 
     /* Stub connection + log: parser reads conn->remote_settings.ack_delay_exponent
      * (0 from calloc) and may xqc_log() on error; FATAL log_level suppresses. */
-    xqc_log_t        *log  = calloc(1, sizeof(xqc_log_t));
+    xqc_log_t *log = calloc(1, sizeof(xqc_log_t));
     xqc_connection_t *conn = calloc(1, sizeof(xqc_connection_t));
     log->log_level = XQC_LOG_FATAL;
     conn->log = log;
@@ -751,8 +762,7 @@ void xqc_test_mp21_path_ack_ecn_parse_skip(void)
     xqc_ack_info_t ack_info;
     memset(&ack_info, 0, sizeof(ack_info));
 
-    xqc_int_t ret = xqc_parse_path_ack_ecn_frame(&packet_in, conn,
-                                                 &path_id, &ack_info);
+    xqc_int_t ret = xqc_parse_path_ack_ecn_frame(&packet_in, conn, &path_id, &ack_info);
 
     CU_ASSERT_EQUAL(ret, XQC_OK);
     size_t consumed = (size_t)(packet_in.pos - buf);
@@ -770,7 +780,8 @@ void xqc_test_mp21_path_ack_ecn_parse_skip(void)
     free(log);
 }
 
-void xqc_test_mp21_init_max_path_id_tp_codepoint(void)
+void
+xqc_test_mp21_init_max_path_id_tp_codepoint(void)
 {
     /* draft-21 §3.1: initial_max_path_id has the IANA-final codepoint
      * 0x3e in the transport-parameter id namespace (disjoint from frame
@@ -787,7 +798,7 @@ void xqc_test_mp21_init_max_path_id_tp_codepoint(void)
     CU_ASSERT_EQUAL(XQC_TRANSPORT_PARAM_INIT_MAX_PATH_ID_V10, 0x0f739bbc1b666d09ULL);
 
     /* (b) hand-built TP buffer: { id=0x3e (1B varint), len=1 (1B), val=8 (1B) } */
-    uint8_t v21_buf[3] = { 0x3e, 0x01, 0x08 };
+    uint8_t v21_buf[3] = {0x3e, 0x01, 0x08};
     xqc_transport_params_t params;
     xqc_init_transport_params(&params);
     xqc_int_t ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_CLIENT_HELLO,
@@ -809,15 +820,15 @@ void xqc_test_mp21_init_max_path_id_tp_codepoint(void)
 
     uint8_t v10_buf[64];
     size_t v10_len = 0;
-    ret = xqc_encode_transport_params(&v10_params, XQC_TP_TYPE_CLIENT_HELLO,
-                                      v10_buf, sizeof(v10_buf), &v10_len);
+    ret = xqc_encode_transport_params(&v10_params, XQC_TP_TYPE_CLIENT_HELLO, v10_buf,
+                                      sizeof(v10_buf), &v10_len);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_TRUE(v10_len > 0);
 
     xqc_transport_params_t v10_decoded;
     xqc_init_transport_params(&v10_decoded);
-    ret = xqc_decode_transport_params(&v10_decoded, XQC_TP_TYPE_CLIENT_HELLO,
-                                      v10_buf, v10_len);
+    ret = xqc_decode_transport_params(&v10_decoded, XQC_TP_TYPE_CLIENT_HELLO, v10_buf,
+                                      v10_len);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(v10_decoded.enable_multipath, 1);
     CU_ASSERT_EQUAL(v10_decoded.multipath_version, XQC_MULTIPATH_10);
@@ -832,8 +843,8 @@ void xqc_test_mp21_init_max_path_id_tp_codepoint(void)
 
     uint8_t v21_enc_buf[64];
     size_t v21_enc_len = 0;
-    ret = xqc_encode_transport_params(&v21_params, XQC_TP_TYPE_CLIENT_HELLO,
-                                      v21_enc_buf, sizeof(v21_enc_buf), &v21_enc_len);
+    ret = xqc_encode_transport_params(&v21_params, XQC_TP_TYPE_CLIENT_HELLO, v21_enc_buf,
+                                      sizeof(v21_enc_buf), &v21_enc_len);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_TRUE(v21_enc_len >= 3);
     /* Encoder may emit additional default params before/after multipath;
@@ -844,8 +855,7 @@ void xqc_test_mp21_init_max_path_id_tp_codepoint(void)
      * non-0x3e high-bit varint prefix). */
     int found = 0;
     for (size_t i = 0; i + 2 < v21_enc_len; ++i) {
-        if (v21_enc_buf[i] == 0x3e &&
-            v21_enc_buf[i + 1] == 0x01 &&
+        if (v21_enc_buf[i] == 0x3e && v21_enc_buf[i + 1] == 0x01 &&
             v21_enc_buf[i + 2] == 0x08) {
             found = 1;
             break;
@@ -856,8 +866,8 @@ void xqc_test_mp21_init_max_path_id_tp_codepoint(void)
     /* Decode round-trip back to confirm semantics survive. */
     xqc_transport_params_t v21_rt;
     xqc_init_transport_params(&v21_rt);
-    ret = xqc_decode_transport_params(&v21_rt, XQC_TP_TYPE_CLIENT_HELLO,
-                                      v21_enc_buf, v21_enc_len);
+    ret = xqc_decode_transport_params(&v21_rt, XQC_TP_TYPE_CLIENT_HELLO, v21_enc_buf,
+                                      v21_enc_len);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(v21_rt.enable_multipath, 1);
     CU_ASSERT_EQUAL(v21_rt.multipath_version, XQC_MULTIPATH_3E);
@@ -911,11 +921,11 @@ xqc_test_mp21_aead_nonce_check_tls_wrapper(void)
 
 static void
 xqc_test_mp21_gen_setup(xqc_connection_t **conn_out, xqc_packet_out_t **po_out,
-    unsigned char *buf, size_t buf_cap, uint8_t mp_version)
+                        unsigned char *buf, size_t buf_cap, uint8_t mp_version)
 {
-    xqc_log_t        *log = calloc(1, sizeof(xqc_log_t));
+    xqc_log_t *log = calloc(1, sizeof(xqc_log_t));
     xqc_connection_t *conn = calloc(1, sizeof(xqc_connection_t));
-    xqc_packet_out_t *po   = calloc(1, sizeof(xqc_packet_out_t));
+    xqc_packet_out_t *po = calloc(1, sizeof(xqc_packet_out_t));
     log->log_level = XQC_LOG_FATAL;
     conn->log = log;
     conn->conn_settings.multipath_version = mp_version;
@@ -938,7 +948,8 @@ xqc_test_mp21_gen_teardown(xqc_connection_t *conn, xqc_packet_out_t *po)
     free(po);
 }
 
-void xqc_test_mp21_gen_path_status_dual_version(void)
+void
+xqc_test_mp21_gen_path_status_dual_version(void)
 {
     unsigned char buf[64];
     xqc_connection_t *conn;
@@ -996,7 +1007,8 @@ void xqc_test_mp21_gen_path_status_dual_version(void)
  * fell through to default → FRAME_ENCODING_ERROR on wire) before PR7 G-P15
  * lifecycle glue exposed it via mqvpn netns e2e.
  * ---------------------------------------------------------------------- */
-void xqc_test_mp21_parse_path_status_v21_codepoints(void)
+void
+xqc_test_mp21_parse_path_status_v21_codepoints(void)
 {
     unsigned char buf[64];
     xqc_connection_t *conn;
@@ -1071,7 +1083,8 @@ void xqc_test_mp21_parse_path_status_v21_codepoints(void)
  * xqc_test_mp21_parse_path_status_v21_codepoints. Catches: codepoint dropped
  * from parser dispatch, parser field order regression, V10/V21 selector
  * inverted in xqc_mp_select_codepoint(). */
-void xqc_test_mp21_parse_mp_new_retire_conn_id_v21_codepoints(void)
+void
+xqc_test_mp21_parse_mp_new_retire_conn_id_v21_codepoints(void)
 {
     unsigned char buf[64];
     xqc_connection_t *conn;
@@ -1088,15 +1101,17 @@ void xqc_test_mp21_parse_mp_new_retire_conn_id_v21_codepoints(void)
     memset(&cid_in, 0, sizeof(cid_in));
     cid_in.cid_len = 8;
     cid_in.cid_seq_num = 7;
-    for (int i = 0; i < cid_in.cid_len; i++) cid_in.cid_buf[i] = (uint8_t)(0xA0 + i);
-    for (int i = 0; i < XQC_STATELESS_RESET_TOKENLEN; i++) sr_token_in[i] = (uint8_t)(0x10 + i);
+    for (int i = 0; i < cid_in.cid_len; i++)
+        cid_in.cid_buf[i] = (uint8_t)(0xA0 + i);
+    for (int i = 0; i < XQC_STATELESS_RESET_TOKENLEN; i++)
+        sr_token_in[i] = (uint8_t)(0x10 + i);
 
     /* (a) MP_NEW_CONN_ID V21 (PATH_NEW_CONNECTION_ID 0x3e78) round-trip */
     memset(buf, 0xaa, sizeof(buf));
     xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
     written = xqc_gen_mp_new_conn_id_frame(conn, po, &cid_in,
-                                           /*retire_prior_to*/3, sr_token_in,
-                                           /*path_id*/2);
+                                           /*retire_prior_to*/ 3, sr_token_in,
+                                           /*path_id*/ 2);
     CU_ASSERT(written > 0);
     CU_ASSERT_EQUAL(buf[0], 0x7e);
     CU_ASSERT_EQUAL(buf[1], 0x78);
@@ -1114,8 +1129,8 @@ void xqc_test_mp21_parse_mp_new_retire_conn_id_v21_codepoints(void)
     CU_ASSERT_EQUAL(cid_out.cid_seq_num, 7);
     CU_ASSERT_EQUAL(cid_out.cid_len, 8);
     CU_ASSERT_EQUAL(memcmp(cid_out.cid_buf, cid_in.cid_buf, cid_in.cid_len), 0);
-    CU_ASSERT_EQUAL(memcmp(cid_out.sr_token, sr_token_in,
-                           XQC_STATELESS_RESET_TOKENLEN), 0);
+    CU_ASSERT_EQUAL(memcmp(cid_out.sr_token, sr_token_in, XQC_STATELESS_RESET_TOKENLEN),
+                    0);
     CU_ASSERT_TRUE((pi.pi_frame_types & XQC_FRAME_BIT_MP_NEW_CONNECTION_ID) != 0);
     xqc_test_mp21_gen_teardown(conn, po);
 
@@ -1123,8 +1138,8 @@ void xqc_test_mp21_parse_mp_new_retire_conn_id_v21_codepoints(void)
     memset(buf, 0xaa, sizeof(buf));
     xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
     written = xqc_gen_mp_new_conn_id_frame(conn, po, &cid_in,
-                                           /*retire_prior_to*/3, sr_token_in,
-                                           /*path_id*/2);
+                                           /*retire_prior_to*/ 3, sr_token_in,
+                                           /*path_id*/ 2);
     CU_ASSERT(written > 0);
     CU_ASSERT_EQUAL(buf[0], 0x95);
     CU_ASSERT_EQUAL(buf[3], 0x09);
@@ -1146,7 +1161,7 @@ void xqc_test_mp21_parse_mp_new_retire_conn_id_v21_codepoints(void)
     /* (c) MP_RETIRE_CONN_ID V21 (PATH_RETIRE_CONNECTION_ID 0x3e79) round-trip */
     memset(buf, 0xaa, sizeof(buf));
     xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
-    written = xqc_gen_mp_retire_conn_id_frame(conn, po, /*seq*/11, /*path_id*/5);
+    written = xqc_gen_mp_retire_conn_id_frame(conn, po, /*seq*/ 11, /*path_id*/ 5);
     CU_ASSERT(written > 0);
     CU_ASSERT_EQUAL(buf[0], 0x7e);
     CU_ASSERT_EQUAL(buf[1], 0x79);
@@ -1164,7 +1179,7 @@ void xqc_test_mp21_parse_mp_new_retire_conn_id_v21_codepoints(void)
     /* (d) MP_RETIRE_CONN_ID V10 (0x15228c0a) regression guard */
     memset(buf, 0xaa, sizeof(buf));
     xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
-    written = xqc_gen_mp_retire_conn_id_frame(conn, po, /*seq*/11, /*path_id*/5);
+    written = xqc_gen_mp_retire_conn_id_frame(conn, po, /*seq*/ 11, /*path_id*/ 5);
     CU_ASSERT(written > 0);
     CU_ASSERT_EQUAL(buf[0], 0x95);
     CU_ASSERT_EQUAL(buf[3], 0x0a);
@@ -1180,7 +1195,8 @@ void xqc_test_mp21_parse_mp_new_retire_conn_id_v21_codepoints(void)
     xqc_test_mp21_gen_teardown(conn, po);
 }
 
-void xqc_test_mp21_gen_mp_new_conn_id_dual_version(void)
+void
+xqc_test_mp21_gen_mp_new_conn_id_dual_version(void)
 {
     unsigned char buf[64];
     xqc_connection_t *conn;
@@ -1213,7 +1229,8 @@ void xqc_test_mp21_gen_mp_new_conn_id_dual_version(void)
     xqc_test_mp21_gen_teardown(conn, po);
 }
 
-void xqc_test_mp21_gen_mp_retire_conn_id_dual_version(void)
+void
+xqc_test_mp21_gen_mp_retire_conn_id_dual_version(void)
 {
     unsigned char buf[32];
     xqc_connection_t *conn;
@@ -1239,7 +1256,8 @@ void xqc_test_mp21_gen_mp_retire_conn_id_dual_version(void)
     xqc_test_mp21_gen_teardown(conn, po);
 }
 
-void xqc_test_mp21_gen_max_path_id_dual_version(void)
+void
+xqc_test_mp21_gen_max_path_id_dual_version(void)
 {
     unsigned char buf[32];
     xqc_connection_t *conn;
@@ -1265,7 +1283,8 @@ void xqc_test_mp21_gen_max_path_id_dual_version(void)
     xqc_test_mp21_gen_teardown(conn, po);
 }
 
-void xqc_test_mp21_gen_ack_mp_dual_version(void)
+void
+xqc_test_mp21_gen_ack_mp_dual_version(void)
 {
     /* Build a recv_record with one range so ack_mp generator runs. */
     unsigned char buf[64];
@@ -1278,7 +1297,7 @@ void xqc_test_mp21_gen_ack_mp_dual_version(void)
     memset(&node, 0, sizeof(node));
     xqc_init_list_head(&rr.list_head);
     node.pktno_range.high = 10;
-    node.pktno_range.low  = 10;
+    node.pktno_range.low = 10;
     xqc_list_add_tail(&node.list, &rr.list_head);
 
     int has_gap = 0;
@@ -1288,8 +1307,7 @@ void xqc_test_mp21_gen_ack_mp_dual_version(void)
     memset(buf, 0xaa, sizeof(buf));
     xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
     po->po_pkt.pkt_pns = XQC_PNS_APP_DATA;
-    written = xqc_gen_ack_mp_frame(conn, 1, po, 0, 0, &rr, 0,
-                                   &has_gap, &largest_ack);
+    written = xqc_gen_ack_mp_frame(conn, 1, po, 0, 0, &rr, 0, &has_gap, &largest_ack);
     CU_ASSERT(written > 0);
     CU_ASSERT_EQUAL(buf[0], 0x3e);
     xqc_test_mp21_gen_teardown(conn, po);
@@ -1298,8 +1316,7 @@ void xqc_test_mp21_gen_ack_mp_dual_version(void)
     memset(buf, 0xaa, sizeof(buf));
     xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
     po->po_pkt.pkt_pns = XQC_PNS_APP_DATA;
-    written = xqc_gen_ack_mp_frame(conn, 1, po, 0, 0, &rr, 0,
-                                   &has_gap, &largest_ack);
+    written = xqc_gen_ack_mp_frame(conn, 1, po, 0, 0, &rr, 0, &has_gap, &largest_ack);
     CU_ASSERT(written > 0);
     CU_ASSERT_EQUAL(buf[0], 0x95);
     CU_ASSERT_EQUAL(buf[1], 0x22);
@@ -1314,10 +1331,10 @@ static xqc_connection_t *
 mp21_make_conn_for_blocked(uint64_t local_max)
 {
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = local_max,
+        .local_max_path_id = local_max,
         .remote_max_path_id = 8,
-        .scid_len           = 8,
-        .dcid_len           = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
     };
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
@@ -1361,17 +1378,17 @@ xqc_test_mp21_paths_blocked_validation(void)
     /* PATHS_BLOCKED: type 0x3e7b (4B varint: 0x80 0x00 0x3e 0x7b)
      *               + Max Path ID = 8 (1B: 0x08). local_max = 8 -> ignore. */
     static const unsigned char buf_eq[] = {0x80, 0x00, 0x3e, 0x7b, 0x08};
-    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
     xqc_int_t ret = XQC_ERROR;
     mp21_run_frame(conn, buf_eq, sizeof(buf_eq), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, 0);
-    CU_ASSERT_EQUAL(conn->local_max_path_id, 8);  /* unchanged (grant disabled) */
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 8); /* unchanged (grant disabled) */
     xqc_test_mp21_free_conn(conn);
 
     /* case B: peer_max < local_max -> ignore. */
     static const unsigned char buf_lt[] = {0x80, 0x00, 0x3e, 0x7b, 0x04};
-    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
     mp21_run_frame(conn, buf_lt, sizeof(buf_lt), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, 0);
@@ -1379,7 +1396,7 @@ xqc_test_mp21_paths_blocked_validation(void)
 
     /* case C: peer_max > local_max -> PROTOCOL_VIOLATION (spec §4.7 MUST). */
     static const unsigned char buf_gt[] = {0x80, 0x00, 0x3e, 0x7b, 0x09};
-    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
     mp21_run_frame(conn, buf_gt, sizeof(buf_gt), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
@@ -1393,7 +1410,7 @@ xqc_test_mp21_path_cids_blocked_validation(void)
 
     /* case A: path_id == local_max (8), seq=0 <= next_expected(0) -> OK ignore. */
     static const unsigned char buf_ok[] = {0x80, 0x00, 0x3e, 0x7c, 0x08, 0x00};
-    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
     mp21_run_frame(conn, buf_ok, sizeof(buf_ok), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, 0);
@@ -1401,7 +1418,7 @@ xqc_test_mp21_path_cids_blocked_validation(void)
 
     /* case B: path_id > local_max -> PROTOCOL_VIOLATION (gate). */
     static const unsigned char buf_pid_gt[] = {0x80, 0x00, 0x3e, 0x7c, 0x09, 0x00};
-    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
     mp21_run_frame(conn, buf_pid_gt, sizeof(buf_pid_gt), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
@@ -1409,7 +1426,7 @@ xqc_test_mp21_path_cids_blocked_validation(void)
 
     /* case C: path_id abandoned -> silently ignored (per §4.5 + impl choice). */
     static const unsigned char buf_aban[] = {0x80, 0x00, 0x3e, 0x7c, 0x02, 0x00};
-    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
     xqc_conn_mark_path_abandoned(conn, 2);
     mp21_run_frame(conn, buf_aban, sizeof(buf_aban), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_EQUAL(ret, XQC_OK);
@@ -1418,7 +1435,7 @@ xqc_test_mp21_path_cids_blocked_validation(void)
 
     /* case D: next_seq > next_expected -> PROTOCOL_VIOLATION (spec §4.7 MUST). */
     static const unsigned char buf_seq_gt[] = {0x80, 0x00, 0x3e, 0x7c, 0x01, 0x02};
-    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
     /* no scid issued for path 1 -> next_expected = 0; peer claims 2 -> violation */
     mp21_run_frame(conn, buf_seq_gt, sizeof(buf_seq_gt), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
@@ -1427,7 +1444,7 @@ xqc_test_mp21_path_cids_blocked_validation(void)
 
     /* case E: next_seq == next_expected (both 0, missing path) -> ignore OK. */
     static const unsigned char buf_seq_eq[] = {0x80, 0x00, 0x3e, 0x7c, 0x01, 0x00};
-    conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
     mp21_run_frame(conn, buf_seq_eq, sizeof(buf_seq_eq), XQC_FRAME_BIT_PING, &ret, NULL);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, 0);
@@ -1481,8 +1498,8 @@ xqc_test_mp21_solo_frame_in_datagram_no_pv(void)
 
     /* (a) PATHS_BLOCKED solo: peer_max == local_max (8) -> ignore branch. */
     static const unsigned char buf_pb[] = {0x80, 0x00, 0x3e, 0x7b, 0x08};
-    conn = mp21_make_conn_for_blocked(/*local_max*/8);
-    mp21_run_frame(conn, buf_pb, sizeof(buf_pb), /*seed*/0, &ret, &fbits);
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    mp21_run_frame(conn, buf_pb, sizeof(buf_pb), /*seed*/ 0, &ret, &fbits);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, 0);
     CU_ASSERT_TRUE((fbits & XQC_FRAME_BIT_PATHS_BLOCKED) != 0);
@@ -1490,8 +1507,8 @@ xqc_test_mp21_solo_frame_in_datagram_no_pv(void)
 
     /* (b) PATH_CIDS_BLOCKED solo: path_id=8 (local_max), seq=0 -> ignore. */
     static const unsigned char buf_pcb[] = {0x80, 0x00, 0x3e, 0x7c, 0x08, 0x00};
-    conn = mp21_make_conn_for_blocked(/*local_max*/8);
-    mp21_run_frame(conn, buf_pcb, sizeof(buf_pcb), /*seed*/0, &ret, &fbits);
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    mp21_run_frame(conn, buf_pcb, sizeof(buf_pcb), /*seed*/ 0, &ret, &fbits);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, 0);
     CU_ASSERT_TRUE((fbits & XQC_FRAME_BIT_PATH_CIDS_BLOCKED) != 0);
@@ -1501,8 +1518,8 @@ xqc_test_mp21_solo_frame_in_datagram_no_pv(void)
      * against future changes that would short-circuit the no-frame check
      * before (a)/(b) reach it, which would silently mask parser bugs. */
     static const unsigned char buf_empty[1] = {0};
-    conn = mp21_make_conn_for_blocked(/*local_max*/8);
-    mp21_run_frame(conn, buf_empty, /*payload_len*/0, /*seed*/0, &ret, &fbits);
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    mp21_run_frame(conn, buf_empty, /*payload_len*/ 0, /*seed*/ 0, &ret, &fbits);
     CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
     CU_ASSERT_EQUAL(fbits, 0);
     xqc_test_mp21_free_conn(conn);
@@ -1513,8 +1530,7 @@ xqc_test_mp21_solo_frame_in_datagram_no_pv(void)
  * fully-wired send queue. PATHS_BLOCKED end-to-end emission is covered
  * by an integration test in a later session. */
 static xqc_path_ctx_t *
-mp21_stub_initial_path_for_grant(xqc_connection_t *conn,
-                                 void **out_send_ctl_buf)
+mp21_stub_initial_path_for_grant(xqc_connection_t *conn, void **out_send_ctl_buf)
 {
     /* xqc_send_ctl_t is incomplete here — we only need ctl_srtt + ctl_rttvar
      * + ctl_conn which are at known offsets in src/transport/xqc_send_ctl.h.
@@ -1543,7 +1559,7 @@ mp21_free_grant_stubs(xqc_path_ctx_t *path, void *send_ctl_buf)
 void
 xqc_test_mp21_max_path_id_grant_disabled_by_default(void)
 {
-    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
     /* conn_settings.max_path_id_grant_max_value left at 0 by calloc fixture */
     uint64_t granted = xqc_try_grant_max_path_id(conn);
     CU_ASSERT_EQUAL(granted, 0);
@@ -1555,7 +1571,7 @@ xqc_test_mp21_max_path_id_grant_disabled_by_default(void)
 void
 xqc_test_mp21_max_path_id_grant_trigger_on_paths_blocked(void)
 {
-    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
     conn->conn_settings.max_path_id_grant_max_value = 64;
     void *sc_buf = NULL;
     xqc_path_ctx_t *path = mp21_stub_initial_path_for_grant(conn, &sc_buf);
@@ -1573,8 +1589,8 @@ xqc_test_mp21_max_path_id_grant_trigger_on_paths_blocked(void)
 void
 xqc_test_mp21_max_path_id_grant_skipped_at_max(void)
 {
-    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/16);
-    conn->conn_settings.max_path_id_grant_max_value = 16;  /* already at cap */
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/ 16);
+    conn->conn_settings.max_path_id_grant_max_value = 16; /* already at cap */
     void *sc_buf = NULL;
     xqc_path_ctx_t *path = mp21_stub_initial_path_for_grant(conn, &sc_buf);
     conn->conn_initial_path = path;
@@ -1598,7 +1614,7 @@ xqc_test_mp21_max_path_id_grant_skipped_at_max(void)
 void
 xqc_test_mp21_max_path_id_grant_rate_limited(void)
 {
-    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/8);
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
     conn->conn_settings.max_path_id_grant_max_value = 64;
     void *sc_buf = NULL;
     xqc_path_ctx_t *path = mp21_stub_initial_path_for_grant(conn, &sc_buf);
@@ -1633,10 +1649,8 @@ xqc_test_mp21_max_path_id_grant_rate_limited(void)
  * trigger the validation.
  */
 static void
-mp21_forge_path_challenge_packet_in(xqc_packet_in_t *pi,
-                                    unsigned char *frame_buf,
-                                    size_t frame_buf_len,
-                                    size_t fake_datagram_size,
+mp21_forge_path_challenge_packet_in(xqc_packet_in_t *pi, unsigned char *frame_buf,
+                                    size_t frame_buf_len, size_t fake_datagram_size,
                                     uint64_t path_id)
 {
     /* frame layout: type byte (0x1a / PATH_CHALLENGE) + 8 data bytes. */
@@ -1644,10 +1658,10 @@ mp21_forge_path_challenge_packet_in(xqc_packet_in_t *pi,
     memset(frame_buf + 1, 0xab, XQC_PATH_CHALLENGE_DATA_LEN);
 
     memset(pi, 0, sizeof(*pi));
-    pi->buf      = frame_buf;
+    pi->buf = frame_buf;
     pi->buf_size = fake_datagram_size;
-    pi->pos      = frame_buf;
-    pi->last     = frame_buf + frame_buf_len;
+    pi->pos = frame_buf;
+    pi->last = frame_buf + frame_buf_len;
     pi->pi_path_id = path_id;
 }
 
@@ -1658,18 +1672,18 @@ void
 xqc_test_mp21_path_challenge_1200b_validation(void)
 {
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = 4,
+        .local_max_path_id = 4,
         .remote_max_path_id = 4,
-        .scid_len           = 8,
-        .dcid_len           = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
     };
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
     conn->enable_multipath = 1;
 
     /* Synthesize a VALIDATING path that the frame handler will resolve. */
-    xqc_path_ctx_t *path = xqc_test_helper_path_synthesize(conn, 1,
-                                                           XQC_PATH_STATE_VALIDATING);
+    xqc_path_ctx_t *path =
+        xqc_test_helper_path_synthesize(conn, 1, XQC_PATH_STATE_VALIDATING);
     CU_ASSERT_PTR_NOT_NULL_FATAL(path);
 
     /* RFC 9000 §19.17: PATH_CHALLENGE = 1 type byte + 8 data bytes. */
@@ -1678,8 +1692,7 @@ xqc_test_mp21_path_challenge_1200b_validation(void)
 
     /* Sub-1200 datagram → path state advances to CLOSING (explicit close). */
     mp21_forge_path_challenge_packet_in(&pi, frame_buf, sizeof(frame_buf),
-                                        /*fake_datagram_size=*/1199,
-                                        path->path_id);
+                                        /*fake_datagram_size=*/1199, path->path_id);
 
     xqc_int_t ret = xqc_process_path_challenge_frame(conn, &pi);
     CU_ASSERT_EQUAL(ret, XQC_OK);
@@ -1700,17 +1713,17 @@ void
 xqc_test_mp21_path_validation_timeout(void)
 {
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = 4,
+        .local_max_path_id = 4,
         .remote_max_path_id = 4,
-        .scid_len           = 8,
-        .dcid_len           = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
     };
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
     conn->enable_multipath = 1;
 
-    xqc_path_ctx_t *path = xqc_test_helper_path_synthesize(conn, 1,
-                                                           XQC_PATH_STATE_VALIDATING);
+    xqc_path_ctx_t *path =
+        xqc_test_helper_path_synthesize(conn, 1, XQC_PATH_STATE_VALIDATING);
     CU_ASSERT_PTR_NOT_NULL_FATAL(path);
 
     /* Attempt 1 + 2: path remains in VALIDATING. */
@@ -1752,15 +1765,13 @@ xqc_test_mp21_path_validation_timeout(void)
  * caller-supplied scratch buffer and point po_payload at the start.
  * Test-only helper. */
 static void
-xqc_test_mp21_encode_max_path_id_payload(xqc_packet_out_t *po,
-                                         uint64_t value,
-                                         unsigned char *scratch,
-                                         size_t scratch_cap)
+xqc_test_mp21_encode_max_path_id_payload(xqc_packet_out_t *po, uint64_t value,
+                                         unsigned char *scratch, size_t scratch_cap)
 {
-    po->po_buf      = scratch;
-    po->po_buf_cap  = scratch_cap;
+    po->po_buf = scratch;
+    po->po_buf_cap = scratch_cap;
     po->po_buf_size = (unsigned int)scratch_cap;
-    po->po_payload  = scratch;
+    po->po_payload = scratch;
 
     unsigned char *p = scratch;
 
@@ -1780,34 +1791,34 @@ void
 xqc_test_mp21_loss_replay_should_suppress_stale(void)
 {
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = 10,
+        .local_max_path_id = 10,
         .remote_max_path_id = 10,
-        .scid_len           = 8,
-        .dcid_len           = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
     };
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
     conn->enable_multipath = 1;
 
-    xqc_path_ctx_t *path = xqc_test_helper_path_synthesize(conn, 1,
-                                                           XQC_PATH_STATE_ACTIVE);
+    xqc_path_ctx_t *path =
+        xqc_test_helper_path_synthesize(conn, 1, XQC_PATH_STATE_ACTIVE);
     CU_ASSERT_PTR_NOT_NULL_FATAL(path);
 
     /* === G-F9: PATH_STATUS stale seq → suppress ============================ */
     path->app_path_status_send_seq_num = 5;
     xqc_packet_out_t po1 = {0};
-    po1.po_path_id        = path->path_id;
-    po1.po_frame_types    = XQC_FRAME_BIT_PATH_STATUS;
-    po1.po_path_status_seq = 3;  /* older than latest=5 */
+    po1.po_path_id = path->path_id;
+    po1.po_frame_types = XQC_FRAME_BIT_PATH_STATUS;
+    po1.po_path_status_seq = 3; /* older than latest=5 */
     CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po1), 1);
 
-    po1.po_path_status_seq = 5;  /* equal-to-latest: replay */
+    po1.po_path_status_seq = 5; /* equal-to-latest: replay */
     CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po1), 0);
 
     /* === G-F9 R5: NULL path (path abandoned) → suppress ==================== */
     xqc_packet_out_t po2 = {0};
-    po2.po_path_id        = 999;  /* no such path */
-    po2.po_frame_types    = XQC_FRAME_BIT_PATH_STATUS;
+    po2.po_path_id = 999; /* no such path */
+    po2.po_frame_types = XQC_FRAME_BIT_PATH_STATUS;
     po2.po_path_status_seq = 1;
     CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po2), 1);
 
@@ -1817,13 +1828,12 @@ xqc_test_mp21_loss_replay_should_suppress_stale(void)
     unsigned char scratch[16];
     xqc_packet_out_t po3 = {0};
     po3.po_frame_types = XQC_FRAME_BIT_MAX_PATH_ID;
-    xqc_test_mp21_encode_max_path_id_payload(&po3, /*value=*/5,
-                                              scratch, sizeof(scratch));
+    xqc_test_mp21_encode_max_path_id_payload(&po3, /*value=*/5, scratch, sizeof(scratch));
     CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po3), 1);
 
     /* === G-F19: current value (carried == latest) → replay (R2-N4) ========= */
-    xqc_test_mp21_encode_max_path_id_payload(&po3, /*value=*/10,
-                                              scratch, sizeof(scratch));
+    xqc_test_mp21_encode_max_path_id_payload(&po3, /*value=*/10, scratch,
+                                             sizeof(scratch));
     CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po3), 0);
 
     /* === Sanity: neither bit set → never suppress ========================== */
@@ -1855,10 +1865,10 @@ static int
 xqc_test_count_g_p10_candidates(xqc_connection_t *conn)
 {
     int n = 0;
-    xqc_cid_set_inner_t *first_unused =
-        xqc_get_next_unused_path_cid_set(&conn->scid_set);
+    xqc_cid_set_inner_t *first_unused = xqc_get_next_unused_path_cid_set(&conn->scid_set);
     xqc_list_head_t *pos, *next;
-    xqc_list_for_each_safe(pos, next, &conn->scid_set.cid_set_list) {
+    xqc_list_for_each_safe(pos, next, &conn->scid_set.cid_set_list)
+    {
         xqc_cid_set_inner_t *iset = xqc_list_entry(pos, xqc_cid_set_inner_t, next);
         if (iset == first_unused) continue;
         if (iset->set_state != XQC_CID_SET_UNUSED) continue;
@@ -1875,10 +1885,10 @@ xqc_test_mp21_gp10_iteration_visits_all_unused(void)
      * first_unused == path_id 0 (first list entry).
      * Principle #3 must visit the remaining 3 (path_ids 1,2,3). */
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = 3,
+        .local_max_path_id = 3,
         .remote_max_path_id = 3,
-        .scid_len           = 8,
-        .dcid_len           = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
     };
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
@@ -1901,10 +1911,10 @@ xqc_test_mp21_gp10_skips_above_curr_max(void)
      * first_unused == path_id 0. Principle #3 must visit only
      * path_ids 1,2 (path_ids 3,4 exceed curr_max and are skipped). */
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = 2,
+        .local_max_path_id = 2,
         .remote_max_path_id = 2,
-        .scid_len           = 8,
-        .dcid_len           = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
     };
     xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
@@ -1965,7 +1975,7 @@ xqc_test_mp21_gp14_pick_alt_active_path(void)
      * non-ACTIVE leaves no candidate. */
     xqc_test_helper_path_destroy(p3);
     p2->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
-    p2->path_state      = XQC_PATH_STATE_VALIDATING;
+    p2->path_state = XQC_PATH_STATE_VALIDATING;
     alt = xqc_conn_pick_alt_active_path(conn, p1);
     CU_ASSERT_PTR_NULL(alt);
 
@@ -1990,7 +2000,8 @@ xqc_test_mp21_gp14_pick_alt_active_path_single(void)
     xqc_connection_t *conn = xqc_test_helper_conn_create(NULL);
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
 
-    xqc_path_ctx_t *only = xqc_test_helper_path_synthesize(conn, 0, XQC_PATH_STATE_ACTIVE);
+    xqc_path_ctx_t *only =
+        xqc_test_helper_path_synthesize(conn, 0, XQC_PATH_STATE_ACTIVE);
     CU_ASSERT_PTR_NOT_NULL_FATAL(only);
     only->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
 
@@ -2014,8 +2025,7 @@ xqc_test_mp21_gen_paths_blocked_frame(void)
     unsigned char buf[16] = {0};
     ssize_t n = xqc_gen_paths_blocked_frame(buf, sizeof(buf), /* max_path_id = */ 5);
     CU_ASSERT_EQUAL(n, 3);
-    CU_ASSERT_EQUAL(buf[0], 0x7e);   /* 2-byte varint: 0x40 | (0x3e7b>>8) = 0x7e */
+    CU_ASSERT_EQUAL(buf[0], 0x7e); /* 2-byte varint: 0x40 | (0x3e7b>>8) = 0x7e */
     CU_ASSERT_EQUAL(buf[1], 0x7b);
-    CU_ASSERT_EQUAL(buf[2], 0x05);   /* max_path_id=5, 1-byte varint */
+    CU_ASSERT_EQUAL(buf[2], 0x05); /* max_path_id=5, 1-byte varint */
 }
-

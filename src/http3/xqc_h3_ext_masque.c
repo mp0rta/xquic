@@ -1,4 +1,6 @@
 /**
+ * @copyright Copyright (c) 2026, mp0rta
+ *
  * MASQUE protocol helpers implementation.
  * See xqc_h3_ext_masque.h for API documentation.
  */
@@ -13,8 +15,7 @@
 
 xqc_int_t
 xqc_h3_ext_masque_frame_udp(uint8_t *out, size_t outlen, size_t *written,
-                             uint64_t stream_id,
-                             const uint8_t *payload, size_t paylen)
+                            uint64_t stream_id, const uint8_t *payload, size_t paylen)
 {
     if (out == NULL || written == NULL) {
         return -XQC_EPARAM;
@@ -27,7 +28,7 @@ xqc_h3_ext_masque_frame_udp(uint8_t *out, size_t outlen, size_t *written,
 
     uint64_t quarter_id = stream_id / 4;
     size_t qid_len = xqc_put_varint_len(quarter_id);
-    size_t ctx_len = 1;  /* context_id = 0 → 1 byte varint */
+    size_t ctx_len = 1; /* context_id = 0 → 1 byte varint */
     size_t total = qid_len + ctx_len + paylen;
 
     if (outlen < total) {
@@ -36,7 +37,7 @@ xqc_h3_ext_masque_frame_udp(uint8_t *out, size_t outlen, size_t *written,
 
     uint8_t *p = out;
     p = xqc_put_varint(p, quarter_id);
-    *p++ = 0x00;  /* context_id = 0 */
+    *p++ = 0x00; /* context_id = 0 */
     if (paylen > 0) {
         memcpy(p, payload, paylen);
     }
@@ -47,12 +48,11 @@ xqc_h3_ext_masque_frame_udp(uint8_t *out, size_t outlen, size_t *written,
 
 xqc_int_t
 xqc_h3_ext_masque_unframe_udp(const uint8_t *buf, size_t buflen,
-                               uint64_t *quarter_stream_id, uint64_t *context_id,
-                               const uint8_t **payload, size_t *payload_len)
+                              uint64_t *quarter_stream_id, uint64_t *context_id,
+                              const uint8_t **payload, size_t *payload_len)
 {
-    if (buf == NULL || quarter_stream_id == NULL || context_id == NULL
-        || payload == NULL || payload_len == NULL)
-    {
+    if (buf == NULL || quarter_stream_id == NULL || context_id == NULL ||
+        payload == NULL || payload_len == NULL) {
         return -XQC_EPARAM;
     }
 
@@ -92,9 +92,8 @@ xqc_h3_ext_masque_udp_mss(size_t dgram_mss, uint64_t stream_id)
 /* ── Capsule Protocol (RFC 9297 Section 3.2) ── */
 
 xqc_int_t
-xqc_h3_ext_capsule_encode(uint8_t *out, size_t outlen, size_t *written,
-                           uint64_t type,
-                           const uint8_t *payload, size_t paylen)
+xqc_h3_ext_capsule_encode(uint8_t *out, size_t outlen, size_t *written, uint64_t type,
+                          const uint8_t *payload, size_t paylen)
 {
     if (out == NULL || written == NULL) {
         return -XQC_EPARAM;
@@ -125,14 +124,12 @@ xqc_h3_ext_capsule_encode(uint8_t *out, size_t outlen, size_t *written,
 }
 
 xqc_int_t
-xqc_h3_ext_capsule_decode(const uint8_t *buf, size_t buflen,
-                           uint64_t *type,
-                           const uint8_t **payload, size_t *payload_len,
-                           size_t *bytes_consumed)
+xqc_h3_ext_capsule_decode(const uint8_t *buf, size_t buflen, uint64_t *type,
+                          const uint8_t **payload, size_t *payload_len,
+                          size_t *bytes_consumed)
 {
-    if (buf == NULL || type == NULL || payload == NULL
-        || payload_len == NULL || bytes_consumed == NULL)
-    {
+    if (buf == NULL || type == NULL || payload == NULL || payload_len == NULL ||
+        bytes_consumed == NULL) {
         return -XQC_EPARAM;
     }
 
@@ -172,16 +169,12 @@ xqc_h3_ext_capsule_decode(const uint8_t *buf, size_t buflen,
 
 xqc_int_t
 xqc_h3_ext_connectip_parse_address_assign(const uint8_t *payload, size_t paylen,
-                                           uint64_t *request_id,
-                                           uint8_t *ip_version,
-                                           uint8_t *ip_addr, size_t *ip_addr_len,
-                                           uint8_t *prefix_len,
-                                           size_t *bytes_consumed)
+                                          uint64_t *request_id, uint8_t *ip_version,
+                                          uint8_t *ip_addr, size_t *ip_addr_len,
+                                          uint8_t *prefix_len, size_t *bytes_consumed)
 {
-    if (payload == NULL || request_id == NULL || ip_version == NULL
-        || ip_addr == NULL || ip_addr_len == NULL || prefix_len == NULL
-        || bytes_consumed == NULL)
-    {
+    if (payload == NULL || request_id == NULL || ip_version == NULL || ip_addr == NULL ||
+        ip_addr_len == NULL || prefix_len == NULL || bytes_consumed == NULL) {
         return -XQC_EPARAM;
     }
 
@@ -224,12 +217,9 @@ xqc_h3_ext_connectip_parse_address_assign(const uint8_t *payload, size_t paylen,
 }
 
 xqc_int_t
-xqc_h3_ext_connectip_build_address_request(uint8_t *buf, size_t buflen,
-                                            size_t *written,
-                                            uint64_t request_id,
-                                            uint8_t ip_version,
-                                            const uint8_t *ip_addr,
-                                            uint8_t prefix_len)
+xqc_h3_ext_connectip_build_address_request(uint8_t *buf, size_t buflen, size_t *written,
+                                           uint64_t request_id, uint8_t ip_version,
+                                           const uint8_t *ip_addr, uint8_t prefix_len)
 {
     if (buf == NULL || written == NULL || ip_addr == NULL) {
         return -XQC_EPARAM;
@@ -270,19 +260,14 @@ xqc_h3_ext_connectip_build_address_request(uint8_t *buf, size_t buflen,
 }
 
 xqc_int_t
-xqc_h3_ext_connectip_parse_route_advertisement(const uint8_t *payload,
-                                                size_t paylen,
-                                                uint8_t *ip_version,
-                                                uint8_t *start_ip,
-                                                uint8_t *end_ip,
-                                                size_t *ip_addr_len,
-                                                uint8_t *ip_protocol,
-                                                size_t *bytes_consumed)
+xqc_h3_ext_connectip_parse_route_advertisement(const uint8_t *payload, size_t paylen,
+                                               uint8_t *ip_version, uint8_t *start_ip,
+                                               uint8_t *end_ip, size_t *ip_addr_len,
+                                               uint8_t *ip_protocol,
+                                               size_t *bytes_consumed)
 {
-    if (payload == NULL || ip_version == NULL || start_ip == NULL
-        || end_ip == NULL || ip_addr_len == NULL || ip_protocol == NULL
-        || bytes_consumed == NULL)
-    {
+    if (payload == NULL || ip_version == NULL || start_ip == NULL || end_ip == NULL ||
+        ip_addr_len == NULL || ip_protocol == NULL || bytes_consumed == NULL) {
         return -XQC_EPARAM;
     }
 
@@ -353,8 +338,7 @@ xqc_h3_ext_masque_validate_ip_packet(const uint8_t *payload, size_t payload_len)
 /* ── ROUTE_ADVERTISEMENT ordering validation (RFC 9484 §4.7.3) ── */
 
 xqc_int_t
-xqc_h3_ext_connectip_validate_route_advertisement(const uint8_t *payload,
-                                                    size_t paylen)
+xqc_h3_ext_connectip_validate_route_advertisement(const uint8_t *payload, size_t paylen)
 {
     if (payload == NULL && paylen > 0) {
         return -XQC_EPARAM;
@@ -371,17 +355,17 @@ xqc_h3_ext_connectip_validate_route_advertisement(const uint8_t *payload,
     uint8_t prev_ip_version = 0;
     uint8_t prev_ip_protocol = 0;
     uint8_t prev_end_ip[16];
-    size_t  prev_addr_len = 0;
-    int     entry_count = 0;
+    size_t prev_addr_len = 0;
+    int entry_count = 0;
 
     while (remaining > 0) {
         uint8_t ip_version, ip_protocol;
         uint8_t start_ip[16], end_ip[16];
-        size_t  ip_addr_len, consumed;
+        size_t ip_addr_len, consumed;
 
         xqc_int_t ret = xqc_h3_ext_connectip_parse_route_advertisement(
-            p, remaining, &ip_version, start_ip, end_ip,
-            &ip_addr_len, &ip_protocol, &consumed);
+            p, remaining, &ip_version, start_ip, end_ip, &ip_addr_len, &ip_protocol,
+            &consumed);
         if (ret != XQC_OK) {
             return ret;
         }
@@ -400,9 +384,7 @@ xqc_h3_ext_connectip_validate_route_advertisement(const uint8_t *payload,
                 if (ip_protocol < prev_ip_protocol) {
                     return -XQC_EPARAM;
                 }
-                if (ip_protocol == prev_ip_protocol
-                    && ip_addr_len == prev_addr_len)
-                {
+                if (ip_protocol == prev_ip_protocol && ip_addr_len == prev_addr_len) {
                     /* Current start_ip must be > previous end_ip */
                     if (memcmp(start_ip, prev_end_ip, ip_addr_len) <= 0) {
                         return -XQC_EPARAM;

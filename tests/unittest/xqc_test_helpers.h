@@ -1,5 +1,5 @@
 /**
- * @copyright Copyright (c) 2026, mqvpn project
+ * @copyright Copyright (c) 2026, mp0rta
  *
  * Shared test-harness helpers for PR3 (dynamic path cap) and later
  * Chunk-based multipath tests. Provides a stable name for fixture
@@ -29,7 +29,7 @@
  * fixture is later renamed.
  */
 xqc_connection_t *xqc_test_helper_conn_create(xqc_engine_t *engine);
-void              xqc_test_helper_conn_destroy(xqc_connection_t *conn);
+void xqc_test_helper_conn_destroy(xqc_connection_t *conn);
 
 /* Populate conn->scid_set and conn->dcid_set with `n` UNUSED CIDs, one
  * per path_id 0..n-1. Each CID is XQC_DEFAULT_CID_LEN bytes of
@@ -81,7 +81,6 @@ void xqc_test_helper_path_destroy(struct xqc_path_ctx_s *path);
 struct xqc_packet_out_s;
 struct xqc_packet_out_s *xqc_test_find_packet_with_frame(xqc_connection_t *conn,
                                                          uint64_t frame_bit);
-int                       xqc_test_count_packets_with_frame(xqc_connection_t *conn,
-                                                            uint64_t frame_bit);
+int xqc_test_count_packets_with_frame(xqc_connection_t *conn, uint64_t frame_bit);
 
 #endif /* XQC_TEST_HELPERS_H */

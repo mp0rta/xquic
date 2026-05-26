@@ -1,5 +1,5 @@
 /**
- * @copyright Copyright (c) 2026, mqvpn project
+ * @copyright Copyright (c) 2026, mp0rta
  */
 
 #include "xqc_test_helpers.h"
@@ -22,12 +22,12 @@
 xqc_connection_t *
 xqc_test_helper_conn_create(xqc_engine_t *engine)
 {
-    (void)engine;  /* mp21 fixture is engine-less; accepted for API symmetry */
+    (void)engine; /* mp21 fixture is engine-less; accepted for API symmetry */
     xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id  = 8,
+        .local_max_path_id = 8,
         .remote_max_path_id = 8,
-        .scid_len           = 8,
-        .dcid_len           = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
     };
     return xqc_test_mp21_make_conn(&p);
 }
@@ -82,7 +82,7 @@ xqc_test_seed_cids(xqc_connection_t *conn, size_t n)
     }
 
     for (size_t i = 0; i < n; i++) {
-        uint64_t  path_id = (uint64_t)i;
+        uint64_t path_id = (uint64_t)i;
         xqc_int_t rc;
 
         rc = xqc_cid_set_add_path(&conn->scid_set, path_id);
@@ -96,16 +96,16 @@ xqc_test_seed_cids(xqc_connection_t *conn, size_t n)
 
         xqc_cid_t scid;
         xqc_test_fill_cid(&scid, path_id, 's');
-        rc = xqc_cid_set_insert_cid(&conn->scid_set, &scid,
-                                    XQC_CID_UNUSED, (uint64_t)n, path_id);
+        rc = xqc_cid_set_insert_cid(&conn->scid_set, &scid, XQC_CID_UNUSED, (uint64_t)n,
+                                    path_id);
         if (rc != XQC_OK) {
             return rc;
         }
 
         xqc_cid_t dcid;
         xqc_test_fill_cid(&dcid, path_id, 'd');
-        rc = xqc_cid_set_insert_cid(&conn->dcid_set, &dcid,
-                                    XQC_CID_UNUSED, (uint64_t)n, path_id);
+        rc = xqc_cid_set_insert_cid(&conn->dcid_set, &dcid, XQC_CID_UNUSED, (uint64_t)n,
+                                    path_id);
         if (rc != XQC_OK) {
             return rc;
         }
@@ -144,8 +144,8 @@ xqc_test_helper_path_synthesize(xqc_connection_t *conn, uint64_t path_id,
         return NULL;
     }
     path->parent_conn = conn;
-    path->path_id     = path_id;
-    path->path_state  = (xqc_path_state_t)initial_state;
+    path->path_id = path_id;
+    path->path_state = (xqc_path_state_t)initial_state;
     path->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
 
     for (xqc_send_type_t t = 0; t < XQC_SEND_TYPE_N; t++) {
@@ -182,15 +182,15 @@ xqc_test_helper_path_destroy(struct xqc_path_ctx_s *path)
  * assertions.
  * ------------------------------------------------------------------ */
 static xqc_packet_out_t *
-xqc_test_scan_list_for_frame(xqc_list_head_t *head, uint64_t frame_bit,
-                             int *count_out)
+xqc_test_scan_list_for_frame(xqc_list_head_t *head, uint64_t frame_bit, int *count_out)
 {
     xqc_packet_out_t *first = NULL;
     xqc_list_head_t *pos, *next;
     if (head == NULL || head->next == NULL) {
         return NULL;
     }
-    xqc_list_for_each_safe(pos, next, head) {
+    xqc_list_for_each_safe(pos, next, head)
+    {
         xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
         if ((po->po_frame_types & frame_bit) != 0) {
             if (first == NULL) {
@@ -215,8 +215,8 @@ xqc_test_find_packet_with_frame(xqc_connection_t *conn, uint64_t frame_bit)
     if (hit) {
         return hit;
     }
-    return xqc_test_scan_list_for_frame(
-        &conn->conn_send_queue->sndq_send_packets, frame_bit, NULL);
+    return xqc_test_scan_list_for_frame(&conn->conn_send_queue->sndq_send_packets,
+                                        frame_bit, NULL);
 }
 
 int
@@ -226,9 +226,9 @@ xqc_test_count_packets_with_frame(xqc_connection_t *conn, uint64_t frame_bit)
     if (conn == NULL || conn->conn_send_queue == NULL) {
         return 0;
     }
-    (void)xqc_test_scan_list_for_frame(
-        &conn->conn_send_queue->sndq_send_packets_high_pri, frame_bit, &n);
-    (void)xqc_test_scan_list_for_frame(
-        &conn->conn_send_queue->sndq_send_packets, frame_bit, &n);
+    (void)xqc_test_scan_list_for_frame(&conn->conn_send_queue->sndq_send_packets_high_pri,
+                                       frame_bit, &n);
+    (void)xqc_test_scan_list_for_frame(&conn->conn_send_queue->sndq_send_packets,
+                                       frame_bit, &n);
     return n;
 }

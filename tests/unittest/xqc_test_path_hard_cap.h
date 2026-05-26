@@ -1,5 +1,5 @@
 /**
- * @copyright Copyright (c) 2026, mqvpn project
+ * @copyright Copyright (c) 2026, mp0rta
  *
  * PR3 Chunk 1: tests for the three-stage xqc_path_create() refactor
  * and the XQC_PATH_HARD_CAP defensive ceiling.

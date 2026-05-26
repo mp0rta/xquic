@@ -1,5 +1,5 @@
 /**
- * @copyright Copyright (c) 2026, Alibaba Group Holding Limited
+ * @copyright Copyright (c) 2026, mp0rta
  */
 
 #include <CUnit/CUnit.h>
@@ -36,25 +36,25 @@ xqc_test_server_set_conn_settings_propagation(void)
     memset(&in, 0, sizeof(in));
 
     /* --- direct-copy fields (always assigned verbatim) --- */
-    in.pacing_on                = 1;
-    in.mp_ping_on               = 1;
-    in.enable_multipath         = 1;
-    in.so_sndbuf                = 4 * 1024 * 1024;
-    in.sndq_packets_used_max    = 4096;
-    in.max_datagram_frame_size  = 1500;
-    in.cong_ctrl_callback       = xqc_bbr_cb;          /* defined header, address only */
-    in.cc_params.customize_on   = 1;                   /* nested struct, sub-field probe */
-    in.cc_params.init_cwnd      = 32;
+    in.pacing_on = 1;
+    in.mp_ping_on = 1;
+    in.enable_multipath = 1;
+    in.so_sndbuf = 4 * 1024 * 1024;
+    in.sndq_packets_used_max = 4096;
+    in.max_datagram_frame_size = 1500;
+    in.cong_ctrl_callback = xqc_bbr_cb; /* defined header, address only */
+    in.cc_params.customize_on = 1;      /* nested struct, sub-field probe */
+    in.cc_params.init_cwnd = 32;
 
     /* --- conditional fields (>0 wins, else untouched) --- */
-    in.idle_time_out            = 60 * 1000;
-    in.init_idle_time_out       = 10 * 1000;
+    in.idle_time_out = 60 * 1000;
+    in.init_idle_time_out = 10 * 1000;
 
     /* --- special fields --- */
-    in.max_pkt_out_size         = 1300;                 /* below cap → verbatim copy */
-    in.proto_version            = XQC_VERSION_V1;       /* valid → wins over engine default */
-    in.init_max_path_id         = 16;                   /* non-zero → wins over default */
-    in.max_path_id_grant_max_value = 32;                /* direct copy */
+    in.max_pkt_out_size = 1300;          /* below cap → verbatim copy */
+    in.proto_version = XQC_VERSION_V1;   /* valid → wins over engine default */
+    in.init_max_path_id = 16;            /* non-zero → wins over default */
+    in.max_path_id_grant_max_value = 32; /* direct copy */
 
     xqc_server_set_conn_settings(e, &in);
 
@@ -65,8 +65,9 @@ xqc_test_server_set_conn_settings_propagation(void)
     CU_ASSERT_EQUAL(e->default_conn_settings.so_sndbuf, 4 * 1024 * 1024);
     CU_ASSERT_EQUAL(e->default_conn_settings.sndq_packets_used_max, 4096);
     CU_ASSERT_EQUAL(e->default_conn_settings.max_datagram_frame_size, 1500);
-    CU_ASSERT_EQUAL(memcmp(&e->default_conn_settings.cong_ctrl_callback,
-                           &xqc_bbr_cb, sizeof(xqc_cong_ctrl_callback_t)), 0);
+    CU_ASSERT_EQUAL(memcmp(&e->default_conn_settings.cong_ctrl_callback, &xqc_bbr_cb,
+                           sizeof(xqc_cong_ctrl_callback_t)),
+                    0);
     CU_ASSERT_EQUAL(e->default_conn_settings.cc_params.customize_on, 1);
     CU_ASSERT_EQUAL(e->default_conn_settings.cc_params.init_cwnd, 32);
 
@@ -100,9 +101,9 @@ xqc_test_server_set_conn_settings_zero_defaults(void)
 
     /* All zero / invalid: each special branch should keep engine prior
      * or substitute its documented default. */
-    in.max_pkt_out_size = 0;                  /* falsy → engine prior preserved */
-    in.proto_version   = XQC_IDRAFT_INIT_VER; /* invalid → engine prior preserved */
-    in.init_max_path_id = 0;                  /* 0 → XQC_DEFAULT_INIT_MAX_PATH_ID */
+    in.max_pkt_out_size = 0;                /* falsy → engine prior preserved */
+    in.proto_version = XQC_IDRAFT_INIT_VER; /* invalid → engine prior preserved */
+    in.init_max_path_id = 0;                /* 0 → XQC_DEFAULT_INIT_MAX_PATH_ID */
 
     xqc_server_set_conn_settings(e, &in);
 
@@ -127,8 +128,7 @@ xqc_test_server_set_conn_settings_clamp(void)
 
     xqc_server_set_conn_settings(e, &in);
 
-    CU_ASSERT_EQUAL(e->default_conn_settings.max_pkt_out_size,
-                    XQC_MAX_PACKET_OUT_SIZE);
+    CU_ASSERT_EQUAL(e->default_conn_settings.max_pkt_out_size, XQC_MAX_PACKET_OUT_SIZE);
 
     free(e);
 }

@@ -1,3 +1,7 @@
+/**
+ * @copyright Copyright (c) 2026, mp0rta
+ */
+
 #ifndef _XQC_MP21_COMPLIANCE_TEST_H
 #define _XQC_MP21_COMPLIANCE_TEST_H
 
@@ -17,10 +21,10 @@
  * mutated by Task 15 callers AFTER xqc_test_mp21_make_conn() returns.
  */
 typedef struct xqc_test_mp21_conn_params_s {
-    uint64_t    local_max_path_id;
-    uint64_t    remote_max_path_id;
-    uint8_t     scid_len;
-    uint8_t     dcid_len;
+    uint64_t local_max_path_id;
+    uint64_t remote_max_path_id;
+    uint8_t scid_len;
+    uint8_t dcid_len;
 } xqc_test_mp21_conn_params_t;
 
 xqc_connection_t *xqc_test_mp21_make_conn(const xqc_test_mp21_conn_params_t *p);

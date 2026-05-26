@@ -1,5 +1,5 @@
 /**
- * @copyright Copyright (c) 2026, mqvpn project
+ * @copyright Copyright (c) 2026, mp0rta
  *
  * PR3 Chunk 1: validates the three-stage xqc_path_create() refactor.
  *
@@ -24,9 +24,8 @@
 #include "xqc_test_path_hard_cap.h"
 
 /* xqc_path_create has no public prototype — used via direct linkage. */
-extern xqc_path_ctx_t *xqc_path_create(xqc_connection_t *conn,
-                                       xqc_cid_t *scid, xqc_cid_t *dcid,
-                                       uint64_t path_id);
+extern xqc_path_ctx_t *xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid,
+                                       xqc_cid_t *dcid, uint64_t path_id);
 
 void
 test_path_create_no_heavy_state_on_validation_fail(void)
@@ -53,9 +52,13 @@ test_path_create_no_heavy_state_on_validation_fail(void)
     int found = 0;
     xqc_path_ctx_t *iter;
     xqc_list_head_t *pos, *next;
-    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
+    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list)
+    {
         iter = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
-        if (iter->path_id == 99) { found = 1; break; }
+        if (iter->path_id == 99) {
+            found = 1;
+            break;
+        }
     }
     CU_ASSERT(found == 0);
 
@@ -131,8 +134,8 @@ test_conn_stats_dynamic_paths_info(void)
 
     /* Drive the fill helper directly — bypasses engine hash lookup which
      * the bare-conn fixture does not register into. */
-    extern void xqc_conn_get_stats_internal(xqc_connection_t *conn,
-                                            xqc_conn_stats_t *conn_stats);
+    extern void xqc_conn_get_stats_internal(xqc_connection_t * conn,
+                                            xqc_conn_stats_t * conn_stats);
     xqc_conn_get_stats_internal(conn, &stats);
 
     CU_ASSERT(stats.paths_info_count == 0);
@@ -171,4 +174,3 @@ test_dos_peer_init_max_path_id_max_valid(void)
 
     xqc_test_helper_conn_destroy(conn);
 }
-
