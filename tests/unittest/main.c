@@ -312,6 +312,15 @@ main()
         || !CU_add_test(pSuite, "xqc_test_conn_early_data_reject", xqc_test_conn_early_data_reject)
         || !CU_add_test(pSuite, "xqc_test_send_ctl_update_rtt_ack_delay_cap",
                         xqc_test_send_ctl_update_rtt_ack_delay_cap)
+        /* issue #739: persistent-congestion RTT reset (RFC 9002 §5.2) */
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_persistent_congestion_resets_rtt",
+                        xqc_test_send_ctl_persistent_congestion_resets_rtt)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_persistent_congestion_rtt_reseeds_from_new_sample",
+                        xqc_test_send_ctl_persistent_congestion_rtt_reseeds_from_new_sample)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_single_loss_does_not_reset_rtt",
+                        xqc_test_send_ctl_single_loss_does_not_reset_rtt)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_persistent_congestion_no_rtt_sample_early_return",
+                        xqc_test_send_ctl_persistent_congestion_no_rtt_sample_early_return)
         /* ADD TESTS HERE */)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
