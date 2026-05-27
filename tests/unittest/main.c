@@ -260,7 +260,17 @@ main()
         !CU_add_test(pSuite, "xqc_test_initial_salt_null_byte_regression",
                      xqc_test_initial_salt_null_byte_regression) ||
         !CU_add_test(pSuite, "xqc_test_new_conn_id_zero_len_cid",
-                     xqc_test_new_conn_id_zero_len_cid)
+                     xqc_test_new_conn_id_zero_len_cid) ||
+        !CU_add_test(pSuite, "xqc_test_h3_message_error_code_value",
+                     xqc_test_h3_message_error_code_value) ||
+        !CU_add_test(pSuite, "xqc_test_h3_malformed_headers_uses_message_error",
+                     xqc_test_h3_malformed_headers_uses_message_error) ||
+        !CU_add_test(pSuite, "xqc_test_h3_headers_capacity_uses_internal_error",
+                     xqc_test_h3_headers_capacity_uses_internal_error) ||
+        !CU_add_test(pSuite, "xqc_test_h3_valid_headers_smoke",
+                     xqc_test_h3_valid_headers_smoke) ||
+        !CU_add_test(pSuite, "xqc_test_h3_frame_parse_error_uses_frame_error",
+                     xqc_test_h3_frame_parse_error_uses_frame_error)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();
