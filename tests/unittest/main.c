@@ -321,6 +321,7 @@ main()
                         xqc_test_send_ctl_single_loss_does_not_reset_rtt)
         || !CU_add_test(pSuite, "xqc_test_send_ctl_persistent_congestion_no_rtt_sample_early_return",
                         xqc_test_send_ctl_persistent_congestion_no_rtt_sample_early_return)
+        || !CU_add_test(pSuite, "xqc_test_reno_init_cwnd_override", xqc_test_reno_init_cwnd_override)
         /* ADD TESTS HERE */)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
