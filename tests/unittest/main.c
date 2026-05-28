@@ -250,7 +250,9 @@ main()
         !CU_add_test(pSuite, "xqc_test_h3_uncompressed_fields_size",
                      xqc_test_h3_uncompressed_fields_size) ||
         !CU_add_test(pSuite, "xqc_test_h3_recv_header_field_section_size",
-                     xqc_test_h3_recv_header_field_section_size)
+                     xqc_test_h3_recv_header_field_section_size) ||
+        !CU_add_test(pSuite, "xqc_test_tp_cid_overflow",
+                     xqc_test_tp_cid_overflow)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();
