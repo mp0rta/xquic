@@ -26,4 +26,7 @@ void xqc_test_h3_forbidden_headers_rejected();
 void xqc_test_h3_allowed_headers_pass();
 void xqc_test_h3_blocked_buf_limit();
 
+/* issue #609: RFC 9114 §7.2 control-only frames on request stream */
+void xqc_test_h3_request_frame_unexpected();
+
 #endif // XQUIC_XQC_H3_TEST_H

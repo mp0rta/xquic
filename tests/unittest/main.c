@@ -323,6 +323,7 @@ main()
                         xqc_test_send_ctl_persistent_congestion_no_rtt_sample_early_return)
         || !CU_add_test(pSuite, "xqc_test_reno_init_cwnd_override", xqc_test_reno_init_cwnd_override)
         || !CU_add_test(pSuite, "xqc_test_h3_control_frame_unexpected", xqc_test_h3_control_frame_unexpected)
+        || !CU_add_test(pSuite, "xqc_test_h3_request_frame_unexpected", xqc_test_h3_request_frame_unexpected)
         /* ADD TESTS HERE */)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();

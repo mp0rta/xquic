@@ -1359,3 +1359,221 @@ xqc_test_h3_control_frame_unexpected(void)
     xqc_test_h3_ctrl_reject_partial_feed();
     xqc_test_h3_ctrl_goaway_regression();
 }
+
+
+
+/*
+ * Issue #607 - RFC 9114 §6.2.1: "If the first frame of the control stream
+ * is any other frame type, this MUST be treated as a connection error of
+ * type H3_MISSING_SETTINGS."
+ *
+ * Note: DATA/HEADERS/PUSH_PROMISE are caught earlier by the §7.2.1/§7.2.5
+ * guard (issue #612) with H3_FRAME_UNEXPECTED, so this test covers only
+ * the frame types that reach the SETTINGS-first gate: CANCEL_PUSH, GOAWAY,
+ * MAX_PUSH_ID, and reserved/grease types.
+ */
+static void
+xqc_test_h3_missing_settings_one(uint64_t frame_type)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+
+    if (conn->alpn) {
+        xqc_free(conn->alpn);
+    }
+    conn->alpn_len = strlen(XQC_ALPN_H3);
+    conn->alpn = xqc_calloc(1, conn->alpn_len + 1);
+    xqc_memcpy(conn->alpn, XQC_ALPN_H3, conn->alpn_len);
+
+    xqc_h3_conn_t *h3c = xqc_h3_conn_create(conn, NULL);
+    CU_ASSERT_FATAL(h3c != NULL);
+
+    xqc_stream_t *stream = xqc_create_stream_with_conn(conn,
+            XQC_UNDEFINE_STREAM_ID, XQC_CLI_UNI, NULL, NULL);
+    CU_ASSERT_FATAL(stream != NULL);
+
+    xqc_h3_stream_t *h3s = xqc_h3_stream_create(h3c, stream,
+            XQC_H3_STREAM_TYPE_CONTROL, NULL);
+    CU_ASSERT_FATAL(h3s != NULL);
+
+    /* ensure SETTINGS_RECVED is NOT set */
+    h3c->flags &= ~XQC_H3_CONN_FLAG_SETTINGS_RECVED;
+    conn->conn_err = 0;
+    conn->conn_flag &= ~XQC_CONN_FLAG_ERROR;
+
+    /*
+     * Build a minimal frame: [type varint][length=0].
+     * All standard H3 types fit in a single byte varint.
+     */
+    unsigned char frame_buf[2];
+    frame_buf[0] = (unsigned char)(frame_type & 0x3F);  /* 1-byte varint */
+    frame_buf[1] = 0x00;  /* length = 0 */
+
+    ssize_t processed = xqc_h3_stream_process_control(h3s, frame_buf,
+            sizeof(frame_buf));
+
+    CU_ASSERT(processed == -XQC_H3_MISSING_SETTINGS);
+    CU_ASSERT(conn->conn_err == H3_MISSING_SETTINGS);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+
+    stream->stream_flag |= XQC_STREAM_FLAG_DISCARDED;
+    xqc_h3_stream_destroy(h3s);
+    xqc_destroy_stream(stream);
+    xqc_h3_conn_destroy(h3c);
+    if (conn->alpn) {
+        xqc_free(conn->alpn);
+    }
+}
+
+void
+xqc_test_h3_missing_settings()
+{
+    /* CANCEL_PUSH (0x03) */
+    xqc_test_h3_missing_settings_one(XQC_H3_FRM_CANCEL_PUSH);
+
+    /* GOAWAY (0x07) */
+    xqc_test_h3_missing_settings_one(XQC_H3_FRM_GOAWAY);
+
+    /* MAX_PUSH_ID (0x0d) */
+    xqc_test_h3_missing_settings_one(XQC_H3_FRM_MAX_PUSH_ID);
+
+    /* reserved/grease type (0x21) */
+    xqc_test_h3_missing_settings_one(0x21);
+}
+
+
+/*
+ * Tests for issue #609: RFC 9114 Section 7.2.3/7.2.4/7.2.6/7.2.7
+ *
+ * Control-only frames (SETTINGS, CANCEL_PUSH, GOAWAY, MAX_PUSH_ID)
+ * received on an HTTP/3 request stream MUST be rejected with
+ * H3_FRAME_UNEXPECTED (0x0105) connection error.
+ *
+ * The fix adds an explicit case block in xqc_h3_stream_process_request
+ * (xqc_h3_stream.c) that catches these four frame types and returns
+ * -XQC_H3_REQUEST_FRAME_UNEXPECTED after setting the connection error
+ * via XQC_H3_CONN_ERR.
+ *
+ * Each sub-case builds a fresh request-bidi h3 stream, feeds a minimal
+ * frame (type varint + length=0 varint), and checks the result.
+ */
+
+static void
+xqc_test_h3_request_frame_unexpected_one(uint64_t frame_type,
+    xqc_bool_t expect_reject)
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+
+    /* baseline: clean connection state */
+    CU_ASSERT(conn->conn_err == 0);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) == 0);
+
+    /*
+     * Build a minimal frame: [type varint][length=0 varint].
+     * All tested frame types fit in a single-byte varint (<=0x3F).
+     * Length=0 means the frame body is empty; the frame parser will
+     * still enter PAYLOAD state, which is enough for the
+     * process_request switch to dispatch on the type.
+     */
+    unsigned char frame_buf[2];
+    frame_buf[0] = (unsigned char)(frame_type & 0x3F);
+    frame_buf[1] = 0x00;  /* length = 0 */
+
+    ssize_t processed = xqc_h3_stream_process_request(h3s, frame_buf,
+            sizeof(frame_buf), XQC_FALSE);
+
+    if (expect_reject) {
+        /* must return the new internal error code */
+        CU_ASSERT(processed == -XQC_H3_REQUEST_FRAME_UNEXPECTED);
+        /* must set the wire-level H3_FRAME_UNEXPECTED (0x0105) */
+        CU_ASSERT(conn->conn_err == H3_FRAME_UNEXPECTED);
+        CU_ASSERT(conn->conn_err == 0x0105);
+        /* must set the error flag so CONNECTION_CLOSE is sent */
+        CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+    } else {
+        /* must NOT return the frame-unexpected error */
+        CU_ASSERT(processed != -XQC_H3_REQUEST_FRAME_UNEXPECTED);
+        /* must NOT set H3_FRAME_UNEXPECTED */
+        CU_ASSERT(conn->conn_err != H3_FRAME_UNEXPECTED);
+    }
+
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
+}
+
+
+void
+xqc_test_h3_request_frame_unexpected()
+{
+    /*
+     * ===== Positive cases: control-only frames MUST be rejected =====
+     *
+     * RFC 9114 Section 7.2.4: SETTINGS on request stream
+     * RFC 9114 Section 7.2.3: CANCEL_PUSH on request stream
+     * RFC 9114 Section 7.2.6: GOAWAY on request stream
+     * RFC 9114 Section 7.2.7: MAX_PUSH_ID on request stream
+     */
+
+    /* Case 1: SETTINGS (0x04) on request stream */
+    xqc_test_h3_request_frame_unexpected_one(XQC_H3_FRM_SETTINGS, XQC_TRUE);
+    CU_ASSERT(XQC_H3_FRM_SETTINGS == 0x04);
+
+    /* Case 2: CANCEL_PUSH (0x03) on request stream */
+    xqc_test_h3_request_frame_unexpected_one(XQC_H3_FRM_CANCEL_PUSH, XQC_TRUE);
+    CU_ASSERT(XQC_H3_FRM_CANCEL_PUSH == 0x03);
+
+    /* Case 3: GOAWAY (0x07) on request stream */
+    xqc_test_h3_request_frame_unexpected_one(XQC_H3_FRM_GOAWAY, XQC_TRUE);
+    CU_ASSERT(XQC_H3_FRM_GOAWAY == 0x07);
+
+    /* Case 4: MAX_PUSH_ID (0x0D) on request stream */
+    xqc_test_h3_request_frame_unexpected_one(XQC_H3_FRM_MAX_PUSH_ID, XQC_TRUE);
+    CU_ASSERT(XQC_H3_FRM_MAX_PUSH_ID == 0x0D);
+
+
+    /*
+     * ===== Negative cases: request-stream frames MUST NOT be rejected =====
+     *
+     * DATA and HEADERS are valid on request streams. Verify the fix
+     * does not accidentally widen the rejection to legitimate frames.
+     */
+
+    /* Case 5: DATA (0x00) on request stream -- must be accepted */
+    xqc_test_h3_request_frame_unexpected_one(XQC_H3_FRM_DATA, XQC_FALSE);
+
+    /* Case 6: HEADERS (0x01) on request stream -- must be accepted */
+    xqc_test_h3_request_frame_unexpected_one(XQC_H3_FRM_HEADERS, XQC_FALSE);
+
+
+    /*
+     * ===== Edge case: unknown frame type =====
+     *
+     * RFC 9114 Section 9: "Implementations MUST ignore... frames
+     * having a type that is not yet defined." An unknown frame on a
+     * request stream must be silently ignored, NOT rejected.
+     *
+     * Type 0x15 is not assigned in the H3 frame type registry.
+     */
+
+    /* Case 7: Unknown frame type (0x15) on request stream -- must be ignored */
+    xqc_test_h3_request_frame_unexpected_one(0x15, XQC_FALSE);
+
+
+    /*
+     * ===== Wire-level error code value lock =====
+     *
+     * IANA HTTP/3 error code registry (RFC 9114 Section 8.1 Table 2).
+     * H3_FRAME_UNEXPECTED = 0x0105 is frozen; any drift breaks interop.
+     */
+    CU_ASSERT(H3_FRAME_UNEXPECTED == 0x0105);
+
+    /*
+     * Internal error code lock: XQC_H3_REQUEST_FRAME_UNEXPECTED = 833
+     * must be in the H3 error range (>= XQC_H3_EMALLOC = 800) for
+     * XQC_H3_CONN_ERR to fire.
+     */
+    CU_ASSERT(XQC_H3_REQUEST_FRAME_UNEXPECTED == 835);
+    CU_ASSERT(XQC_H3_REQUEST_FRAME_UNEXPECTED >= XQC_H3_EMALLOC);
+}

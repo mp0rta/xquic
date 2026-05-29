@@ -281,4 +281,7 @@ xqc_h3_stream_path_metrics_destroy(xqc_h3_stream_t *h3s)
 ssize_t xqc_h3_stream_process_control(xqc_h3_stream_t *h3s, unsigned char *data,
     size_t data_len);
 
+ssize_t xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data,
+    size_t data_len, xqc_bool_t fin_flag);
+
 #endif
