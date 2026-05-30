@@ -19,4 +19,9 @@ void xqc_test_h3_headers_capacity_uses_internal_error();
 void xqc_test_h3_valid_headers_smoke();
 void xqc_test_h3_frame_parse_error_uses_frame_error();
 
+/* issue #746: RFC 9114 §4.2 forbidden connection-specific headers */
+void xqc_test_h3_message_error_enum();
+void xqc_test_h3_forbidden_headers_rejected();
+void xqc_test_h3_allowed_headers_pass();
+
 #endif // XQUIC_XQC_H3_TEST_H

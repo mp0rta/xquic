@@ -270,7 +270,13 @@ main()
         !CU_add_test(pSuite, "xqc_test_h3_valid_headers_smoke",
                      xqc_test_h3_valid_headers_smoke) ||
         !CU_add_test(pSuite, "xqc_test_h3_frame_parse_error_uses_frame_error",
-                     xqc_test_h3_frame_parse_error_uses_frame_error)
+                     xqc_test_h3_frame_parse_error_uses_frame_error) ||
+        !CU_add_test(pSuite, "xqc_test_h3_message_error_enum",
+                     xqc_test_h3_message_error_enum) ||
+        !CU_add_test(pSuite, "xqc_test_h3_forbidden_headers_rejected",
+                     xqc_test_h3_forbidden_headers_rejected) ||
+        !CU_add_test(pSuite, "xqc_test_h3_allowed_headers_pass",
+                     xqc_test_h3_allowed_headers_pass)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();

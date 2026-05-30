@@ -904,3 +904,81 @@ xqc_test_h3_frame_parse_error_uses_frame_error()
 
     xqc_h3_msgerr_teardown(h3s, h3c, conn);
 }
+
+void
+xqc_test_h3_message_error_enum()
+{
+    CU_ASSERT(H3_MESSAGE_ERROR == 0x10E);
+}
+
+
+void
+xqc_test_h3_forbidden_headers_rejected()
+{
+    /* transfer-encoding: always forbidden */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden(
+        (const unsigned char *)"transfer-encoding", 17,
+        (const unsigned char *)"chunked", 7) == XQC_TRUE);
+
+    /* keep-alive: always forbidden */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden(
+        (const unsigned char *)"keep-alive", 10,
+        (const unsigned char *)"timeout=5", 9) == XQC_TRUE);
+
+    /* proxy-connection: always forbidden */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden(
+        (const unsigned char *)"proxy-connection", 16,
+        (const unsigned char *)"keep-alive", 10) == XQC_TRUE);
+
+    /* te with non-trailers value: forbidden */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden(
+        (const unsigned char *)"te", 2,
+        (const unsigned char *)"chunked", 7) == XQC_TRUE);
+
+    /* te with non-trailers value in mixed case: still forbidden */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden(
+        (const unsigned char *)"te", 2,
+        (const unsigned char *)"Chunked", 7) == XQC_TRUE);
+}
+
+
+
+
+void
+xqc_test_h3_allowed_headers_pass()
+{
+    /* content-type: normal header, never forbidden */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden(
+        (const unsigned char *)"content-type", 12,
+        (const unsigned char *)"text/html", 9) == XQC_FALSE);
+
+    /* te with value "trailers": RFC exception, allowed */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden(
+        (const unsigned char *)"te", 2,
+        (const unsigned char *)"trailers", 8) == XQC_FALSE);
+
+    /* te with value "Trailers" (mixed case): QPACK sends lowercase, reject non-exact */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden(
+        (const unsigned char *)"te", 2,
+        (const unsigned char *)"Trailers", 8) == XQC_TRUE);
+
+    /* te with value "TRAILERS" (all caps): same reasoning */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden(
+        (const unsigned char *)"te", 2,
+        (const unsigned char *)"TRAILERS", 8) == XQC_TRUE);
+
+    /* connection: allowed for WebSocket-over-HTTP/3 (Connection: Upgrade) */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden(
+        (const unsigned char *)"connection", 10,
+        (const unsigned char *)"Upgrade", 7) == XQC_FALSE);
+
+    /* upgrade: allowed for WebSocket-over-HTTP/3 (Upgrade: websocket) */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden(
+        (const unsigned char *)"upgrade", 7,
+        (const unsigned char *)"websocket", 9) == XQC_FALSE);
+
+    /* host: normal header */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden(
+        (const unsigned char *)"host", 4,
+        (const unsigned char *)"example.com", 11) == XQC_FALSE);
+}
