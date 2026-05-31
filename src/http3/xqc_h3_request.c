@@ -1,5 +1,6 @@
 /**
  * @copyright Copyright (c) 2022, Alibaba Group Holding Limited
+ * @copyright Copyright (c) 2026, mp0rta
  */
 #include <inttypes.h>
 #include "src/http3/xqc_h3_request.h"

@@ -1,5 +1,6 @@
 /**
  * @copyright Copyright (c) 2022, Alibaba Group Holding Limited
+ * @copyright Copyright (c) 2026, mp0rta
  */
 
 #ifndef _XQC_FRAME_PARSER_H_INCLUDED_
