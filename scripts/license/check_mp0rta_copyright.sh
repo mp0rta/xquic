@@ -26,7 +26,7 @@ while IFS= read -r f; do
         *) continue ;;
     esac
     if ! head -20 "$f" | grep -qE 'Copyright.*mp0rta'; then
-        echo "::error file=$f::Missing mp0rta @copyright in fork-added file"
+        echo "FAIL: $f: Missing mp0rta @copyright in fork-added file" >&2
         violations=$((violations + 1))
     fi
 done < <(git diff --name-only --diff-filter=A upstream/main..HEAD)

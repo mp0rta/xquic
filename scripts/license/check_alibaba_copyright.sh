@@ -31,7 +31,7 @@ while IFS= read -r f; do
     if git show "upstream/main:$f" 2>/dev/null | grep -qE 'Copyright.*Alibaba'; then
         # Verify HEAD still has it
         if ! grep -qE 'Copyright.*Alibaba' "$f"; then
-            echo "::error file=$f::Alibaba copyright line removed"
+            echo "FAIL: $f: Alibaba copyright line removed" >&2
             violations=$((violations + 1))
         fi
     fi
