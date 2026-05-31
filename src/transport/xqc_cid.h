@@ -98,6 +98,11 @@ void xqc_cid_set_inner_init(xqc_cid_set_inner_t *cid_set_inner);
 void xqc_cid_set_inner_destroy(xqc_cid_set_inner_t *cid_set_inner);
 xqc_cid_set_inner_t* xqc_get_path_cid_set(xqc_cid_set_t *cid_set, uint64_t path_id); 
 int64_t xqc_cid_set_get_unused_cnt(xqc_cid_set_t *cid_set, uint64_t path_id);
+
+/* Non-mutating: returns 1 if at least one UNUSED cid exists for path_id, else 0.
+ * Thin wrapper over xqc_cid_set_get_unused_cnt for validation-stage readability. */
+int xqc_cid_set_has_unused(xqc_cid_set_t *cid_set, uint64_t path_id);
+
 int64_t xqc_cid_set_get_used_cnt(xqc_cid_set_t *cid_set, uint64_t path_id);\
 int64_t xqc_cid_set_get_retired_cnt(xqc_cid_set_t *cid_set, uint64_t path_id);
 int64_t xqc_cid_set_get_largest_seq_or_rpt(xqc_cid_set_t *cid_set, uint64_t path_id);

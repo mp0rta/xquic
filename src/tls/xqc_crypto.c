@@ -7,6 +7,7 @@
 #include "src/common/xqc_str.h"
 #include "src/common/xqc_malloc.h"
 #include "src/common/utils/vint/xqc_variable_len_int.h"
+#include <xquic/xqc_errno.h>
 
 
 #define XQC_NONCE_LEN        16
@@ -75,6 +76,18 @@ xqc_ckm_free(xqc_crypto_km_t *ckm)
 
     xqc_aead_ctx_free(ckm->aead_ctx);
     ckm->aead_ctx = NULL;
+}
+
+xqc_int_t
+xqc_crypto_check_mp_nonce_len(uint8_t multipath_enabled, size_t noncelen)
+{
+    if (!multipath_enabled) {
+        return XQC_OK;
+    }
+    if (noncelen < 12) {
+        return -TRA_TRANSPORT_PARAMETER_ERROR;
+    }
+    return XQC_OK;
 }
 
 /* set aead suites, cipher suites and digest suites */

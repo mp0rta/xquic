@@ -1,5 +1,6 @@
 /**
  * @copyright Copyright (c) 2022, Alibaba Group Holding Limited
+ * @copyright Copyright (c) 2026, mp0rta
  */
 
 #include "src/transport/xqc_multipath.h"
@@ -14,6 +15,7 @@
 #include "src/transport/xqc_frame_parser.h"
 #include "src/transport/xqc_datagram.h"
 #include "src/transport/xqc_recv_timestamps_info.h"
+#include "src/http3/xqc_h3_stream.h"
 
 #include "src/common/xqc_common.h"
 #include "src/common/xqc_malloc.h"
@@ -73,16 +75,172 @@ xqc_path_destroy(xqc_path_ctx_t *path)
     xqc_free((void *)path);
 }
 
+/* draft-21 §3.1.1 — path_id MUST NOT exceed local_max_path_id. The
+ * common-case caller chain is "frame parsed -> validate -> frame handler",
+ * so this helper exists to keep the boilerplate consistent across the
+ * six PATH_* / MAX_PATH_ID processors in xqc_frame.c. The caller is
+ * responsible for the XQC_CONN_ERR + log statement to preserve the
+ * existing frame-specific log format. */
+xqc_int_t
+xqc_validate_recv_path_id(xqc_connection_t *conn, uint64_t path_id)
+{
+    if (path_id > conn->local_max_path_id) {
+        return -TRA_PROTOCOL_VIOLATION;
+    }
+    return XQC_OK;
+}
+
+/* draft-21 §3.1: once multipath is negotiated (initial_max_path_id TP
+ * present on both sides), zero-length Source/Destination Connection IDs
+ * are forbidden. Packets are demultiplexed across paths by DCID, so a
+ * zero-length CID would collapse the per-path identity. Either endpoint
+ * observing scid_len == 0 or dcid_len == 0 on a multipath connection
+ * MUST close with PROTOCOL_VIOLATION. Returns XQC_OK when both lengths
+ * are non-zero, -TRA_PROTOCOL_VIOLATION otherwise. */
+xqc_int_t
+xqc_validate_mp_cid_lengths(uint8_t scid_len, uint8_t dcid_len)
+{
+    if (scid_len == 0 || dcid_len == 0) {
+        return -TRA_PROTOCOL_VIOLATION;
+    }
+    return XQC_OK;
+}
+
+#define XQC_ABANDONED_PATH_BITMAP_BITS  256
+
+void
+xqc_conn_mark_path_abandoned(xqc_connection_t *conn, uint64_t path_id)
+{
+    if (path_id >= XQC_ABANDONED_PATH_BITMAP_BITS) {
+        xqc_log(conn->log, XQC_LOG_WARN,
+                "|abandoned bitmap saturated|path_id %ui >= %d"
+                "|silent-ignore semantics degraded"
+                "|TODO bump XQC_ABANDONED_PATH_BITMAP_BITS or switch to hash set|",
+                path_id, XQC_ABANDONED_PATH_BITMAP_BITS);
+        return;
+    }
+    conn->abandoned_path_ids[path_id >> 6] |= (uint64_t)1 << (path_id & 63);
+}
+
+xqc_bool_t
+xqc_conn_is_path_abandoned(xqc_connection_t *conn, uint64_t path_id)
+{
+    if (path_id >= XQC_ABANDONED_PATH_BITMAP_BITS) {
+        xqc_log(conn->log, XQC_LOG_WARN,
+                "|abandoned bitmap saturated|path_id %ui >= %d"
+                "|silent-ignore semantics degraded"
+                "|TODO bump XQC_ABANDONED_PATH_BITMAP_BITS or switch to hash set|",
+                path_id, XQC_ABANDONED_PATH_BITMAP_BITS);
+        return XQC_FALSE;
+    }
+    return (conn->abandoned_path_ids[path_id >> 6] & ((uint64_t)1 << (path_id & 63)))
+            ? XQC_TRUE : XQC_FALSE;
+}
+
+/* draft-21 §3.2.1 / §4.6 mp21 L2 M3 — MAX_PATH_ID credit grant gate.
+ *
+ * Spec §2.1 / §4.6 verbatim: "endpoints can send the MAX_PATH_ID frame
+ * to increase the maximum allowed path ID". "can" is permissive — the
+ * granter has no MUST/SHOULD obligation. Default 0 = disabled (safe-
+ * default, no auto-grant). Operator opt-in by setting
+ * conn_settings.max_path_id_grant_max_value > 0 enables auto-grant on
+ * PATHS_BLOCKED receipt, bounded by that cap.
+ *
+ * Per-grant magnitude (XQC_MAX_PATH_ID_GRANT_INCREMENT) and rate-limit
+ * interval (1 PTO) are implementation-defined; spec is silent.
+ */
+uint64_t
+xqc_try_grant_max_path_id(xqc_connection_t *conn)
+{
+    uint64_t cap = conn->conn_settings.max_path_id_grant_max_value;
+    if (cap == 0 || conn->local_max_path_id >= cap) {
+        return 0;
+    }
+    if (conn->conn_initial_path == NULL
+        || conn->conn_initial_path->path_send_ctl == NULL)
+    {
+        return 0;
+    }
+    xqc_usec_t now = xqc_monotonic_timestamp();
+    xqc_usec_t pto = xqc_send_ctl_calc_pto(conn->conn_initial_path->path_send_ctl);
+    if (conn->last_max_path_id_grant_us != 0
+        && (now - conn->last_max_path_id_grant_us) < pto)
+    {
+        return 0;
+    }
+
+    uint64_t new_max = conn->local_max_path_id + XQC_MAX_PATH_ID_GRANT_INCREMENT;
+    if (new_max > cap) {
+        new_max = cap;
+    }
+    conn->local_max_path_id = new_max;
+    conn->last_max_path_id_grant_us = now;
+    return new_max;
+}
+
+xqc_max_path_id_validation_t
+xqc_validate_max_path_id(xqc_connection_t *conn, uint64_t value)
+{
+    if (value > 0xFFFFFFFFULL) {
+        return XQC_MAX_PATH_ID_BAD_TOO_LARGE;
+    }
+    if (value < conn->remote_settings.init_max_path_id) {
+        return XQC_MAX_PATH_ID_BAD_BELOW_INIT;
+    }
+    if (value <= conn->remote_max_path_id) {
+        return XQC_MAX_PATH_ID_IGNORE_STALE;
+    }
+    return XQC_MAX_PATH_ID_ACCEPT;
+}
+
 xqc_path_ctx_t *
 xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid, xqc_cid_t *dcid, uint64_t path_id)
 {
     xqc_path_ctx_t *path = NULL;
 
-    if (conn->create_path_count >= XQC_MAX_PATHS_COUNT) {
-        xqc_log(conn->log, XQC_LOG_ERROR, 
-                "|too many paths|current maximum:%d|", XQC_MAX_PATHS_COUNT);
+    /* Stage 1: lightweight validation. No heavy allocation on failure.
+     * draft-21 §4.5: an Abandoned path_id MUST NOT be recycled by the
+     * local endpoint. §4.6: path_id MUST be <= max(remote init_max_path_id,
+     * local_max_path_id). */
+    if (path_id > conn->remote_settings.init_max_path_id
+        && path_id > conn->local_max_path_id) {
+        /* Defensive invariant guard per §4.6. Reachable only via direct
+         * xqc_path_create_inner from server-side PATH_CHALLENGE receive
+         * (xqc_frame.c:1744) — semantically a peer protocol violation;
+         * the G-P16 PATHS_BLOCKED emit (which used to live here) belongs
+         * to the local-side block scenario at xqc_conn_create_path
+         * NO_AVAIL site, not the peer-violation case. */
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|path_id %ui out of range|init=%ui|local=%ui|",
+                path_id, conn->remote_settings.init_max_path_id,
+                conn->local_max_path_id);
         return NULL;
     }
+    if (xqc_conn_is_path_abandoned(conn, path_id)) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|refuse to recycle abandoned path_id|%ui|", path_id);
+        return NULL;
+    }
+    if (scid == NULL && xqc_cid_set_has_unused(&conn->scid_set, path_id) == 0) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|no unused scid for path_id|%ui|", path_id);
+        return NULL;
+    }
+    if (dcid == NULL && xqc_cid_set_has_unused(&conn->dcid_set, path_id) == 0) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|no unused dcid for path_id|%ui|", path_id);
+        return NULL;
+    }
+
+    /* Stage 2: defensive hard cap. */
+    if (conn->create_path_count >= XQC_PATH_HARD_CAP) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|hard cap reached|%d paths active, cap=%d|",
+                conn->create_path_count, XQC_PATH_HARD_CAP);
+        return NULL;
+    }
+
+    /* Stage 3: heavy allocation. */
 
     path = xqc_calloc(1, sizeof(xqc_path_ctx_t));
     if (path == NULL) {
@@ -299,6 +457,61 @@ xqc_set_path_state(xqc_path_ctx_t *path, xqc_path_state_t dst_state)
 }
 
 xqc_int_t
+xqc_path_validation_on_retx(xqc_path_ctx_t *path)
+{
+    if (path == NULL) {
+        return -XQC_EPARAM;
+    }
+
+    /* Once the path has left VALIDATING (ACTIVE on response match,
+     * CLOSING/CLOSED on explicit close), the counter is irrelevant. */
+    if (path->path_state != XQC_PATH_STATE_VALIDATING) {
+        return XQC_OK;
+    }
+
+    if (path->path_challenge_attempts < UINT8_MAX) {
+        path->path_challenge_attempts++;
+    }
+
+    if (path->path_challenge_attempts >= XQC_PATH_VALIDATION_MAX_ATTEMPTS) {
+        xqc_connection_t *conn = path->parent_conn;
+        xqc_log(conn ? conn->log : NULL, XQC_LOG_WARN,
+                "|G-P3 validation timeout|path_id:%ui|attempts:%ud|",
+                path->path_id, (unsigned)path->path_challenge_attempts);
+        return xqc_path_request_abandon(path, TRA_PATH_UNSTABLE_OR_POOR);
+    }
+    return XQC_OK;
+}
+
+xqc_int_t
+xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code)
+{
+    if (path == NULL) {
+        return -XQC_EPARAM;
+    }
+
+    /* Idempotent: already-closing path has ABANDON queued (or closure recorded). */
+    if (path->path_state >= XQC_PATH_STATE_CLOSING) {
+        return XQC_OK;
+    }
+
+    xqc_connection_t *conn = path->parent_conn;
+
+    if (conn != NULL && conn->conn_send_queue != NULL) {
+        xqc_int_t wret = xqc_write_path_abandon_frame_to_packet(conn, path, error_code);
+        if (wret != XQC_OK) {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|xqc_write_path_abandon_frame_to_packet error|ret:%d|err_code:%ui|",
+                    wret, error_code);
+            /* fall through — state transition still happens */
+        }
+    }
+
+    xqc_set_path_state(path, XQC_PATH_STATE_CLOSING);
+    return XQC_OK;
+}
+
+xqc_int_t
 xqc_path_immediate_close(xqc_path_ctx_t *path)
 {
     if (path->path_state >= XQC_PATH_STATE_CLOSING) {
@@ -308,7 +521,7 @@ xqc_path_immediate_close(xqc_path_ctx_t *path)
     xqc_connection_t *conn = path->parent_conn;
     xqc_int_t ret = XQC_OK;
     
-    ret = xqc_write_path_abandon_frame_to_packet(conn, path);
+    ret = xqc_write_path_abandon_frame_to_packet(conn, path, 0);
     if (ret != XQC_OK) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_write_path_abandon_frame_to_packet error|ret:%d|", ret);
     }
@@ -379,11 +592,14 @@ xqc_conn_enable_multipath(xqc_connection_t *conn)
     if ((conn->local_settings.enable_multipath == 1)
         && (conn->remote_settings.enable_multipath == 1))
     {
-        if (conn->dcid_set.current_dcid.cid_len == 0
-            || conn->scid_set.user_scid.cid_len == 0) 
+        if (xqc_validate_mp_cid_lengths(conn->scid_set.user_scid.cid_len,
+                                        conn->dcid_set.current_dcid.cid_len) != XQC_OK)
         {
-            xqc_log(conn->log, XQC_LOG_ERROR, "|zero-length DCID|");
-            XQC_CONN_ERR(conn, TRA_MP_PROTOCOL_VIOLATION);
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|zero-length CID forbidden with multipath|scid:%ud|dcid:%ud|",
+                    conn->scid_set.user_scid.cid_len,
+                    conn->dcid_set.current_dcid.cid_len);
+            XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
             return XQC_CONN_MP_DISABLED;
         }
 
@@ -417,6 +633,7 @@ xqc_conn_is_current_mp_version_supported(xqc_multipath_version_t mp_version)
     xqc_int_t ret;
     switch (mp_version) {
     case XQC_MULTIPATH_10:
+    case XQC_MULTIPATH_3E:
         ret = XQC_OK;
         break;
     default:
@@ -454,6 +671,26 @@ xqc_conn_create_path(xqc_engine_t *engine, const xqc_cid_t *scid, uint64_t *new_
         conn->conn_flag |= XQC_CONN_FLAG_MP_WAIT_MP_READY;
         xqc_log(conn->log, XQC_LOG_WARN,
                 "|don't have available cid for new path|");
+
+        /* G-P16 (draft-21 §3.2.1 ¶7 / §4.7): we are unable to create a new
+         * path because the path_id namespace is exhausted (peer has not
+         * issued CIDs for higher path_ids, which only happens when the
+         * negotiated cap is reached). Signal peer to expand the cap.
+         * PTO-rate-limited like the Stage 1 site so retry storms don't
+         * flood the wire. */
+        xqc_usec_t now = xqc_monotonic_timestamp();
+        xqc_usec_t pto = xqc_conn_get_max_pto(conn);
+        if (conn->last_paths_blocked_sent_us == 0
+            || (now - conn->last_paths_blocked_sent_us) >= pto) {
+            uint64_t observed_cap = xqc_max(conn->remote_settings.init_max_path_id,
+                                            conn->local_max_path_id);
+            if (xqc_write_paths_blocked_frame_to_packet(conn, observed_cap) == XQC_OK) {
+                conn->last_paths_blocked_sent_us = now;
+                xqc_log(conn->log, XQC_LOG_INFO,
+                        "|PATHS_BLOCKED sent|max_path_id:%ui|", observed_cap);
+            }
+        }
+
         return -XQC_EMP_NO_AVAIL_PATH_ID;
     }
 
@@ -636,54 +873,77 @@ xqc_conn_path_metrics_print(xqc_connection_t *conn, xqc_conn_stats_t *stats)
         stats->mp_state = (conn->validated_path_count > 1) ? 1 : 2;
     }
 
+    /* Count eligible paths first so we can allocate exactly. Eligibility =
+     * ACTIVE state plus non-NULL path_send_ctl (the metrics fill dereferences
+     * it). */
     xqc_list_head_t *pos, *next;
     xqc_path_ctx_t *path = NULL;
-    int paths_num = 0;
+    size_t active_count = 0;
 
     xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
         path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
-        if (path->path_state >= XQC_PATH_STATE_ACTIVE && paths_num < XQC_MAX_PATHS_COUNT) {
+        if (path == NULL || path->path_send_ctl == NULL) {
+            continue;
+        }
+        if (path->path_state >= XQC_PATH_STATE_ACTIVE) {
+            active_count++;
+        }
+    }
 
-            if (path == NULL || path->path_send_ctl == NULL) {
-                continue;
-            }
+    stats->paths_info = NULL;
+    stats->paths_info_count = 0;
 
-            stats->paths_info[paths_num].path_id = path->path_id;
-            stats->paths_info[paths_num].path_pkt_recv_count = path->path_send_ctl->ctl_recv_count;
-            stats->paths_info[paths_num].path_pkt_send_count = path->path_send_ctl->ctl_send_count;
-            stats->paths_info[paths_num].path_send_bytes = path->path_send_ctl->ctl_app_bytes_send;
-            stats->paths_info[paths_num].path_recv_bytes = path->path_send_ctl->ctl_app_bytes_recv;
-            stats->paths_info[paths_num].path_app_status = path->app_path_status;
+    if (active_count == 0) {
+        return;
+    }
+
+    stats->paths_info = xqc_calloc(active_count, sizeof(xqc_path_metrics_t));
+    if (stats->paths_info == NULL) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|paths_info calloc failed|n=%zu|", active_count);
+        return;
+    }
+
+    size_t idx = 0;
+    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
+        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+        if (path == NULL || path->path_send_ctl == NULL) {
+            continue;
+        }
+        if (path->path_state >= XQC_PATH_STATE_ACTIVE && idx < active_count) {
+            xqc_path_metrics_t *m = &stats->paths_info[idx];
+            m->path_id              = path->path_id;
+            m->path_pkt_recv_count  = path->path_send_ctl->ctl_recv_count;
+            m->path_pkt_send_count  = path->path_send_ctl->ctl_send_count;
+            m->path_send_bytes      = path->path_send_ctl->ctl_app_bytes_send;
+            m->path_recv_bytes      = path->path_send_ctl->ctl_app_bytes_recv;
+            m->path_app_status      = path->app_path_status;
 
             /* Extended scheduler metrics */
-            stats->paths_info[paths_num].path_srtt = path->path_send_ctl->ctl_srtt;
-            stats->paths_info[paths_num].path_min_rtt = path->path_send_ctl->ctl_minrtt;
-            stats->paths_info[paths_num].path_bytes_in_flight =
-                path->path_send_ctl->ctl_bytes_in_flight;
-            stats->paths_info[paths_num].path_est_bw =
-                xqc_send_ctl_get_est_bw(path->path_send_ctl);
-            stats->paths_info[paths_num].path_pacing_rate =
-                xqc_send_ctl_get_pacing_rate(path->path_send_ctl);
-            stats->paths_info[paths_num].path_lost_count =
-                path->path_send_ctl->ctl_lost_count;
-            stats->paths_info[paths_num].path_state = path->path_state;
+            m->path_srtt            = path->path_send_ctl->ctl_srtt;
+            m->path_min_rtt         = path->path_send_ctl->ctl_minrtt;
+            m->path_bytes_in_flight = path->path_send_ctl->ctl_bytes_in_flight;
+            m->path_est_bw          = xqc_send_ctl_get_est_bw(path->path_send_ctl);
+            m->path_pacing_rate     = xqc_send_ctl_get_pacing_rate(path->path_send_ctl);
+            m->path_lost_count      = path->path_send_ctl->ctl_lost_count;
+            m->path_state           = path->path_state;
             if (path->path_send_ctl->ctl_cong_callback
                 && path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd)
             {
-                stats->paths_info[paths_num].path_cwnd =
-                    path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(
-                        path->path_send_ctl->ctl_cong);
+                m->path_cwnd = path->path_send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(
+                                   path->path_send_ctl->ctl_cong);
             }
 
             if (path->app_path_status == XQC_APP_PATH_STATUS_STANDBY) {
-                stats->standby_path_app_bytes += path->path_send_ctl->ctl_app_bytes_send + path->path_send_ctl->ctl_app_bytes_recv;
+                stats->standby_path_app_bytes +=
+                    path->path_send_ctl->ctl_app_bytes_send + path->path_send_ctl->ctl_app_bytes_recv;
             }
-
-            stats->total_app_bytes += path->path_send_ctl->ctl_app_bytes_send + path->path_send_ctl->ctl_app_bytes_recv;
-
-            paths_num++;
+            stats->total_app_bytes +=
+                path->path_send_ctl->ctl_app_bytes_send + path->path_send_ctl->ctl_app_bytes_recv;
+            idx++;
         }
     }
+    stats->paths_info_count = (uint32_t)idx;
 }
 
 
@@ -707,14 +967,16 @@ xqc_request_path_metrics_print(xqc_connection_t *conn, xqc_h3_stream_t *h3_strea
     xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
         path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
 
-        if (path->path_id < XQC_MAX_PATHS_COUNT
-            && path->path_id == h3_stream->paths_info[path->path_id].path_id)
-        {
-            uint64_t send_bytes = h3_stream->paths_info[path->path_id].path_send_bytes;
-            uint64_t recv_bytes = h3_stream->paths_info[path->path_id].path_recv_bytes;
+        /* PR3 §4.3 Rev 4: dynamic h3 stream paths_info — look up by path_id
+         * instead of indexing into a fixed array. */
+        xqc_path_metrics_t *hm =
+            xqc_h3_stream_path_metrics_find(h3_stream, path->path_id);
+        if (hm != NULL) {
+            uint64_t send_bytes = hm->path_send_bytes;
+            uint64_t recv_bytes = hm->path_recv_bytes;
 
-            h3_stream->paths_info[path->path_id].path_srtt = path->path_send_ctl->ctl_srtt;
-            h3_stream->paths_info[path->path_id].path_app_status = path->app_path_status;
+            hm->path_srtt = path->path_send_ctl->ctl_srtt;
+            hm->path_app_status = path->app_path_status;
 
             if (send_bytes > 0 || recv_bytes > 0) {
                 aggregate_send_bytes += send_bytes;
@@ -783,7 +1045,11 @@ xqc_stream_path_metrics_print(xqc_connection_t *conn, xqc_stream_t *stream, char
                 break;
             }
 
-            if (path->path_id >= XQC_MAX_PATHS_COUNT) {
+            /* PR3 §4.3 Rev 4: per-stream path metrics are now sparse.
+             * Skip paths that have never had per-stream accounting. */
+            xqc_path_metrics_t *sm =
+                xqc_stream_path_metrics_find(stream, path->path_id);
+            if (sm == NULL) {
                 continue;
             }
 
@@ -805,14 +1071,14 @@ xqc_stream_path_metrics_print(xqc_connection_t *conn, xqc_stream_t *stream, char
                            xqc_send_ctl_get_srtt(send_ctl),
                            xqc_send_ctl_get_retrans_rate(send_ctl),
                            xqc_send_ctl_get_spurious_loss_rate(send_ctl),
-                           stream->paths_info[path->path_id].path_pkt_send_count,
-                           stream->paths_info[path->path_id].path_pkt_recv_count,
-                           stream->paths_info[path->path_id].path_send_bytes,
-                           stream->paths_info[path->path_id].path_send_reinject_bytes,
-                           stream->paths_info[path->path_id].path_recv_bytes,
-                           stream->paths_info[path->path_id].path_recv_reinject_bytes,
-                           stream->paths_info[path->path_id].path_recv_effective_bytes,
-                           stream->paths_info[path->path_id].path_recv_effective_reinject_bytes);
+                           sm->path_pkt_send_count,
+                           sm->path_pkt_recv_count,
+                           sm->path_send_bytes,
+                           sm->path_send_reinject_bytes,
+                           sm->path_recv_bytes,
+                           sm->path_recv_reinject_bytes,
+                           sm->path_recv_effective_bytes,
+                           sm->path_recv_effective_reinject_bytes);
             cursor += ret;
         }
     }
@@ -827,13 +1093,16 @@ xqc_stream_path_metrics_on_send(xqc_connection_t *conn, xqc_packet_out_t *po)
         {
             xqc_stream_t * stream = xqc_find_stream_by_id(po->po_stream_frames[i].ps_stream_id, conn->streams_hash);
 
-            if (stream != NULL && po->po_path_id < XQC_MAX_PATHS_COUNT) {
-                stream->paths_info[po->po_path_id].path_id = po->po_path_id;
-                stream->paths_info[po->po_path_id].path_pkt_send_count += 1;
-                stream->paths_info[po->po_path_id].path_send_bytes += po->po_stream_frames[i].ps_length;
-
-                if (po->po_flag & XQC_POF_REINJECTED_REPLICA) {
-                    stream->paths_info[po->po_path_id].path_send_reinject_bytes += po->po_stream_frames[i].ps_length;
+            if (stream != NULL) {
+                xqc_path_metrics_t *m =
+                    xqc_stream_path_metrics_get_or_grow(stream, po->po_path_id);
+                if (m != NULL) {
+                    m->path_id = po->po_path_id;
+                    m->path_pkt_send_count += 1;
+                    m->path_send_bytes += po->po_stream_frames[i].ps_length;
+                    if (po->po_flag & XQC_POF_REINJECTED_REPLICA) {
+                        m->path_send_reinject_bytes += po->po_stream_frames[i].ps_length;
+                    }
                 }
             }
 
@@ -848,9 +1117,11 @@ xqc_stream_path_metrics_on_send(xqc_connection_t *conn, xqc_packet_out_t *po)
 void
 xqc_stream_path_metrics_on_recv(xqc_connection_t *conn, xqc_stream_t *stream, xqc_packet_in_t *pi)
 {
-    if (pi->pi_path_id < XQC_MAX_PATHS_COUNT) {
-        stream->paths_info[pi->pi_path_id].path_id = pi->pi_path_id;
-        stream->paths_info[pi->pi_path_id].path_pkt_recv_count += 1;
+    xqc_path_metrics_t *m =
+        xqc_stream_path_metrics_get_or_grow(stream, pi->pi_path_id);
+    if (m != NULL) {
+        m->path_id = pi->pi_path_id;
+        m->path_pkt_recv_count += 1;
     }
 }
 
@@ -966,6 +1237,43 @@ xqc_is_same_addr(const struct sockaddr *sa1, const struct sockaddr *sa2)
     }
 
     return XQC_TRUE;
+}
+
+/*
+ * IP-only comparator. Mirrors xqc_is_same_addr() minus the port
+ * comparison so callers can detect §9.4 ¶1 port-only changes vs
+ * IP changes on path migration / NAT rebinding validation.
+ */
+xqc_bool_t
+xqc_is_same_ip(const struct sockaddr *sa1, const struct sockaddr *sa2)
+{
+    struct sockaddr_in   *sin1, *sin2;
+    struct sockaddr_in6  *sin61, *sin62;
+
+    if (sa1->sa_family != sa2->sa_family) {
+        return XQC_FALSE;
+    }
+
+    switch (sa1->sa_family) {
+
+        case AF_INET6:
+            sin61 = (struct sockaddr_in6 *) sa1;
+            sin62 = (struct sockaddr_in6 *) sa2;
+
+            /* sin6_scope_id intentionally NOT compared: link-local
+             * cross-iface rebinding is not a supported migration
+             * scenario. Treating "same bytes + different scope_id" as
+             * "same IP" suppresses spurious resets in the rare case
+             * it happens, without affecting correctness. */
+            return memcmp(&sin61->sin6_addr, &sin62->sin6_addr, 16) == 0
+                ? XQC_TRUE : XQC_FALSE;
+
+        default: /* AF_INET */
+            sin1 = (struct sockaddr_in *) sa1;
+            sin2 = (struct sockaddr_in *) sa2;
+            return sin1->sin_addr.s_addr == sin2->sin_addr.s_addr
+                ? XQC_TRUE : XQC_FALSE;
+    }
 }
 
 xqc_bool_t
@@ -1225,6 +1533,50 @@ xqc_path_is_full(xqc_path_ctx_t *path)
     uint64_t bytes_on_path = path->path_schedule_bytes + ctl->ctl_bytes_in_flight;
     uint64_t cwnd = ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(ctl->ctl_cong);
     return (bytes_on_path + xqc_conn_get_mss(path->parent_conn)) > cwnd;
+}
+
+xqc_path_ctx_t *
+xqc_conn_pick_alt_active_path(xqc_connection_t *conn, xqc_path_ctx_t *exclude)
+{
+    /* draft-21 §3.4 ¶3 RECOMMENDS sending PATH_ABANDON on "another open path".
+     * The §3 path state model treats both AVAILABLE and STANDBY as open
+     * (non-CLOSING/CLOSED) paths usable for control traffic. Prefer AVAILABLE
+     * (lowest path_id) when present; otherwise fall back to STANDBY
+     * (lowest path_id). This avoids returning NULL — and thus emitting on the
+     * to-be-abandoned (possibly broken) path — when the only AVAILABLE path
+     * is the exclude target but a healthy STANDBY exists. */
+    xqc_path_ctx_t *best_available = NULL;
+    xqc_path_ctx_t *best_standby   = NULL;
+    xqc_path_ctx_t *path;
+    xqc_list_head_t *pos, *next;
+
+    if (conn == NULL) {
+        return NULL;
+    }
+
+    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
+        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+        if (path == exclude) {
+            continue;
+        }
+        if (path->path_state != XQC_PATH_STATE_ACTIVE) {
+            continue;
+        }
+        if (path->app_path_status == XQC_APP_PATH_STATUS_AVAILABLE) {
+            if (best_available == NULL || path->path_id < best_available->path_id) {
+                best_available = path;
+            }
+        } else if (path->app_path_status == XQC_APP_PATH_STATUS_STANDBY) {
+            if (best_standby == NULL || path->path_id < best_standby->path_id) {
+                best_standby = path;
+            }
+        }
+    }
+
+    if (best_available != NULL) {
+        return best_available;
+    }
+    return best_standby;
 }
 
 xqc_int_t

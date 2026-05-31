@@ -1,5 +1,6 @@
 /**
  * @copyright Copyright (c) 2022, Alibaba Group Holding Limited
+ * @copyright Copyright (c) 2026, mp0rta
  */
 
 #ifndef _XQUIC_H_INCLUDED_
@@ -1315,7 +1316,8 @@ typedef struct xqc_linger_s {
 
 typedef enum {
     XQC_ERR_MULTIPATH_VERSION   = 0x00,
-    XQC_MULTIPATH_10            = 0x0a, 
+    XQC_MULTIPATH_10            = 0x0a,
+    XQC_MULTIPATH_3E            = 0x3e, /* draft-ietf-quic-multipath-21 wire codepoints */
 } xqc_multipath_version_t;
 
 typedef enum {
@@ -1539,7 +1541,20 @@ typedef struct xqc_conn_settings_s {
     uint8_t                     client_scid[XQC_MAX_CID_LEN];
     uint8_t                     specify_client_dcid;
     uint8_t                     client_dcid[XQC_MAX_CID_LEN];
-    
+
+    /* draft-21 §3.2.1 / §4.6 MAX_PATH_ID credit grant policy (mp21 L2).
+     *
+     * When the peer sends PATHS_BLOCKED, the local endpoint MAY grant
+     * additional path-id credit by emitting a MAX_PATH_ID frame. Granting
+     * is permissive per spec ("can" in §2.1 / §4.6), so default 0 means
+     * grant is disabled (initial_max_path_id is never grown). Operators
+     * that want auto-grant set this to the desired hard cap (typically
+     * <= 2^32-1); each grant is sized by XQC_MAX_PATH_ID_GRANT_INCREMENT
+     * (default 8) and rate-limited to one grant per PTO. Append-only
+     * field — zero-initialized for ABI-compat with pre-L2 consumers.
+     */
+    uint64_t                    max_path_id_grant_max_value;
+
 } xqc_conn_settings_t;
 
 
@@ -1553,7 +1568,13 @@ typedef enum {
 } xqc_0rtt_flag_t;
 
 
-#define XQC_MAX_PATHS_COUNT 8
+#define XQC_PATH_HARD_CAP   256  /* defensive local hard max; spec §2.1 allows up to 2^32-1 */
+
+_Static_assert(XQC_PATH_HARD_CAP >= 64,
+               "XQC_PATH_HARD_CAP must be >= 64 to support typical multipath scenarios");
+_Static_assert(XQC_PATH_HARD_CAP <= (1ULL << 32) - 1,
+               "XQC_PATH_HARD_CAP must not exceed draft-21 §2.1 ceiling of 2^32-1");
+
 #define XQC_CONN_INFO_LEN 400
 #define XQC_EXTERN_CONN_INFO_LEN 128
 
@@ -1625,7 +1646,21 @@ typedef struct xqc_conn_stats_s {
     int                 total_rebind_count;
     int                 total_rebind_valid;
 
-    xqc_path_metrics_t  paths_info[XQC_MAX_PATHS_COUNT];
+    /**
+     * Active path metrics. Dynamically allocated by xquic.
+     *
+     * Ownership: xquic allocates the buffer; caller MUST free() (libc free,
+     * not xqc_free) the paths_info pointer after use to avoid leaking. On
+     * error returns (e.g. connection not found, allocation failure),
+     * paths_info == NULL and paths_info_count == 0; no free is required in
+     * that case. paths_info_count == 0 may be paired with a NULL paths_info;
+     * free(NULL) is safe.
+     *
+     * PR3 spec §4.3 Rev 4: replaces fixed-size paths_info array (was capped
+     * at 8 paths via the now-removed XQC_MAX_PATHS_COUNT macro).
+     */
+    xqc_path_metrics_t *paths_info;
+    uint32_t            paths_info_count;
     char                conn_info[XQC_CONN_INFO_LEN];
 
     char                alpn[XQC_MAX_ALPN_BUF_LEN];

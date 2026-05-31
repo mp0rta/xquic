@@ -1,4 +1,6 @@
 /**
+ * @copyright Copyright (c) 2026, mp0rta
+ *
  * MASQUE protocol helpers for HTTP/3 Extended CONNECT.
  *
  * Provides:
@@ -18,10 +20,10 @@
 
 /* ── Capsule type constants (RFC 9297 / RFC 9484) ── */
 
-#define XQC_H3_CAPSULE_DATAGRAM              0x00
-#define XQC_H3_CAPSULE_ADDRESS_ASSIGN        0x01
-#define XQC_H3_CAPSULE_ADDRESS_REQUEST       0x02
-#define XQC_H3_CAPSULE_ROUTE_ADVERTISEMENT   0x03
+#define XQC_H3_CAPSULE_DATAGRAM            0x00
+#define XQC_H3_CAPSULE_ADDRESS_ASSIGN      0x01
+#define XQC_H3_CAPSULE_ADDRESS_REQUEST     0x02
+#define XQC_H3_CAPSULE_ROUTE_ADVERTISEMENT 0x03
 
 
 /* ── HTTP Datagram framing (RFC 9297 + RFC 9298) ── */
@@ -40,9 +42,9 @@
  * @param paylen     length of the payload
  * @return XQC_OK on success, negative error code on failure
  */
-xqc_int_t xqc_h3_ext_masque_frame_udp(
-    uint8_t *out, size_t outlen, size_t *written,
-    uint64_t stream_id, const uint8_t *payload, size_t paylen);
+xqc_int_t xqc_h3_ext_masque_frame_udp(uint8_t *out, size_t outlen, size_t *written,
+                                      uint64_t stream_id, const uint8_t *payload,
+                                      size_t paylen);
 
 /**
  * Unframe an HTTP Datagram received via QUIC DATAGRAM.
@@ -57,10 +59,9 @@ xqc_int_t xqc_h3_ext_masque_frame_udp(
  * @param payload_len        [out] length of the payload
  * @return XQC_OK on success, negative error code on failure
  */
-xqc_int_t xqc_h3_ext_masque_unframe_udp(
-    const uint8_t *buf, size_t buflen,
-    uint64_t *quarter_stream_id, uint64_t *context_id,
-    const uint8_t **payload, size_t *payload_len);
+xqc_int_t xqc_h3_ext_masque_unframe_udp(const uint8_t *buf, size_t buflen,
+                                        uint64_t *quarter_stream_id, uint64_t *context_id,
+                                        const uint8_t **payload, size_t *payload_len);
 
 /**
  * Calculate the maximum UDP/IP payload size for a single HTTP Datagram.
@@ -85,9 +86,8 @@ size_t xqc_h3_ext_masque_udp_mss(size_t dgram_mss, uint64_t stream_id);
  * @param paylen   length of the capsule value
  * @return XQC_OK on success, negative error code on failure
  */
-xqc_int_t xqc_h3_ext_capsule_encode(
-    uint8_t *out, size_t outlen, size_t *written,
-    uint64_t type, const uint8_t *payload, size_t paylen);
+xqc_int_t xqc_h3_ext_capsule_encode(uint8_t *out, size_t outlen, size_t *written,
+                                    uint64_t type, const uint8_t *payload, size_t paylen);
 
 /**
  * Decode a capsule header and return a pointer to the payload.
@@ -103,10 +103,9 @@ xqc_int_t xqc_h3_ext_capsule_encode(
  * @param bytes_consumed [out] total capsule size (header + payload_len)
  * @return XQC_OK on success, negative error code on failure
  */
-xqc_int_t xqc_h3_ext_capsule_decode(
-    const uint8_t *buf, size_t buflen,
-    uint64_t *type, const uint8_t **payload, size_t *payload_len,
-    size_t *bytes_consumed);
+xqc_int_t xqc_h3_ext_capsule_decode(const uint8_t *buf, size_t buflen, uint64_t *type,
+                                    const uint8_t **payload, size_t *payload_len,
+                                    size_t *bytes_consumed);
 
 
 /* ── CONNECT-IP capsule types (RFC 9484) ── */
@@ -126,10 +125,8 @@ xqc_int_t xqc_h3_ext_capsule_decode(
  * @return XQC_OK on success, negative error code on failure
  */
 xqc_int_t xqc_h3_ext_connectip_parse_address_assign(
-    const uint8_t *payload, size_t paylen,
-    uint64_t *request_id, uint8_t *ip_version,
-    uint8_t *ip_addr, size_t *ip_addr_len, uint8_t *prefix_len,
-    size_t *bytes_consumed);
+    const uint8_t *payload, size_t paylen, uint64_t *request_id, uint8_t *ip_version,
+    uint8_t *ip_addr, size_t *ip_addr_len, uint8_t *prefix_len, size_t *bytes_consumed);
 
 /**
  * Build an ADDRESS_REQUEST capsule payload (RFC 9484 Section 4.7.2).
@@ -146,10 +143,11 @@ xqc_int_t xqc_h3_ext_connectip_parse_address_assign(
  * @param prefix_len   requested prefix length
  * @return XQC_OK on success, negative error code on failure
  */
-xqc_int_t xqc_h3_ext_connectip_build_address_request(
-    uint8_t *buf, size_t buflen, size_t *written,
-    uint64_t request_id, uint8_t ip_version,
-    const uint8_t *ip_addr, uint8_t prefix_len);
+xqc_int_t xqc_h3_ext_connectip_build_address_request(uint8_t *buf, size_t buflen,
+                                                     size_t *written, uint64_t request_id,
+                                                     uint8_t ip_version,
+                                                     const uint8_t *ip_addr,
+                                                     uint8_t prefix_len);
 
 /**
  * Parse a single ROUTE_ADVERTISEMENT entry (RFC 9484 Section 4.7.3).
@@ -168,15 +166,14 @@ xqc_int_t xqc_h3_ext_connectip_build_address_request(
  * @return XQC_OK on success, negative error code on failure
  */
 xqc_int_t xqc_h3_ext_connectip_parse_route_advertisement(
-    const uint8_t *payload, size_t paylen,
-    uint8_t *ip_version, uint8_t *start_ip, uint8_t *end_ip,
-    size_t *ip_addr_len, uint8_t *ip_protocol, size_t *bytes_consumed);
+    const uint8_t *payload, size_t paylen, uint8_t *ip_version, uint8_t *start_ip,
+    uint8_t *end_ip, size_t *ip_addr_len, uint8_t *ip_protocol, size_t *bytes_consumed);
 
 /**
  * Validate IP packet version and minimum header length (RFC 9484 Section 4.6).
  */
-xqc_int_t xqc_h3_ext_masque_validate_ip_packet(
-    const uint8_t *payload, size_t payload_len);
+xqc_int_t xqc_h3_ext_masque_validate_ip_packet(const uint8_t *payload,
+                                               size_t payload_len);
 
 /**
  * Validate a full ROUTE_ADVERTISEMENT capsule payload (RFC 9484 §4.7.3).
@@ -186,8 +183,8 @@ xqc_int_t xqc_h3_ext_masque_validate_ip_packet(
  * @param paylen   payload length (0 is valid = no routes)
  * @return XQC_OK if valid, -XQC_EPARAM if malformed or misordered
  */
-xqc_int_t xqc_h3_ext_connectip_validate_route_advertisement(
-    const uint8_t *payload, size_t paylen);
+xqc_int_t xqc_h3_ext_connectip_validate_route_advertisement(const uint8_t *payload,
+                                                            size_t paylen);
 
 /**
  * Check that IPv6 tunnel MTU meets the minimum of 1280 (RFC 9484 §7.2).

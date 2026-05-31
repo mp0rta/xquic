@@ -1165,6 +1165,29 @@ xqc_tls_get_ssl(xqc_tls_t *tls)
     return tls->ssl;
 }
 
+xqc_int_t
+xqc_tls_check_mp_aead_nonce_len(xqc_tls_t *tls, uint8_t multipath_enabled)
+{
+    if (!multipath_enabled) {
+        return XQC_OK;
+    }
+    if (tls == NULL || tls->crypto[XQC_ENC_LEV_1RTT] == NULL) {
+        if (tls != NULL) {
+            xqc_log(tls->log, XQC_LOG_ERROR,
+                    "|mp21|1RTT crypto not installed when nonce-len check requested|");
+        }
+        return -XQC_TLS_INTERNAL;
+    }
+    size_t noncelen = tls->crypto[XQC_ENC_LEV_1RTT]->pp_aead.noncelen;
+    xqc_int_t ret = xqc_crypto_check_mp_nonce_len(multipath_enabled, noncelen);
+    if (ret != XQC_OK) {
+        xqc_log(tls->log, XQC_LOG_ERROR,
+                "|mp21|AEAD nonce too short for multipath|noncelen:%uz|min:12|",
+                noncelen);
+    }
+    return ret;
+}
+
 
 /**
  * ============================================================================

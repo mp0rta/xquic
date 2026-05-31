@@ -1,4 +1,6 @@
 /**
+ * @copyright Copyright (c) 2026, mp0rta
+ *
  * MASQUE common utilities for CONNECT-UDP / CONNECT-IP test clients.
  *
  * This header is a compatibility wrapper around the xquic library's
@@ -57,13 +59,12 @@ masque_varint_decode(const uint8_t *buf, size_t buflen, uint64_t *value)
 /* ──────────────────────────────────────────────────────────── */
 
 static inline size_t
-masque_frame_udp_datagram(uint8_t *out, size_t outlen,
-                          uint64_t stream_id,
+masque_frame_udp_datagram(uint8_t *out, size_t outlen, uint64_t stream_id,
                           const uint8_t *payload, size_t paylen)
 {
     size_t written = 0;
-    xqc_int_t rc = xqc_h3_ext_masque_frame_udp(
-        out, outlen, &written, stream_id, payload, paylen);
+    xqc_int_t rc =
+        xqc_h3_ext_masque_frame_udp(out, outlen, &written, stream_id, payload, paylen);
     return rc == XQC_OK ? written : 0;
 }
 
@@ -73,9 +74,8 @@ masque_unframe_udp_datagram(const uint8_t *buf, size_t buflen,
                             size_t *payload_offset, size_t *payload_len)
 {
     const uint8_t *payload_ptr = NULL;
-    xqc_int_t rc = xqc_h3_ext_masque_unframe_udp(
-        buf, buflen, quarter_stream_id, context_id,
-        &payload_ptr, payload_len);
+    xqc_int_t rc = xqc_h3_ext_masque_unframe_udp(buf, buflen, quarter_stream_id,
+                                                 context_id, &payload_ptr, payload_len);
     if (rc != XQC_OK) {
         return -1;
     }
@@ -93,31 +93,29 @@ masque_udp_mss(size_t mss, uint64_t stream_id)
 /*  Capsule Protocol wrappers                                   */
 /* ──────────────────────────────────────────────────────────── */
 
-#define MASQUE_CAPSULE_DATAGRAM             XQC_H3_CAPSULE_DATAGRAM
-#define MASQUE_CAPSULE_ADDRESS_ASSIGN       XQC_H3_CAPSULE_ADDRESS_ASSIGN
-#define MASQUE_CAPSULE_ADDRESS_REQUEST      XQC_H3_CAPSULE_ADDRESS_REQUEST
-#define MASQUE_CAPSULE_ROUTE_ADVERTISEMENT  XQC_H3_CAPSULE_ROUTE_ADVERTISEMENT
+#define MASQUE_CAPSULE_DATAGRAM            XQC_H3_CAPSULE_DATAGRAM
+#define MASQUE_CAPSULE_ADDRESS_ASSIGN      XQC_H3_CAPSULE_ADDRESS_ASSIGN
+#define MASQUE_CAPSULE_ADDRESS_REQUEST     XQC_H3_CAPSULE_ADDRESS_REQUEST
+#define MASQUE_CAPSULE_ROUTE_ADVERTISEMENT XQC_H3_CAPSULE_ROUTE_ADVERTISEMENT
 
 static inline size_t
-masque_capsule_encode(uint8_t *out, size_t outlen,
-                      uint64_t type,
-                      const uint8_t *payload, size_t paylen)
+masque_capsule_encode(uint8_t *out, size_t outlen, uint64_t type, const uint8_t *payload,
+                      size_t paylen)
 {
     size_t written = 0;
-    xqc_int_t rc = xqc_h3_ext_capsule_encode(
-        out, outlen, &written, type, payload, paylen);
+    xqc_int_t rc =
+        xqc_h3_ext_capsule_encode(out, outlen, &written, type, payload, paylen);
     return rc == XQC_OK ? written : 0;
 }
 
 static inline int
-masque_capsule_decode(const uint8_t *buf, size_t buflen,
-                      uint64_t *type,
+masque_capsule_decode(const uint8_t *buf, size_t buflen, uint64_t *type,
                       size_t *payload_offset, size_t *payload_len)
 {
     const uint8_t *payload_ptr = NULL;
     size_t bytes_consumed = 0;
-    xqc_int_t rc = xqc_h3_ext_capsule_decode(
-        buf, buflen, type, &payload_ptr, payload_len, &bytes_consumed);
+    xqc_int_t rc = xqc_h3_ext_capsule_decode(buf, buflen, type, &payload_ptr, payload_len,
+                                             &bytes_consumed);
     if (rc != XQC_OK) {
         return -1;
     }
@@ -130,23 +128,21 @@ masque_capsule_decode(const uint8_t *buf, size_t buflen,
 /* ──────────────────────────────────────────────────────────── */
 
 static inline int
-masque_parse_address_assign(const uint8_t *payload, size_t paylen,
-                            uint64_t *request_id,
-                            uint8_t *ip_version,
-                            uint8_t *ip_addr, size_t *ip_addr_len,
+masque_parse_address_assign(const uint8_t *payload, size_t paylen, uint64_t *request_id,
+                            uint8_t *ip_version, uint8_t *ip_addr, size_t *ip_addr_len,
                             uint8_t *prefix_len)
 {
     size_t consumed = 0;
     xqc_int_t rc = xqc_h3_ext_connectip_parse_address_assign(
-        payload, paylen, request_id, ip_version,
-        ip_addr, ip_addr_len, prefix_len, &consumed);
+        payload, paylen, request_id, ip_version, ip_addr, ip_addr_len, prefix_len,
+        &consumed);
     return rc == XQC_OK ? 0 : -1;
 }
 
 static inline size_t
-masque_build_address_request(uint8_t *buf, size_t buflen,
-                              uint64_t request_id, uint8_t ip_version,
-                              const uint8_t *ip_addr, uint8_t prefix_len)
+masque_build_address_request(uint8_t *buf, size_t buflen, uint64_t request_id,
+                             uint8_t ip_version, const uint8_t *ip_addr,
+                             uint8_t prefix_len)
 {
     size_t written = 0;
     xqc_int_t rc = xqc_h3_ext_connectip_build_address_request(
@@ -156,14 +152,13 @@ masque_build_address_request(uint8_t *buf, size_t buflen,
 
 static inline int
 masque_parse_route_advertisement(const uint8_t *payload, size_t paylen,
-                                  uint8_t *ip_version,
-                                  uint8_t *start_ip, uint8_t *end_ip,
-                                  size_t *ip_addr_len, uint8_t *ip_protocol,
-                                  size_t *bytes_consumed)
+                                 uint8_t *ip_version, uint8_t *start_ip, uint8_t *end_ip,
+                                 size_t *ip_addr_len, uint8_t *ip_protocol,
+                                 size_t *bytes_consumed)
 {
     xqc_int_t rc = xqc_h3_ext_connectip_parse_route_advertisement(
-        payload, paylen, ip_version, start_ip, end_ip,
-        ip_addr_len, ip_protocol, bytes_consumed);
+        payload, paylen, ip_version, start_ip, end_ip, ip_addr_len, ip_protocol,
+        bytes_consumed);
     return rc == XQC_OK ? 0 : -1;
 }
 
@@ -196,11 +191,11 @@ masque_ip_checksum(const uint8_t *data, size_t len)
  * Returns the total packet length (32), or 0 on error.
  */
 static inline size_t
-masque_build_icmp_echo(uint8_t *buf, size_t buflen,
-                       const uint8_t src_ip[4], const uint8_t dst_ip[4])
+masque_build_icmp_echo(uint8_t *buf, size_t buflen, const uint8_t src_ip[4],
+                       const uint8_t dst_ip[4])
 {
     const size_t ip_hdr_len = 20;
-    const size_t icmp_len = 12;  /* 8 header + 4 data */
+    const size_t icmp_len = 12; /* 8 header + 4 data */
     const size_t total = ip_hdr_len + icmp_len;
 
     if (buflen < total) {
@@ -209,14 +204,16 @@ masque_build_icmp_echo(uint8_t *buf, size_t buflen,
     memset(buf, 0, total);
 
     /* IPv4 header */
-    buf[0] = 0x45;              /* Version=4, IHL=5 (20 bytes) */
-    buf[1] = 0x00;              /* DSCP/ECN */
+    buf[0] = 0x45; /* Version=4, IHL=5 (20 bytes) */
+    buf[1] = 0x00; /* DSCP/ECN */
     buf[2] = (uint8_t)(total >> 8);
     buf[3] = (uint8_t)(total & 0xFF);
-    buf[4] = 0x00; buf[5] = 0x01; /* Identification */
-    buf[6] = 0x00; buf[7] = 0x00; /* Flags + Fragment Offset */
-    buf[8] = 64;                /* TTL */
-    buf[9] = 1;                 /* Protocol: ICMP */
+    buf[4] = 0x00;
+    buf[5] = 0x01; /* Identification */
+    buf[6] = 0x00;
+    buf[7] = 0x00; /* Flags + Fragment Offset */
+    buf[8] = 64;   /* TTL */
+    buf[9] = 1;    /* Protocol: ICMP */
     memcpy(buf + 12, src_ip, 4);
     memcpy(buf + 16, dst_ip, 4);
 
@@ -226,11 +223,16 @@ masque_build_icmp_echo(uint8_t *buf, size_t buflen,
 
     /* ICMP Echo Request */
     uint8_t *icmp = buf + ip_hdr_len;
-    icmp[0] = 8;                /* Type: Echo Request */
-    icmp[1] = 0;                /* Code */
-    icmp[4] = 0x00; icmp[5] = 0x01; /* Identifier */
-    icmp[6] = 0x00; icmp[7] = 0x01; /* Sequence Number */
-    icmp[8] = 'T'; icmp[9] = 'E'; icmp[10] = 'S'; icmp[11] = 'T';
+    icmp[0] = 8; /* Type: Echo Request */
+    icmp[1] = 0; /* Code */
+    icmp[4] = 0x00;
+    icmp[5] = 0x01; /* Identifier */
+    icmp[6] = 0x00;
+    icmp[7] = 0x01; /* Sequence Number */
+    icmp[8] = 'T';
+    icmp[9] = 'E';
+    icmp[10] = 'S';
+    icmp[11] = 'T';
 
     uint16_t icmp_cksum = masque_ip_checksum(icmp, icmp_len);
     icmp[2] = (uint8_t)(icmp_cksum >> 8);

@@ -51,7 +51,10 @@
 
 /* ---------- constants ---------- */
 
-#define WLB_MAX_PATHS         XQC_MAX_PATHS_COUNT
+/* PR3 §4.3 Rev 4: WLB ceiling = defensive hard cap, not the legacy 8.
+ * Embedded arrays in xqc_wlb_scheduler_t grow to ~8KB total — fine for the
+ * heap-allocated scheduler struct, no longer relevant for stack frames. */
+#define WLB_MAX_PATHS         XQC_PATH_HARD_CAP
 #define LATE_MSS              1200    /* typical QUIC datagram payload bytes */
 
 /* Flow table — open-addressing hash table for flow-to-path pinning */
@@ -531,10 +534,19 @@ wlb_refresh_paths(xqc_wlb_scheduler_t *s, xqc_connection_t *conn)
     xqc_list_head_t *pos, *next;
     xqc_path_ctx_t  *path;
 
-    /* Save old state for deficit preservation */
-    wlb_path_weight_t old[WLB_MAX_PATHS];
+    /* Save old state for deficit preservation.
+     * PR3 §4.3 Rev 4: heap-alloc to keep stack frame small under HARD_CAP=256
+     * (would otherwise be ~6KB stack). */
     int old_n = s->n_paths;
-    memcpy(old, s->paths, sizeof(wlb_path_weight_t) * old_n);
+    wlb_path_weight_t *old = NULL;
+    if (old_n > 0) {
+        old = xqc_malloc(sizeof(wlb_path_weight_t) * (size_t)old_n);
+        if (old != NULL) {
+            memcpy(old, s->paths, sizeof(wlb_path_weight_t) * (size_t)old_n);
+        } else {
+            old_n = 0;  /* fall through with no deficit preservation */
+        }
+    }
 
     /* First pass: find max SRTT across active, healthy paths */
     uint64_t max_rtt_us = 0;
@@ -582,6 +594,10 @@ wlb_refresh_paths(xqc_wlb_scheduler_t *s, xqc_connection_t *conn)
         n++;
     }
     s->n_paths = n;
+
+    if (old != NULL) {
+        xqc_free(old);
+    }
 }
 
 /**

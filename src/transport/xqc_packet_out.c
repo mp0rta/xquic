@@ -1,5 +1,6 @@
 /**
  * @copyright Copyright (c) 2022, Alibaba Group Holding Limited
+ * @copyright Copyright (c) 2026, mp0rta
  */
 
 
@@ -1514,6 +1515,9 @@ xqc_write_path_challenge_frame_to_packet(xqc_connection_t *conn,
 
     if (attach_path_status) {
         path->app_path_status_send_seq_num++;
+        /* G-F9 (draft-21 §4.3 ¶12): track this packet's PATH_STATUS seq
+         * so a later loss-replay can suppress stale carries. */
+        packet_out->po_path_status_seq = path->app_path_status_send_seq_num;
         ret = xqc_gen_path_status_frame(conn, packet_out, path->path_id,
                                         path->app_path_status_send_seq_num,
                                         path->app_path_status);
@@ -1522,12 +1526,12 @@ xqc_write_path_challenge_frame_to_packet(xqc_connection_t *conn,
             xqc_log(conn->log, XQC_LOG_ERROR, "|attach status error|%d|", ret);
 
         } else {
-            xqc_log(conn->log, XQC_LOG_DEBUG, 
+            xqc_log(conn->log, XQC_LOG_DEBUG,
                     "|initial_path_status|status:%d|frames:%s|",
-                    path->app_path_status, 
+                    path->app_path_status,
                     xqc_frame_type_2_str(conn->engine, packet_out->po_frame_types));
             packet_out->po_used_size += ret;
-        }        
+        }
     }
 
     xqc_send_queue_move_to_high_pri(&packet_out->po_list, conn->conn_send_queue);
@@ -1624,7 +1628,8 @@ error:
 
 
 xqc_int_t
-xqc_write_path_abandon_frame_to_packet(xqc_connection_t *conn, xqc_path_ctx_t *path)
+xqc_write_path_abandon_frame_to_packet(xqc_connection_t *conn, xqc_path_ctx_t *path,
+                                       uint64_t error_code)
 {
     xqc_int_t ret = XQC_ERROR;
 
@@ -1636,13 +1641,27 @@ xqc_write_path_abandon_frame_to_packet(xqc_connection_t *conn, xqc_path_ctx_t *p
 
     uint64_t path_id = path->path_id;
 
-    ret = xqc_gen_path_abandon_frame(conn, packet_out, path_id, 0);
+    ret = xqc_gen_path_abandon_frame(conn, packet_out, path_id, error_code);
     if (ret < 0) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_gen_path_abandon_frame error|%d|", ret);
         goto error;
     }
 
     packet_out->po_used_size += ret;
+
+    /* G-P14 (draft-21 §3.4 ¶3 RECOMMENDED): send PATH_ABANDON on an
+     * alternate open path when one exists. Falls back to the abandoned
+     * path itself (default po_path_id selection) if no alt is available
+     * (single-path tail). The packet is freshly allocated above and is
+     * not a stream-frame coalesce target (no po_stream_frames_idx),
+     * so pinning po_path_id here is safe. */
+    xqc_path_ctx_t *alt = xqc_conn_pick_alt_active_path(conn, path);
+    if (alt != NULL) {
+        packet_out->po_path_id = alt->path_id;
+        xqc_log(conn->log, XQC_LOG_DEBUG,
+                "|G-P14 abandon on alt-path|abandon:%ui|alt:%ui|",
+                path->path_id, alt->path_id);
+    }
 
     xqc_send_queue_move_to_high_pri(&packet_out->po_list, conn->conn_send_queue);
 
@@ -1669,6 +1688,9 @@ xqc_write_path_status_frame_to_packet(xqc_connection_t *conn, xqc_path_ctx_t *pa
     }
 
     path->app_path_status_send_seq_num++;
+    /* G-F9 (draft-21 §4.3 ¶12): mirror the seq on the packet so loss
+     * replay can suppress stale carries. */
+    packet_out->po_path_status_seq = path->app_path_status_send_seq_num;
 
     ret = xqc_gen_path_status_frame(conn, packet_out, path->path_id,
                                     path->app_path_status_send_seq_num,
@@ -1765,7 +1787,7 @@ xqc_write_mp_new_conn_id_frame_to_packet(xqc_connection_t *conn, uint64_t retire
         return -XQC_EWRITE_PKT;
     }
 
-    ret = xqc_gen_mp_new_conn_id_frame(packet_out, &new_conn_cid, retire_prior_to,
+    ret = xqc_gen_mp_new_conn_id_frame(conn, packet_out, &new_conn_cid, retire_prior_to,
                                        sr_token, path_id);
     if (ret < 0) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_gen_mp_new_conn_id_frame error|");
@@ -1840,7 +1862,7 @@ xqc_write_mp_retire_conn_id_frame_to_packet(xqc_connection_t *conn, uint64_t seq
         return -XQC_EWRITE_PKT;
     }
 
-    ret = xqc_gen_mp_retire_conn_id_frame(packet_out, seq_num, path_id);
+    ret = xqc_gen_mp_retire_conn_id_frame(conn, packet_out, seq_num, path_id);
     if (ret < 0) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_gen_mp_retire_conn_id_frame error|");
         xqc_maybe_recycle_packet_out(packet_out, conn);
@@ -1866,7 +1888,7 @@ xqc_write_max_path_id_to_packet(xqc_connection_t *conn, uint64_t max_path_id)
         return -XQC_EWRITE_PKT;
     }
 
-    ret = xqc_gen_max_path_id_frame(packet_out, max_path_id);
+    ret = xqc_gen_max_path_id_frame(conn, packet_out, max_path_id);
     if (ret < 0) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_gen_max_streams_frame error|");
         goto error;
@@ -1879,6 +1901,39 @@ xqc_write_max_path_id_to_packet(xqc_connection_t *conn, uint64_t max_path_id)
 error:
     xqc_maybe_recycle_packet_out(packet_out, conn);
     return -XQC_EWRITE_PKT;
+}
+
+/* G-P16 (draft-21 §4.7): emit a PATHS_BLOCKED control frame in a fresh
+ * short-header packet. Mirrors xqc_write_max_path_id_to_packet but routes
+ * the raw-buffer gen helper xqc_gen_paths_blocked_frame. PATHS_BLOCKED is
+ * a path-0-scoped frame (§3.2.1 ¶7), so po_path_id is pinned to 0. */
+xqc_int_t
+xqc_write_paths_blocked_frame_to_packet(xqc_connection_t *conn, uint64_t max_path_id)
+{
+    ssize_t ret = XQC_ERROR;
+    xqc_packet_out_t *packet_out;
+    xqc_log(conn->log, XQC_LOG_DEBUG, "|paths_blocked max_path_id:%ui|", max_path_id);
+
+    packet_out = xqc_write_new_packet(conn, XQC_PTYPE_SHORT_HEADER);
+    if (packet_out == NULL) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_write_new_packet error|");
+        return -XQC_EWRITE_PKT;
+    }
+
+    ret = xqc_gen_paths_blocked_frame(packet_out->po_buf + packet_out->po_used_size,
+                                      packet_out->po_buf_size - packet_out->po_used_size,
+                                      max_path_id);
+    if (ret < 0) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_gen_paths_blocked_frame error|");
+        xqc_maybe_recycle_packet_out(packet_out, conn);
+        return -XQC_EWRITE_PKT;
+    }
+
+    packet_out->po_used_size += ret;
+    packet_out->po_frame_types |= XQC_FRAME_BIT_PATHS_BLOCKED;
+    packet_out->po_path_id = 0;
+    xqc_send_queue_move_to_high_pri(&packet_out->po_list, conn->conn_send_queue);
+    return XQC_OK;
 }
 
 int

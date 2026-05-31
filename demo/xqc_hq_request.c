@@ -374,18 +374,17 @@ xqc_hq_request_get_stats(xqc_hq_request_t *hqr)
     size_t cursor = 0, ret = 0;
     int i;
 
-    for (int i = 0; i < XQC_MAX_PATHS_COUNT; ++i) {
-        if ((stream->paths_info[i].path_send_bytes > 0)
-            || (stream->paths_info[i].path_recv_bytes > 0))
-        {
-
-            ret = snprintf(buff + cursor, buff_size - cursor, 
+    /* PR3 §4.3 Rev 4: stream->paths_info is a flat dynamic array. */
+    for (uint32_t pi = 0; pi < stream->paths_info_count; ++pi) {
+        const xqc_path_metrics_t *m = &stream->paths_info[pi].metrics;
+        if ((m->path_send_bytes > 0) || (m->path_recv_bytes > 0)) {
+            ret = snprintf(buff + cursor, buff_size - cursor,
                             "%"PRIu64"-%"PRIu64"-%"PRIu64"-%"PRIu64"-%"PRIu64"#",
-                            stream->paths_info[i].path_id,
-                            stream->paths_info[i].path_pkt_send_count,
-                            stream->paths_info[i].path_pkt_recv_count,
-                            stream->paths_info[i].path_send_bytes,
-                            stream->paths_info[i].path_recv_bytes);
+                            stream->paths_info[pi].path_id,
+                            m->path_pkt_send_count,
+                            m->path_pkt_recv_count,
+                            m->path_send_bytes,
+                            m->path_recv_bytes);
             cursor += ret;
 
             if (cursor >= buff_size) {

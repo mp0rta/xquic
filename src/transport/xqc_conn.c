@@ -1,5 +1,6 @@
 /**
  * @copyright Copyright (c) 2022, Alibaba Group Holding Limited
+ * @copyright Copyright (c) 2026, mp0rta
  */
 
 #include <xquic/xquic.h>
@@ -46,7 +47,7 @@ xqc_conn_settings_t internal_default_conn_settings = {
     .init_idle_time_out         = XQC_CONN_INITIAL_IDLE_TIMEOUT,
     .idle_time_out              = XQC_CONN_DEFAULT_IDLE_TIMEOUT,
     .enable_multipath           = 0,
-    .multipath_version          = XQC_MULTIPATH_10,
+    .multipath_version          = XQC_MULTIPATH_3E,  /* draft-21 default; dispatch still accepts XQC_MULTIPATH_10 for backward interop */
     .spurious_loss_detect_on    = 0,
     .anti_amplification_limit   = XQC_DEFAULT_ANTI_AMPLIFICATION_LIMIT,
     .keyupdate_pkt_threshold    = 0,
@@ -259,15 +260,20 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
         engine->default_conn_settings.multipath_version = settings->multipath_version;
 
     } else {
-        engine->default_conn_settings.multipath_version = XQC_MULTIPATH_10;
+        engine->default_conn_settings.multipath_version = XQC_MULTIPATH_3E;
     }
 
     if (settings->init_max_path_id == 0) {
         engine->default_conn_settings.init_max_path_id = XQC_DEFAULT_INIT_MAX_PATH_ID;
-        
+
     } else {
         engine->default_conn_settings.init_max_path_id = settings->init_max_path_id;
     }
+
+    /* draft-21 §3.2.1 ¶7 PATHS_BLOCKED auto-grant opt-in. 0 = disabled
+     * (no auto-grant); >0 = cap. Copy verbatim so server applications can
+     * enable per-connection MAX_PATH_ID grants via the engine default. */
+    engine->default_conn_settings.max_path_id_grant_max_value = settings->max_path_id_grant_max_value;
 
     engine->default_conn_settings.close_dgram_redundancy = settings->close_dgram_redundancy;
 
@@ -789,7 +795,7 @@ xqc_conn_create(xqc_engine_t *engine, xqc_cid_t *dcid, xqc_cid_t *scid,
     }
 
     if (xqc_conn_is_current_mp_version_supported(xc->conn_settings.multipath_version) != XQC_OK) {
-        xc->conn_settings.multipath_version = XQC_MULTIPATH_10;
+        xc->conn_settings.multipath_version = XQC_MULTIPATH_3E;
     }
 
     if (xc->conn_settings.init_max_path_id == 0) {
@@ -1528,6 +1534,11 @@ xqc_conn_destroy(xqc_connection_t *xc)
             xc->local_settings.enable_pmtud & xc->remote_settings.enable_pmtud, xc->conn_avg_close_delay
             );
     xqc_log_event(xc->log, CON_CONNECTION_CLOSED, xc);
+
+    /* PR3 §4.3 Rev 4: paths_info is heap-allocated by
+     * xqc_conn_get_stats_internal; free here since this internal logging
+     * path discards the stats. */
+    xqc_free(conn_stats.paths_info);
 
     xqc_engine_remove_wakeup_queue(xc->engine, xc);
 
@@ -3719,10 +3730,9 @@ xqc_conn_get_stats(xqc_engine_t *engine, const xqc_cid_t *cid)
     xqc_connection_t *conn;
     xqc_conn_stats_t conn_stats;
     xqc_memzero(&conn_stats, sizeof(conn_stats));
-    for (int i = 0; i < XQC_MAX_PATHS_COUNT; ++i) {
-        conn_stats.paths_info[i].path_id = XQC_MAX_UINT64_VALUE;
-        conn_stats.paths_info[i].path_app_status = 0;
-    }
+    /* PR3 §4.3 Rev 4: paths_info is now a dynamically-allocated array owned
+     * by the caller. xqc_conn_path_metrics_print allocates it; on error /
+     * empty paths case it stays NULL with paths_info_count == 0. */
 
     conn = xqc_engine_conns_hash_find(engine, cid, 's');
     if (!conn) {
@@ -4352,6 +4362,31 @@ xqc_conn_handshake_complete(xqc_connection_t *conn)
 
     /* conn's handshake is complete when TLS stack has reported handshake complete */
     conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_COMPLETED;
+
+    /*
+     * draft-21 §3 / §C.1 MUST: when multipath is enabled, the negotiated
+     * 1-RTT AEAD MUST provide a confidentiality nonce of >= 12 bytes (so the
+     * per-packet QUIC packet number can XOR into the low 12 bytes without
+     * cross-path collision). Abort the handshake with TRANSPORT_PARAMETER_ERROR
+     * if the cipher selection would violate this on a multipath connection.
+     * conn->enable_multipath is final by the time TLS signals handshake done
+     * (xqc_conn_try_to_enable_multipath ran during the transport_params cb).
+     */
+    if (conn->enable_multipath) {
+        xqc_int_t mp_aead_ret = xqc_tls_check_mp_aead_nonce_len(conn->tls, 1);
+        if (mp_aead_ret == -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR) {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|mp21|reject handshake: AEAD nonce <12B with multipath|");
+            XQC_CONN_ERR(conn, TRA_TRANSPORT_PARAMETER_ERROR);
+            return -XQC_TLS_INVALID_STATE;
+        } else if (mp_aead_ret != XQC_OK) {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|mp21|mp aead nonce-len check internal error|ret:%d|",
+                    mp_aead_ret);
+            XQC_CONN_ERR(conn, TRA_INTERNAL_ERROR);
+            return mp_aead_ret;
+        }
+    }
 
     if (conn->conn_type == XQC_CONN_TYPE_SERVER) {
         /* the TLS handshake is considered confirmed at the server when the handshake completes */
@@ -5241,17 +5276,49 @@ xqc_conn_try_add_new_conn_id(xqc_connection_t *conn, uint64_t retire_prior_to)
             xqc_list_for_each_safe(pos, next, &conn->scid_set.cid_set_list) {
                 inner_set = xqc_list_entry(pos, xqc_cid_set_inner_t, next);
                 if (inner_set->set_state == XQC_CID_SET_USED) {
-                    while (inner_set 
+                    while (inner_set
                            && (inner_set->unused_cnt + inner_set->used_cnt) < conn->remote_settings.active_connection_id_limit
-                           && inner_set->unused_cnt < unused_limit) 
+                           && inner_set->unused_cnt < unused_limit)
                     {
                         ret = xqc_write_mp_new_conn_id_frame_to_packet(conn, retire_prior_to, inner_set->path_id);
                         if (ret != XQC_OK) {
-                            xqc_log(conn->log, XQC_LOG_ERROR, 
-                                    "|xqc_write_mp_new_conn_id_frame_to_packet error|path_id:%ui|", 
+                            xqc_log(conn->log, XQC_LOG_ERROR,
+                                    "|xqc_write_mp_new_conn_id_frame_to_packet error|path_id:%ui|",
                                     inner_set->path_id);
                             return ret;
                         }
+                    }
+                }
+            }
+
+            /* G-P10 (draft-21 §3.2.1 ¶1 RECOMMENDED): proactively issue
+             * at least one CID for EVERY UNUSED path_id up to
+             * curr_max_path_id, not just the first. Principle #1
+             * (xqc_get_next_unused_path_cid_set) returns only the first
+             * UNUSED inner set; principle #3 covers the remaining
+             * UNUSED sets when curr_max_path_id grew (handshake-complete
+             * or MAX_PATH_ID credit) by more than one path. */
+            xqc_cid_set_inner_t *first_unused = xqc_get_next_unused_path_cid_set(&conn->scid_set);
+            xqc_list_for_each_safe(pos, next, &conn->scid_set.cid_set_list) {
+                inner_set = xqc_list_entry(pos, xqc_cid_set_inner_t, next);
+                if (inner_set == first_unused) {
+                    continue;  /* principle #1 already handled */
+                }
+                if (inner_set->set_state != XQC_CID_SET_UNUSED) {
+                    continue;
+                }
+                if (inner_set->path_id > conn->curr_max_path_id) {
+                    continue;
+                }
+                while ((inner_set->unused_cnt + inner_set->used_cnt) < conn->remote_settings.active_connection_id_limit
+                       && inner_set->unused_cnt < unused_limit)
+                {
+                    ret = xqc_write_mp_new_conn_id_frame_to_packet(conn, retire_prior_to, inner_set->path_id);
+                    if (ret != XQC_OK) {
+                        xqc_log(conn->log, XQC_LOG_ERROR,
+                                "|G-P10 write_mp_new_conn_id error|path_id:%ui|",
+                                inner_set->path_id);
+                        return ret;
                     }
                 }
             }

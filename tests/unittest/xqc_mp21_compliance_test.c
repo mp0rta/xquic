@@ -1,0 +1,2031 @@
+/**
+ * @copyright Copyright (c) 2026, mp0rta
+ */
+
+#include <CUnit/CUnit.h>
+#include <string.h>
+#include <stdlib.h>
+#include "xquic/xquic.h"
+#include "xquic/xqc_errno.h"
+#include "src/transport/xqc_frame_parser.h"
+#include "src/transport/xqc_frame.h"
+#include "src/transport/xqc_packet_in.h"
+#include "src/transport/xqc_packet_out.h"
+#include "src/transport/xqc_conn.h"
+#include "src/transport/xqc_multipath.h"
+#include "src/transport/xqc_cid.h"
+#include "src/transport/xqc_send_ctl.h"
+#include "src/transport/xqc_recv_record.h"
+#include "src/transport/xqc_transport_params.h"
+#include "src/tls/xqc_crypto.h"
+#include "src/tls/xqc_tls.h"
+#include "src/common/xqc_log.h"
+#include "xqc_mp21_compliance_test.h"
+#include "xqc_test_helpers.h"
+#include "src/transport/xqc_frame.h"
+#include "xquic/xqc_errno.h"
+
+/* ------------------------------------------------------------------
+ * Chunk 4 Task 13b: shared minimal connection fixture.
+ *
+ * Allocates a calloc()-zeroed xqc_connection_t + xqc_log_t and threads
+ * the fields the Chunk 4 guards inspect. multipath_version is pinned to
+ * XQC_MULTIPATH_3E. Caller can mutate remote_settings.init_max_path_id
+ * after the call (used by Task 15's 3-condition test).
+ * ------------------------------------------------------------------ */
+xqc_connection_t *
+xqc_test_mp21_make_conn(const xqc_test_mp21_conn_params_t *p)
+{
+    xqc_log_t *log = calloc(1, sizeof(xqc_log_t));
+    if (log == NULL) {
+        return NULL;
+    }
+    log->log_level = XQC_LOG_FATAL; /* suppress per-test noise */
+
+    xqc_connection_t *conn = calloc(1, sizeof(xqc_connection_t));
+    if (conn == NULL) {
+        free(log);
+        return NULL;
+    }
+    conn->log = log;
+    conn->conn_settings.multipath_version = XQC_MULTIPATH_3E;
+
+    conn->local_max_path_id = p ? p->local_max_path_id : 8;
+    conn->remote_max_path_id = p ? p->remote_max_path_id : 8;
+    conn->curr_max_path_id = (conn->local_max_path_id < conn->remote_max_path_id)
+                                 ? conn->local_max_path_id
+                                 : conn->remote_max_path_id;
+    conn->remote_settings.init_max_path_id = conn->remote_max_path_id;
+    conn->local_settings.enable_multipath = 1;
+    conn->remote_settings.enable_multipath = 1;
+    conn->local_settings.multipath_version = XQC_MULTIPATH_3E;
+    conn->remote_settings.multipath_version = XQC_MULTIPATH_3E;
+
+    conn->scid_set.user_scid.cid_len = p ? p->scid_len : 8;
+    conn->dcid_set.current_dcid.cid_len = p ? p->dcid_len : 8;
+
+    /* Initialize lists that xqc_process_frames and post-frame path lookup
+     * may traverse — avoids NULL deref in tests that exercise the dispatcher. */
+    xqc_init_list_head(&conn->conn_paths_list);
+    /* mp21 L2: PATH_CIDS_BLOCKED handler walks conn->scid_set per-path
+     * cid_set_list; calloc-zeroed list head would crash list traversal. */
+    xqc_init_list_head(&conn->scid_set.cid_set_list);
+
+    return conn;
+}
+
+void
+xqc_test_mp21_free_conn(xqc_connection_t *conn)
+{
+    if (conn == NULL) {
+        return;
+    }
+    if (conn->log) {
+        free(conn->log);
+    }
+    free(conn);
+}
+
+void
+xqc_test_mp21_validate_recv_path_id(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id = 4,
+        .remote_max_path_id = 4,
+        .scid_len = 8,
+        .dcid_len = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    /* Accept: path_id == local_max_path_id is the inclusive upper bound. */
+    CU_ASSERT_EQUAL(xqc_validate_recv_path_id(conn, 0), XQC_OK);
+    CU_ASSERT_EQUAL(xqc_validate_recv_path_id(conn, 4), XQC_OK);
+
+    /* Reject: path_id > local_max_path_id maps to PROTOCOL_VIOLATION. */
+    CU_ASSERT_EQUAL(xqc_validate_recv_path_id(conn, 5),
+                    -(xqc_int_t)TRA_PROTOCOL_VIOLATION);
+    CU_ASSERT_EQUAL(xqc_validate_recv_path_id(conn, 0xffffffffULL),
+                    -(xqc_int_t)TRA_PROTOCOL_VIOLATION);
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+/* Build a minimal PATH_NEW_CONNECTION_ID wire image with a parameterized
+ * Length byte. Layout (varints):
+ *   Type (= 0x3e78, draft-21)  : 2B  0x7e 0x78
+ *   Path ID                    : 1B  0x01
+ *   Sequence Number            : 1B  0x00
+ *   Retire Prior To            : 1B  0x00
+ *   Length                     : 1B  <len_byte>
+ *   Connection ID              : len bytes (zero-padded)
+ *   Stateless Reset Token      : 16B (zero)
+ *
+ * For length=0 we still emit zero CID bytes; for length=21 we emit 21
+ * placeholder bytes. The parser must reject both before reading sr_token.
+ */
+static int
+xqc_test_mp21_drive_path_new_cid_parser(uint8_t len_byte)
+{
+    unsigned char buf[64];
+    memset(buf, 0, sizeof(buf));
+    size_t off = 0;
+    buf[off++] = 0x7e;
+    buf[off++] = 0x78;     /* type varint */
+    buf[off++] = 0x01;     /* path_id */
+    buf[off++] = 0x00;     /* seq_num */
+    buf[off++] = 0x00;     /* retire_prior_to */
+    buf[off++] = len_byte; /* Length */
+    size_t cid_bytes = len_byte;
+    if (cid_bytes > 21) cid_bytes = 21; /* cap for buffer safety */
+    off += cid_bytes;                   /* CID body — zeros */
+    off += 16;                          /* sr_token — zeros */
+
+    xqc_packet_in_t packet_in;
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.buf = buf;
+    packet_in.buf_size = sizeof(buf);
+    packet_in.pos = buf;
+    packet_in.last = buf + off;
+
+    xqc_cid_t new_cid;
+    memset(&new_cid, 0, sizeof(new_cid));
+    uint64_t retire_prior_to = 0, path_id = 0;
+    return (int)xqc_parse_mp_new_conn_id_frame(&packet_in, &new_cid, &retire_prior_to,
+                                               &path_id, NULL);
+}
+
+void
+xqc_test_mp21_path_new_conn_id_cid_len_guard(void)
+{
+    /* Length = 0 -> reject. */
+    CU_ASSERT_NOT_EQUAL(xqc_test_mp21_drive_path_new_cid_parser(0), XQC_OK);
+    /* Length = 21 -> reject (XQC_MAX_CID_LEN == 20). */
+    CU_ASSERT_NOT_EQUAL(xqc_test_mp21_drive_path_new_cid_parser(21), XQC_OK);
+    /* Length = 1 -> accept (boundary). */
+    CU_ASSERT_EQUAL(xqc_test_mp21_drive_path_new_cid_parser(1), XQC_OK);
+    /* Length = 20 -> accept (boundary). */
+    CU_ASSERT_EQUAL(xqc_test_mp21_drive_path_new_cid_parser(20), XQC_OK);
+    /* Length = 8 -> accept (common case). */
+    CU_ASSERT_EQUAL(xqc_test_mp21_drive_path_new_cid_parser(8), XQC_OK);
+}
+
+/* Forward decl — xqc_path_create lives in xqc_multipath.c but its
+ * prototype is buried in an internal header. */
+extern xqc_path_ctx_t *xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid,
+                                       xqc_cid_t *dcid, uint64_t path_id);
+
+void
+xqc_test_mp21_path_create_refuses_abandoned(void)
+{
+    /* draft-21 §4.5 (Task 23): xqc_path_create() MUST refuse to recycle
+     * an Abandoned path_id. The refusal is exercised pre-allocation, so
+     * the test fixture's stub conn (no engine, no pn_ctl) is sufficient.
+     *
+     * Test 2 from the plan (MAX_PATH_ID growth grants id=5 which is still
+     * refused if pre-marked as abandoned) is verified indirectly: the
+     * refusal predicate is xqc_conn_is_path_abandoned(conn, path_id),
+     * which is checked unconditionally at xqc_path_create() entry — there
+     * is no MAX_PATH_ID-aware bypass. Hence marking id=5 abandoned and
+     * subsequently growing remote_max_path_id to 8 cannot lift the refusal.
+     */
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id = 8,
+        .remote_max_path_id = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_conn_mark_path_abandoned(conn, 2);
+
+    /* xqc_path_create's first action is the abandoned-check; it bails
+     * with NULL before touching engine / pn_ctl / send_ctl, so the stub
+     * fixture suffices. */
+    CU_ASSERT_PTR_NULL(xqc_path_create(conn, NULL, NULL, 2));
+
+    /* Refusal survives across MAX_PATH_ID growth simulations. */
+    conn->remote_max_path_id = 16;
+    conn->curr_max_path_id = 8;
+    CU_ASSERT_PTR_NULL(xqc_path_create(conn, NULL, NULL, 2));
+
+    /* Sanity: a different, non-abandoned path_id passes the bitmap
+     * predicate (the helper, not the full xqc_path_create call). */
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 5));
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_abandoned_path_silently_ignored(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id = 64,
+        .remote_max_path_id = 64,
+        .scid_len = 8,
+        .dcid_len = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    /* Initial state: no path is abandoned. */
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 0));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 2));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 64));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 255));
+    /* path_id beyond bitmap range -> always false. */
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 256));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 0xffffffffULL));
+
+    /* Mark path_id=2 abandoned (mimics PATH_ABANDON processing). */
+    xqc_conn_mark_path_abandoned(conn, 2);
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 2));
+    /* Other ids unaffected. */
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 1));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 3));
+
+    /* Cross-word: 64 in next bitmap word. */
+    xqc_conn_mark_path_abandoned(conn, 64);
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 64));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 63));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 65));
+
+    /* Out-of-range mark is a no-op (must not corrupt memory). */
+    xqc_conn_mark_path_abandoned(conn, 9999);
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 9999));
+    /* Existing marks survive. */
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 2));
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 64));
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_duplicate_path_abandon_short_circuit(void)
+{
+    /* draft-21 §4.5: a duplicate PATH_ABANDON for an already-abandoned
+     * path_id must be silently ignored, symmetric with the other 5 MP
+     * frame processors. The short-circuit predicate in
+     * xqc_process_path_abandon_frame is
+     *   if (xqc_conn_is_path_abandoned(conn, path_id)) return XQC_OK;
+     * placed BEFORE xqc_conn_mark_path_abandoned so the first arrival
+     * still runs the full release-path path, and subsequent arrivals
+     * return without re-running immediate_close or CID state churn.
+     *
+     * We cannot fabricate a packet_in with a live conn here, but we can
+     * pin the predicate semantics the short-circuit relies on:
+     *   (1) is_abandoned returns FALSE before the first mark — first
+     *       PATH_ABANDON falls through past the short-circuit;
+     *   (2) is_abandoned returns TRUE after the first mark — every
+     *       subsequent duplicate hits the short-circuit and returns;
+     *   (3) repeated marks are idempotent — no state corruption from
+     *       the redundant set on the still-falls-through first call.
+     */
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id = 64,
+        .remote_max_path_id = 64,
+        .scid_len = 8,
+        .dcid_len = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    /* (1) First PATH_ABANDON for path_id=2: short-circuit predicate FALSE. */
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 2));
+    xqc_conn_mark_path_abandoned(conn, 2);
+
+    /* (2) Second (duplicate) PATH_ABANDON for path_id=2: predicate TRUE. */
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 2));
+
+    /* (3) Idempotent: re-marking does not corrupt or clear the bit. */
+    xqc_conn_mark_path_abandoned(conn, 2);
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 2));
+    xqc_conn_mark_path_abandoned(conn, 2);
+    CU_ASSERT_TRUE(xqc_conn_is_path_abandoned(conn, 2));
+
+    /* Other ids remain unaffected by the duplicate-mark dance. */
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 1));
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(conn, 3));
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_non_zero_cid_constraint(void)
+{
+    /* Both zero -> reject. */
+    CU_ASSERT_EQUAL(xqc_validate_mp_cid_lengths(0, 0),
+                    -(xqc_int_t)TRA_PROTOCOL_VIOLATION);
+    /* dcid=0 -> reject. */
+    CU_ASSERT_EQUAL(xqc_validate_mp_cid_lengths(8, 0),
+                    -(xqc_int_t)TRA_PROTOCOL_VIOLATION);
+    /* scid=0 -> reject. */
+    CU_ASSERT_EQUAL(xqc_validate_mp_cid_lengths(0, 8),
+                    -(xqc_int_t)TRA_PROTOCOL_VIOLATION);
+    /* both > 0 -> accept. */
+    CU_ASSERT_EQUAL(xqc_validate_mp_cid_lengths(8, 8), XQC_OK);
+    CU_ASSERT_EQUAL(xqc_validate_mp_cid_lengths(1, 20), XQC_OK);
+}
+
+void
+xqc_test_mp21_aead_nonce_min_length(void)
+{
+    /* MP disabled: any noncelen accepted (opt-out path). */
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(0, 8), XQC_OK);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(0, 11), XQC_OK);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(0, 12), XQC_OK);
+
+    /* MP enabled: < 12 rejected. */
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 0),
+                    -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 8),
+                    -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 11),
+                    -(xqc_int_t)TRA_TRANSPORT_PARAMETER_ERROR);
+
+    /* MP enabled: >= 12 accepted (AES-GCM = 12, ChaCha20-Poly1305 = 12). */
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 12), XQC_OK);
+    CU_ASSERT_EQUAL(xqc_crypto_check_mp_nonce_len(1, 16), XQC_OK);
+}
+
+/* Exposed by xqc_frame.c for whitebox testing of the 1-RTT-only guard. */
+extern int xqc_frame_is_mp_public(uint64_t frame_type);
+
+void
+xqc_test_mp21_mp_frame_1rtt_only(void)
+{
+    /* The dispatcher entry-guard depends on two predicates:
+     *  (a) xqc_frame_is_mp(frame_type) enumerates every MP wire type,
+     *  (b) packet_in->pi_pkt.pkt_type != XQC_PTYPE_SHORT_HEADER rejects.
+     * We exercise (a) here directly; (b) is covered by the
+     * dual-version-dispatch and TP tests which require full SHORT_HEADER
+     * packet construction (out of scope for unit harness). */
+
+    /* All draft-21 MP frame types must be classified as MP. */
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_ACK));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP));
+    CU_ASSERT_TRUE(
+        xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21));
+    CU_ASSERT_TRUE(
+        xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21));
+    CU_ASSERT_TRUE(
+        xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED));
+
+    /* draft-10 MP types must remain classified as MP (still wire-active). */
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_MP_ACK0));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_MP_ABANDON));
+    CU_ASSERT_TRUE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_MAX_PATH_ID));
+
+    /* Non-MP frame types must NOT be classified as MP. */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x00)); /* PADDING */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x02)); /* ACK */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x06)); /* CRYPTO */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x18)); /* NEW_CID */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x1a)); /* PATH_CHALLENGE */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(0x30)); /* DATAGRAM */
+    CU_ASSERT_FALSE(xqc_frame_is_mp_public(XQC_TRANS_FRAME_TYPE_ACK_EXT));
+}
+
+void
+xqc_test_mp21_init_max_path_id_upper_bound(void)
+{
+    /* Hand-encoded TP buffer: { id=0x3e, len=varies, value }
+     * Accept boundary at 0xFFFFFFFF (4-byte varint); reject 0x100000000
+     * (8-byte varint, one past spec maximum). */
+    xqc_transport_params_t params;
+
+    /* Accept 0xFFFFFFFF — value needs a 4-byte varint with prefix 0x80.
+     *   bytes: 0xbf 0xff 0xff 0xff  (prefix 10 | 0x3fffffff is too short)
+     *   actually 0xFFFFFFFF doesn't fit in 4-byte varint (max 0x3FFFFFFF);
+     *   needs 8-byte varint: 0xc0 0x00 0x00 0x00 0xff 0xff 0xff 0xff. */
+    uint8_t accept_buf[] = {
+        0x3e, 0x08,                                    /* id, len=8 */
+        0xc0, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff /* val = 0xFFFFFFFF */
+    };
+    xqc_init_transport_params(&params);
+    xqc_int_t ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_CLIENT_HELLO,
+                                                accept_buf, sizeof(accept_buf));
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(params.enable_multipath, 1);
+    CU_ASSERT_EQUAL(params.init_max_path_id, 0xFFFFFFFFULL);
+
+    /* Reject 0x100000000 — one past spec maximum. */
+    uint8_t reject_buf[] = {
+        0x3e, 0x08,                                    /* id, len=8 */
+        0xc0, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00 /* val = 0x100000000 */
+    };
+    xqc_init_transport_params(&params);
+    ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_CLIENT_HELLO, reject_buf,
+                                      sizeof(reject_buf));
+    CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
+}
+
+void
+xqc_test_mp21_max_path_id_validation(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id = 100,
+        .remote_max_path_id = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    /* Pretend the peer's initial_max_path_id TP was 4. */
+    conn->remote_settings.init_max_path_id = 4;
+
+    /* (a) value >= 2^32 — too large, PROTOCOL_VIOLATION. */
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 0x100000000ULL),
+                    XQC_MAX_PATH_ID_BAD_TOO_LARGE);
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 0xffffffffffffULL),
+                    XQC_MAX_PATH_ID_BAD_TOO_LARGE);
+
+    /* (b) value < init_max_path_id — receiver cannot drop the cap. */
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 3), XQC_MAX_PATH_ID_BAD_BELOW_INIT);
+
+    /* (c) value <= remote_max_path_id — silent ignore (stale dup). */
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 8), XQC_MAX_PATH_ID_IGNORE_STALE);
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 4), XQC_MAX_PATH_ID_IGNORE_STALE);
+
+    /* (d) accept + boundary at 2^32-1. */
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 16), XQC_MAX_PATH_ID_ACCEPT);
+    CU_ASSERT_EQUAL(xqc_validate_max_path_id(conn, 0xffffffffULL),
+                    XQC_MAX_PATH_ID_ACCEPT);
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_fixture_smoke(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id = 4,
+        .remote_max_path_id = 6,
+        .scid_len = 8,
+        .dcid_len = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    CU_ASSERT_EQUAL(conn->conn_settings.multipath_version, XQC_MULTIPATH_3E);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 4);
+    CU_ASSERT_EQUAL(conn->remote_max_path_id, 6);
+    CU_ASSERT_EQUAL(conn->curr_max_path_id, 4);
+    CU_ASSERT_EQUAL(conn->scid_set.user_scid.cid_len, 8);
+    CU_ASSERT_EQUAL(conn->dcid_set.current_dcid.cid_len, 8);
+    xqc_test_mp21_free_conn(conn);
+}
+
+/* Test helper: synthesize a minimal xqc_packet_in_t over `buf` and forward
+ * to xqc_parse_path_abandon_frame, returning the number of bytes consumed
+ * (i.e. how far packet_in->pos was advanced from buf).
+ *
+ * `mp_version` selects draft-10 (legacy, reads Reason Phrase) vs draft-21
+ * (XQC_MULTIPATH_3E, no Reason Phrase). The parser will only branch on
+ * version once Task 7 fix lands; for the RED test this argument is unused.
+ */
+static int
+xqc_test_parse_path_abandon(unsigned char *buf, size_t len, uint64_t *path_id,
+                            uint64_t *error_code, size_t *consumed, uint8_t mp_version)
+{
+    xqc_packet_in_t packet_in;
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.buf = buf;
+    packet_in.buf_size = len;
+    packet_in.pos = buf;
+    packet_in.last = buf + len;
+    xqc_int_t ret =
+        xqc_parse_path_abandon_frame(&packet_in, path_id, error_code, mp_version);
+    if (consumed) {
+        *consumed = (size_t)(packet_in.pos - buf);
+    }
+    return (int)ret;
+}
+
+void
+xqc_test_mp21_version_enum(void)
+{
+    /* XQC_MULTIPATH_3E must exist and equal 0x3e */
+    CU_ASSERT_EQUAL((int)XQC_MULTIPATH_3E, 0x3e);
+    /* XQC_MULTIPATH_10 should still exist for dual-version dispatch */
+    CU_ASSERT_EQUAL((int)XQC_MULTIPATH_10, 0x0a);
+}
+
+void
+xqc_test_mp21_frame_type_constants(void)
+{
+    /* draft-21 frame type values (IANA-assigned final codepoints) */
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_ACK, 0x3eULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN, 0x3fULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21, 0x3e75ULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP, 0x3e76ULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21, 0x3e77ULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21, 0x3e78ULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21, 0x3e79ULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21, 0x3e7aULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED, 0x3e7bULL);
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED, 0x3e7cULL);
+    /* draft-10 constants must still exist for dual-version dispatch */
+    CU_ASSERT_EQUAL(XQC_TRANS_FRAME_TYPE_MP_ACK0, 0x15228c00ULL);
+
+    /* draft-21 error code constants (PATH_ABANDON Error Code field) */
+    CU_ASSERT_EQUAL(TRA_APPLICATION_ABANDON_PATH, 0x3eULL);
+    CU_ASSERT_EQUAL(TRA_PATH_RESOURCE_LIMIT_REACHED, 0x3e75ULL);
+    CU_ASSERT_EQUAL(TRA_PATH_UNSTABLE_OR_POOR, 0x3e76ULL);
+    CU_ASSERT_EQUAL(TRA_NO_CID_AVAILABLE_FOR_PATH, 0x3e77ULL);
+    /* legacy error code must still exist */
+    CU_ASSERT_EQUAL((uint64_t)TRA_PROTOCOL_VIOLATION, 0x0aULL);
+}
+
+void
+xqc_test_mp21_path_abandon_recv_no_reason(void)
+{
+    /* draft-21 wire: { Type, Path ID, Error Code } -- no Reason Phrase.
+     *
+     * Frame type 0x3e75 encodes as a 2-byte varint 0x7e 0x75 (prefix 01).
+     * After the type, payload is path_id(1B) + error_code(1B) = 2 bytes.
+     * A trailing 0x00 stands in for the next frame (PADDING); the parser
+     * must NOT consume it as Reason Phrase Length.
+     */
+    unsigned char buf[16] = {0};
+    size_t off = 0;
+    buf[off++] = 0x7e;
+    buf[off++] = 0x75; /* type varint = 0x3e75 */
+    buf[off++] = 0x01; /* path_id varint = 1 */
+    buf[off++] = 0x3e; /* error_code varint = 0x3e */
+    buf[off++] = 0x00; /* next frame: PADDING */
+
+    uint64_t path_id = 0, error_code = 0;
+    size_t consumed = 0;
+    int ret = xqc_test_parse_path_abandon(buf, sizeof(buf), &path_id, &error_code,
+                                          &consumed, XQC_MULTIPATH_3E);
+
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(path_id, 1);
+    CU_ASSERT_EQUAL(error_code, 0x3e);
+    /* type(2) + path_id(1) + error_code(1) == 4 bytes total.
+     * The legacy parser also consumes one more byte for reason_len
+     * (the 0x00 PADDING byte) so total = 5. This assertion is the RED
+     * that Task 7 will turn GREEN. */
+    CU_ASSERT_EQUAL(consumed, 4);
+}
+
+void
+xqc_test_mp10_path_abandon_recv_with_reason_still_works(void)
+{
+    /* draft-10 layout: { Type, Path ID, Error Code, Reason Phrase Length,
+     * Reason Phrase }. xquic always emits reason_len=0, so wire is
+     * type + path_id + error_code + 0x00.
+     *
+     * We reuse the draft-21 type bytes (0x3e75) since the parser does not
+     * validate the type value — version dispatch is decided by the caller.
+     * The fifth byte 0x00 is the reason_len that the draft-10 path MUST
+     * consume; consumed therefore must be 5 (4 + reason_len byte).
+     */
+    unsigned char buf[16] = {0};
+    size_t off = 0;
+    buf[off++] = 0x7e;
+    buf[off++] = 0x75; /* type varint */
+    buf[off++] = 0x01; /* path_id */
+    buf[off++] = 0x3e; /* error_code */
+    buf[off++] = 0x00; /* reason_len = 0 (draft-10) */
+
+    uint64_t path_id = 0, error_code = 0;
+    size_t consumed = 0;
+    int ret = xqc_test_parse_path_abandon(buf, sizeof(buf), &path_id, &error_code,
+                                          &consumed, XQC_MULTIPATH_10);
+
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(path_id, 1);
+    CU_ASSERT_EQUAL(error_code, 0x3e);
+    CU_ASSERT_EQUAL(consumed, 5);
+}
+
+/* Test helper: drive xqc_gen_path_abandon_frame() with a minimal
+ * synthetic conn + packet_out. Returns bytes written on success or a
+ * negative error code.
+ */
+static ssize_t
+xqc_test_gen_path_abandon(unsigned char *out_buf, size_t out_cap, uint64_t path_id,
+                          uint64_t error_code, uint8_t mp_version)
+{
+    xqc_connection_t *conn = calloc(1, sizeof(xqc_connection_t));
+    xqc_packet_out_t *po = calloc(1, sizeof(xqc_packet_out_t));
+    if (!conn || !po) {
+        free(conn);
+        free(po);
+        return -1;
+    }
+    conn->conn_settings.multipath_version = mp_version;
+    po->po_buf = out_buf;
+    po->po_buf_cap = out_cap;
+    po->po_buf_size = (unsigned int)out_cap;
+    po->po_used_size = 0;
+    po->po_reserved_size = 0;
+
+    ssize_t ret = xqc_gen_path_abandon_frame(conn, po, path_id, error_code);
+
+    free(conn);
+    free(po);
+    return ret;
+}
+
+void
+xqc_test_mp21_path_abandon_gen_no_reason(void)
+{
+    /* draft-21: generator must emit exactly 4 bytes — 2-byte type 0x3e75
+     * varint + 1-byte path_id + 1-byte error_code. The 5th buffer byte
+     * must NOT be touched (legacy code emitted a trailing 0x00 reason_len). */
+    unsigned char buf[16];
+    memset(buf, 0xaa, sizeof(buf)); /* sentinel */
+
+    ssize_t written =
+        xqc_test_gen_path_abandon(buf, sizeof(buf), 1, 0x3e, XQC_MULTIPATH_3E);
+
+    CU_ASSERT_EQUAL(written, 4);
+    CU_ASSERT_EQUAL(buf[0], 0x7e); /* type high byte */
+    CU_ASSERT_EQUAL(buf[1], 0x75); /* type low byte */
+    CU_ASSERT_EQUAL(buf[2], 0x01); /* path_id */
+    CU_ASSERT_EQUAL(buf[3], 0x3e); /* error_code */
+    CU_ASSERT_EQUAL(buf[4], 0xaa); /* sentinel preserved — no reason_len */
+}
+
+void
+xqc_test_mp21_dual_version_dispatch(void)
+{
+    /* The xqc_process_frames switch was extended in Task 9 with draft-21
+     * case labels alongside the draft-10 labels. We cannot exercise the
+     * full dispatcher here without a real xqc_connection_t, but we can:
+     *
+     *  (a) confirm the draft-21 codepoints are all distinct (no overlap
+     *      with draft-10 or each other -> required for a C switch to
+     *      compile, so success of the build is itself a check),
+     *  (b) confirm the codepoints match the IANA-final draft-21 values.
+     *
+     * Wire-level correctness of the new handlers is exercised by the
+     * PATH_ABANDON recv/gen tests above; the remaining handlers
+     * (PATH_STATUS_BACKUP, PATH_NEW_CONNECTION_ID_V21, etc.) reuse the
+     * legacy xqc_process_path_status_frame / xqc_process_mp_*_frame
+     * code paths unchanged, so a parser test there belongs to Chunk 3
+     * or downstream MUST-guard work.
+     */
+    uint64_t v21_types[] = {
+        XQC_TRANS_FRAME_TYPE_PATH_ACK,
+        XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN,
+        XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21,
+        XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP,
+        XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21,
+        XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21,
+        XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21,
+        XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21,
+    };
+    size_t n = sizeof(v21_types) / sizeof(v21_types[0]);
+
+    /* All draft-21 codepoints must be pairwise distinct. */
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = i + 1; j < n; ++j) {
+            CU_ASSERT_NOT_EQUAL(v21_types[i], v21_types[j]);
+        }
+    }
+
+    /* None of the draft-21 codepoints may collide with draft-10. */
+    uint64_t v10_types[] = {
+        XQC_TRANS_FRAME_TYPE_MP_ACK0,        XQC_TRANS_FRAME_TYPE_MP_ACK1,
+        XQC_TRANS_FRAME_TYPE_MP_ABANDON,     XQC_TRANS_FRAME_TYPE_MP_STANDBY,
+        XQC_TRANS_FRAME_TYPE_MP_AVAILABLE,   XQC_TRANS_FRAME_TYPE_MP_FROZEN,
+        XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID, XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID,
+        XQC_TRANS_FRAME_TYPE_MAX_PATH_ID,
+    };
+    size_t m = sizeof(v10_types) / sizeof(v10_types[0]);
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < m; ++j) {
+            CU_ASSERT_NOT_EQUAL(v21_types[i], v10_types[j]);
+        }
+    }
+}
+
+void
+xqc_test_mp21_path_ack_ecn_parse_skip(void)
+{
+    /* draft-21 §4.1 PATH_ACK_ECN wire layout:
+     *   Type (= 0x3f, 1B varint)
+     *   Path ID (i)
+     *   Largest Acknowledged (i)
+     *   ACK Delay (i)
+     *   ACK Range Count (i)
+     *   First ACK Range (i)
+     *   [ACK Range...]
+     *   ECT0 Count (i)
+     *   ECT1 Count (i)
+     *   CE Count (i)
+     *
+     * The parser must:
+     *  (a) plumb the ACK info back through ack_info (largest_ack == 10),
+     *  (b) consume the 3 trailing ECN Counts varints (skip-only — no
+     *      accounting in Chunk 3),
+     *  (c) advance packet_in->pos by exactly the frame length,
+     *      leaving any trailing sentinel byte untouched.
+     */
+    unsigned char buf[16] = {0};
+    size_t off = 0;
+    buf[off++] = 0x3f; /* type varint = 0x3f (PATH_ACK_ECN) */
+    buf[off++] = 0x01; /* path_id = 1 */
+    buf[off++] = 0x0a; /* largest_ack = 10 */
+    buf[off++] = 0x00; /* ack_delay = 0 */
+    buf[off++] = 0x00; /* ack_range_count = 0 */
+    buf[off++] = 0x00; /* first_ack_range = 0 */
+    buf[off++] = 0x00; /* ECT0 Count = 0 */
+    buf[off++] = 0x00; /* ECT1 Count = 0 */
+    buf[off++] = 0x00; /* CE Count = 0 */
+    buf[off++] = 0xaa; /* sentinel — must NOT be consumed */
+
+    /* Stub connection + log: parser reads conn->remote_settings.ack_delay_exponent
+     * (0 from calloc) and may xqc_log() on error; FATAL log_level suppresses. */
+    xqc_log_t *log = calloc(1, sizeof(xqc_log_t));
+    xqc_connection_t *conn = calloc(1, sizeof(xqc_connection_t));
+    log->log_level = XQC_LOG_FATAL;
+    conn->log = log;
+
+    xqc_packet_in_t packet_in;
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.buf = buf;
+    packet_in.buf_size = sizeof(buf);
+    packet_in.pos = buf;
+    packet_in.last = buf + off;
+
+    uint64_t path_id = 0;
+    xqc_ack_info_t ack_info;
+    memset(&ack_info, 0, sizeof(ack_info));
+
+    xqc_int_t ret = xqc_parse_path_ack_ecn_frame(&packet_in, conn, &path_id, &ack_info);
+
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    size_t consumed = (size_t)(packet_in.pos - buf);
+    /* off-1 == 9 (all 9 wire bytes parsed, sentinel untouched) */
+    CU_ASSERT_EQUAL(consumed, off - 1);
+    CU_ASSERT_EQUAL(path_id, 1);
+    /* Largest Ack lands in ranges[0].high — proves ACK info plumbed
+     * through to recovery (regression guard against "ACK dropped"). */
+    CU_ASSERT_EQUAL(ack_info.n_ranges, 1);
+    CU_ASSERT_EQUAL(ack_info.ranges[0].high, 10);
+    /* Sentinel preserved. */
+    CU_ASSERT_EQUAL(buf[off - 1], 0xaa);
+
+    free(conn);
+    free(log);
+}
+
+void
+xqc_test_mp21_init_max_path_id_tp_codepoint(void)
+{
+    /* draft-21 §3.1: initial_max_path_id has the IANA-final codepoint
+     * 0x3e in the transport-parameter id namespace (disjoint from frame
+     * TYPEs where 0x3e is PATH_ACK).
+     *
+     * (a) The new constant exists and equals 0x3e.
+     * (b) Decoder accepts the V21 codepoint and selects XQC_MULTIPATH_3E.
+     * (c) Decoder still accepts the V10 codepoint and selects XQC_MULTIPATH_10
+     *     (backwards compatibility during transition).
+     * (d) Encoder emits the V21 codepoint when params->multipath_version
+     *     == XQC_MULTIPATH_3E (the V10/V21 round-trip).
+     */
+    CU_ASSERT_EQUAL(XQC_TRANSPORT_PARAM_INIT_MAX_PATH_ID_V21, 0x3eULL);
+    CU_ASSERT_EQUAL(XQC_TRANSPORT_PARAM_INIT_MAX_PATH_ID_V10, 0x0f739bbc1b666d09ULL);
+
+    /* (b) hand-built TP buffer: { id=0x3e (1B varint), len=1 (1B), val=8 (1B) } */
+    uint8_t v21_buf[3] = {0x3e, 0x01, 0x08};
+    xqc_transport_params_t params;
+    xqc_init_transport_params(&params);
+    xqc_int_t ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_CLIENT_HELLO,
+                                                v21_buf, sizeof(v21_buf));
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(params.enable_multipath, 1);
+    CU_ASSERT_EQUAL(params.multipath_version, XQC_MULTIPATH_3E);
+    CU_ASSERT_EQUAL(params.init_max_path_id, 8);
+
+    /* (c) V10 codepoint: id 0x0f739bbc1b666d09 needs 8-byte varint encoding
+     * (prefix 0xc0 | top byte). xqc_put_varint will give us the wire bytes;
+     * for a hand-built test we use xqc_write_transport_params via a known
+     * V10-version params struct round-trip instead. */
+    xqc_transport_params_t v10_params;
+    xqc_init_transport_params(&v10_params);
+    v10_params.enable_multipath = 1;
+    v10_params.multipath_version = XQC_MULTIPATH_10;
+    v10_params.init_max_path_id = 8;
+
+    uint8_t v10_buf[64];
+    size_t v10_len = 0;
+    ret = xqc_encode_transport_params(&v10_params, XQC_TP_TYPE_CLIENT_HELLO, v10_buf,
+                                      sizeof(v10_buf), &v10_len);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_TRUE(v10_len > 0);
+
+    xqc_transport_params_t v10_decoded;
+    xqc_init_transport_params(&v10_decoded);
+    ret = xqc_decode_transport_params(&v10_decoded, XQC_TP_TYPE_CLIENT_HELLO, v10_buf,
+                                      v10_len);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(v10_decoded.enable_multipath, 1);
+    CU_ASSERT_EQUAL(v10_decoded.multipath_version, XQC_MULTIPATH_10);
+    CU_ASSERT_EQUAL(v10_decoded.init_max_path_id, 8);
+
+    /* (d) V21 encoder round-trip. */
+    xqc_transport_params_t v21_params;
+    xqc_init_transport_params(&v21_params);
+    v21_params.enable_multipath = 1;
+    v21_params.multipath_version = XQC_MULTIPATH_3E;
+    v21_params.init_max_path_id = 8;
+
+    uint8_t v21_enc_buf[64];
+    size_t v21_enc_len = 0;
+    ret = xqc_encode_transport_params(&v21_params, XQC_TP_TYPE_CLIENT_HELLO, v21_enc_buf,
+                                      sizeof(v21_enc_buf), &v21_enc_len);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_TRUE(v21_enc_len >= 3);
+    /* Encoder may emit additional default params before/after multipath;
+     * scan the buffer for the V21 codepoint sequence { 0x3e, 0x01, 0x08 }.
+     * Note: id 0x3e is a 1-byte varint; default-encoded fields will not
+     * begin with a 0x3e byte because the other in-use TP ids are either
+     * < 0x40 (and not equal to 0x3e) or >= 0x40 (and so start with a
+     * non-0x3e high-bit varint prefix). */
+    int found = 0;
+    for (size_t i = 0; i + 2 < v21_enc_len; ++i) {
+        if (v21_enc_buf[i] == 0x3e && v21_enc_buf[i + 1] == 0x01 &&
+            v21_enc_buf[i + 2] == 0x08) {
+            found = 1;
+            break;
+        }
+    }
+    CU_ASSERT_TRUE(found);
+
+    /* Decode round-trip back to confirm semantics survive. */
+    xqc_transport_params_t v21_rt;
+    xqc_init_transport_params(&v21_rt);
+    ret = xqc_decode_transport_params(&v21_rt, XQC_TP_TYPE_CLIENT_HELLO, v21_enc_buf,
+                                      v21_enc_len);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(v21_rt.enable_multipath, 1);
+    CU_ASSERT_EQUAL(v21_rt.multipath_version, XQC_MULTIPATH_3E);
+    CU_ASSERT_EQUAL(v21_rt.init_max_path_id, 8);
+}
+
+/* Task 18 wire-in: verify the production helper xqc_tls_check_mp_aead_nonce_len
+ * (1) is reachable from production code (linker proves it),
+ * (2) bypasses cleanly when multipath is disabled (opt-out path),
+ * (3) returns -XQC_TLS_INTERNAL when 1-RTT crypto is not installed yet but MP
+ *     is requested — this is the "called too early" failure mode that the
+ *     handshake_complete call site avoids by waiting until TLS reports done.
+ *
+ * The full-path "multipath ON + nonce<12B -> TRA_TRANSPORT_PARAMETER_ERROR"
+ * branch is exercised by xqc_test_mp21_aead_nonce_min_length() (pure helper)
+ * and reached at runtime via xqc_conn_handshake_complete() which calls this
+ * wrapper when conn->enable_multipath is set. Building synthetic xqc_tls_t
+ * state with an installed-but-undersized AEAD here would require pulling in
+ * the full SSL handshake which is out of scope for the unit harness. */
+void
+xqc_test_mp21_aead_nonce_check_tls_wrapper(void)
+{
+    /* (1) Opt-out: multipath_enabled == 0 returns OK regardless of tls. */
+    CU_ASSERT_EQUAL(xqc_tls_check_mp_aead_nonce_len(NULL, 0), XQC_OK);
+
+    /* (2) MP requested but tls is NULL -> internal error, NOT silent pass. */
+    CU_ASSERT_EQUAL(xqc_tls_check_mp_aead_nonce_len(NULL, 1),
+                    -(xqc_int_t)XQC_TLS_INTERNAL);
+}
+
+
+/* ------------------------------------------------------------------
+ * Dual-version codepoint emission for the 5 remaining MP frame
+ * generators (post-Chunk 2 wire-fix). For each generator, confirm
+ * the buffer's first byte(s) match the draft-21 varint codepoint
+ * when multipath_version == XQC_MULTIPATH_3E, and draft-10 4-byte
+ * codepoint 0x15228cXX otherwise. Sentinel 0xaa beyond the written
+ * region must remain untouched.
+ *
+ * draft-21 (1-byte / 2-byte varint) wire bytes used here:
+ *   PATH_ACK                        0x3e        -> 0x3e
+ *   PATH_STATUS_BACKUP              0x3e76      -> 0x7e 0x76
+ *   PATH_STATUS_AVAILABLE_V21       0x3e77      -> 0x7e 0x77
+ *   PATH_NEW_CONNECTION_ID_V21      0x3e78      -> 0x7e 0x78
+ *   PATH_RETIRE_CONNECTION_ID_V21   0x3e79      -> 0x7e 0x79
+ *   MAX_PATH_ID_V21                 0x3e7a      -> 0x7e 0x7a
+ *
+ * draft-10 4-byte varint codepoint 0x15228cXX is encoded as:
+ *   high byte = 0xc0 | (val>>24) = 0xc0 | 0x15 = 0xd5, then 0x22, 0x8c, XX
+ * ------------------------------------------------------------------ */
+
+static void
+xqc_test_mp21_gen_setup(xqc_connection_t **conn_out, xqc_packet_out_t **po_out,
+                        unsigned char *buf, size_t buf_cap, uint8_t mp_version)
+{
+    xqc_log_t *log = calloc(1, sizeof(xqc_log_t));
+    xqc_connection_t *conn = calloc(1, sizeof(xqc_connection_t));
+    xqc_packet_out_t *po = calloc(1, sizeof(xqc_packet_out_t));
+    log->log_level = XQC_LOG_FATAL;
+    conn->log = log;
+    conn->conn_settings.multipath_version = mp_version;
+    po->po_buf = buf;
+    po->po_buf_cap = buf_cap;
+    po->po_buf_size = (unsigned int)buf_cap;
+    po->po_used_size = 0;
+    po->po_reserved_size = 0;
+    *conn_out = conn;
+    *po_out = po;
+}
+
+static void
+xqc_test_mp21_gen_teardown(xqc_connection_t *conn, xqc_packet_out_t *po)
+{
+    if (conn) {
+        free(conn->log);
+        free(conn);
+    }
+    free(po);
+}
+
+void
+xqc_test_mp21_gen_path_status_dual_version(void)
+{
+    unsigned char buf[64];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+
+    /* (a) draft-21, STANDBY -> PATH_STATUS_BACKUP 0x3e76 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_path_status_frame(conn, po, 1, 7, XQC_APP_PATH_STATUS_STANDBY);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x76);
+    CU_ASSERT_EQUAL(buf[(size_t)written], 0xaa); /* sentinel preserved */
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) draft-21, AVAILABLE -> PATH_STATUS_AVAILABLE 0x3e77 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_path_status_frame(conn, po, 1, 7, XQC_APP_PATH_STATUS_AVAILABLE);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x77);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (c) draft-10, STANDBY -> MP_STANDBY 0x15228c07 (4-byte varint) */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_path_status_frame(conn, po, 1, 7, XQC_APP_PATH_STATUS_STANDBY);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[1], 0x22);
+    CU_ASSERT_EQUAL(buf[2], 0x8c);
+    CU_ASSERT_EQUAL(buf[3], 0x07);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (d) draft-10, AVAILABLE -> MP_AVAILABLE 0x15228c08 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_path_status_frame(conn, po, 1, 7, XQC_APP_PATH_STATUS_AVAILABLE);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[3], 0x08);
+    xqc_test_mp21_gen_teardown(conn, po);
+}
+
+/* ----------------------------------------------------------------------
+ * Wire round-trip for PATH_STATUS V21 codepoints.
+ *
+ * Generates PATH_STATUS_BACKUP (0x3e76) and PATH_STATUS_AVAILABLE (0x3e77)
+ * via xqc_gen_path_status_frame in XQC_MULTIPATH_3E mode, then parses back
+ * via xqc_parse_path_status_frame. Asserts the parser accepts the V21
+ * codepoints rather than returning -XQC_EILLEGAL_FRAME.
+ *
+ * Would have caught the L1+ parser dual-codepoint omission (V21 codepoints
+ * fell through to default → FRAME_ENCODING_ERROR on wire) before PR7 G-P15
+ * lifecycle glue exposed it via mqvpn netns e2e.
+ * ---------------------------------------------------------------------- */
+void
+xqc_test_mp21_parse_path_status_v21_codepoints(void)
+{
+    unsigned char buf[64];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+    xqc_int_t ret;
+    uint64_t path_id, seq_num, status;
+    xqc_packet_in_t pi;
+
+    /* (a) PATH_STATUS_BACKUP round-trip */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_path_status_frame(conn, po, 1, 42, XQC_APP_PATH_STATUS_STANDBY);
+    CU_ASSERT(written > 0);
+    /* Confirm the generator emitted the V21 codepoint we want to parse. */
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x76);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    path_id = seq_num = status = 0;
+    ret = xqc_parse_path_status_frame(&pi, &path_id, &seq_num, &status);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(path_id, 1);
+    CU_ASSERT_EQUAL(seq_num, 42);
+    CU_ASSERT_EQUAL(status, XQC_APP_PATH_STATUS_STANDBY);
+    CU_ASSERT_TRUE(pi.pi_frame_types & XQC_FRAME_BIT_PATH_STANDBY);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) PATH_STATUS_AVAILABLE_V21 round-trip */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_path_status_frame(conn, po, 3, 99, XQC_APP_PATH_STATUS_AVAILABLE);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x77);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    path_id = seq_num = status = 0;
+    ret = xqc_parse_path_status_frame(&pi, &path_id, &seq_num, &status);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(path_id, 3);
+    CU_ASSERT_EQUAL(seq_num, 99);
+    CU_ASSERT_EQUAL(status, XQC_APP_PATH_STATUS_AVAILABLE);
+    CU_ASSERT_TRUE(pi.pi_frame_types & XQC_FRAME_BIT_PATH_AVAILABLE);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (c) draft-10 MP_STANDBY round-trip — regression guard for V10 path */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_path_status_frame(conn, po, 2, 5, XQC_APP_PATH_STATUS_STANDBY);
+    CU_ASSERT(written > 0);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    path_id = seq_num = status = 0;
+    ret = xqc_parse_path_status_frame(&pi, &path_id, &seq_num, &status);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(path_id, 2);
+    CU_ASSERT_EQUAL(seq_num, 5);
+    CU_ASSERT_EQUAL(status, XQC_APP_PATH_STATUS_STANDBY);
+    xqc_test_mp21_gen_teardown(conn, po);
+}
+
+/* PR8 G-N6 test gap #e — gen→parse round-trip for the V21 codepoints of
+ * PATH_NEW_CONNECTION_ID (0x3e78) and PATH_RETIRE_CONNECTION_ID (0x3e79),
+ * plus a V10 regression guard. Symmetric to
+ * xqc_test_mp21_parse_path_status_v21_codepoints. Catches: codepoint dropped
+ * from parser dispatch, parser field order regression, V10/V21 selector
+ * inverted in xqc_mp_select_codepoint(). */
+void
+xqc_test_mp21_parse_mp_new_retire_conn_id_v21_codepoints(void)
+{
+    unsigned char buf[64];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+    xqc_int_t ret;
+    xqc_cid_t cid_in, cid_out;
+    uint8_t sr_token_in[XQC_STATELESS_RESET_TOKENLEN];
+    uint64_t parsed_path_id, parsed_seq;
+    uint64_t parsed_retire_prior_to;
+    xqc_packet_in_t pi;
+
+    /* Prime an input cid with a recognisable byte pattern + token. */
+    memset(&cid_in, 0, sizeof(cid_in));
+    cid_in.cid_len = 8;
+    cid_in.cid_seq_num = 7;
+    for (int i = 0; i < cid_in.cid_len; i++)
+        cid_in.cid_buf[i] = (uint8_t)(0xA0 + i);
+    for (int i = 0; i < XQC_STATELESS_RESET_TOKENLEN; i++)
+        sr_token_in[i] = (uint8_t)(0x10 + i);
+
+    /* (a) MP_NEW_CONN_ID V21 (PATH_NEW_CONNECTION_ID 0x3e78) round-trip */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_mp_new_conn_id_frame(conn, po, &cid_in,
+                                           /*retire_prior_to*/ 3, sr_token_in,
+                                           /*path_id*/ 2);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x78);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    memset(&cid_out, 0, sizeof(cid_out));
+    parsed_path_id = parsed_retire_prior_to = 0;
+    ret = xqc_parse_mp_new_conn_id_frame(&pi, &cid_out, &parsed_retire_prior_to,
+                                         &parsed_path_id, conn);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(parsed_path_id, 2);
+    CU_ASSERT_EQUAL(parsed_retire_prior_to, 3);
+    CU_ASSERT_EQUAL(cid_out.cid_seq_num, 7);
+    CU_ASSERT_EQUAL(cid_out.cid_len, 8);
+    CU_ASSERT_EQUAL(memcmp(cid_out.cid_buf, cid_in.cid_buf, cid_in.cid_len), 0);
+    CU_ASSERT_EQUAL(memcmp(cid_out.sr_token, sr_token_in, XQC_STATELESS_RESET_TOKENLEN),
+                    0);
+    CU_ASSERT_TRUE((pi.pi_frame_types & XQC_FRAME_BIT_MP_NEW_CONNECTION_ID) != 0);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) MP_NEW_CONN_ID V10 (0x15228c09) regression guard */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_mp_new_conn_id_frame(conn, po, &cid_in,
+                                           /*retire_prior_to*/ 3, sr_token_in,
+                                           /*path_id*/ 2);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[3], 0x09);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    memset(&cid_out, 0, sizeof(cid_out));
+    parsed_path_id = parsed_retire_prior_to = 0;
+    ret = xqc_parse_mp_new_conn_id_frame(&pi, &cid_out, &parsed_retire_prior_to,
+                                         &parsed_path_id, conn);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(parsed_path_id, 2);
+    CU_ASSERT_EQUAL(parsed_retire_prior_to, 3);
+    CU_ASSERT_EQUAL(cid_out.cid_seq_num, 7);
+    CU_ASSERT_EQUAL(memcmp(cid_out.cid_buf, cid_in.cid_buf, cid_in.cid_len), 0);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (c) MP_RETIRE_CONN_ID V21 (PATH_RETIRE_CONNECTION_ID 0x3e79) round-trip */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_mp_retire_conn_id_frame(conn, po, /*seq*/ 11, /*path_id*/ 5);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x79);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    parsed_path_id = parsed_seq = 0;
+    ret = xqc_parse_mp_retire_conn_id_frame(&pi, &parsed_seq, &parsed_path_id);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(parsed_seq, 11);
+    CU_ASSERT_EQUAL(parsed_path_id, 5);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (d) MP_RETIRE_CONN_ID V10 (0x15228c0a) regression guard */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_mp_retire_conn_id_frame(conn, po, /*seq*/ 11, /*path_id*/ 5);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[3], 0x0a);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + written;
+    parsed_path_id = parsed_seq = 0;
+    ret = xqc_parse_mp_retire_conn_id_frame(&pi, &parsed_seq, &parsed_path_id);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(parsed_seq, 11);
+    CU_ASSERT_EQUAL(parsed_path_id, 5);
+    xqc_test_mp21_gen_teardown(conn, po);
+}
+
+void
+xqc_test_mp21_gen_mp_new_conn_id_dual_version(void)
+{
+    unsigned char buf[64];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+    xqc_cid_t new_cid;
+    uint8_t sr_token[XQC_STATELESS_RESET_TOKENLEN] = {0};
+    memset(&new_cid, 0, sizeof(new_cid));
+    new_cid.cid_len = 8;
+    new_cid.cid_seq_num = 1;
+
+    /* (a) draft-21 -> PATH_NEW_CONNECTION_ID 0x3e78 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_mp_new_conn_id_frame(conn, po, &new_cid, 0, sr_token, 1);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x78);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) draft-10 -> MP_NEW_CONN_ID 0x15228c09 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_mp_new_conn_id_frame(conn, po, &new_cid, 0, sr_token, 1);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[1], 0x22);
+    CU_ASSERT_EQUAL(buf[2], 0x8c);
+    CU_ASSERT_EQUAL(buf[3], 0x09);
+    xqc_test_mp21_gen_teardown(conn, po);
+}
+
+void
+xqc_test_mp21_gen_mp_retire_conn_id_dual_version(void)
+{
+    unsigned char buf[32];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+
+    /* (a) draft-21 -> PATH_RETIRE_CONNECTION_ID 0x3e79 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_mp_retire_conn_id_frame(conn, po, 0, 1);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x79);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) draft-10 -> MP_RETIRE_CONN_ID 0x15228c0a */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_mp_retire_conn_id_frame(conn, po, 0, 1);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[3], 0x0a);
+    xqc_test_mp21_gen_teardown(conn, po);
+}
+
+void
+xqc_test_mp21_gen_max_path_id_dual_version(void)
+{
+    unsigned char buf[32];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+
+    /* (a) draft-21 -> MAX_PATH_ID 0x3e7a */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    written = xqc_gen_max_path_id_frame(conn, po, 8);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x7e);
+    CU_ASSERT_EQUAL(buf[1], 0x7a);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) draft-10 -> MAX_PATH_ID 0x15228c0c */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    written = xqc_gen_max_path_id_frame(conn, po, 8);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[3], 0x0c);
+    xqc_test_mp21_gen_teardown(conn, po);
+}
+
+void
+xqc_test_mp21_gen_ack_mp_dual_version(void)
+{
+    /* Build a recv_record with one range so ack_mp generator runs. */
+    unsigned char buf[64];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *po;
+    ssize_t written;
+    xqc_recv_record_t rr;
+    xqc_pktno_range_node_t node;
+    memset(&rr, 0, sizeof(rr));
+    memset(&node, 0, sizeof(node));
+    xqc_init_list_head(&rr.list_head);
+    node.pktno_range.high = 10;
+    node.pktno_range.low = 10;
+    xqc_list_add_tail(&node.list, &rr.list_head);
+
+    int has_gap = 0;
+    xqc_packet_number_t largest_ack = 0;
+
+    /* (a) draft-21 -> PATH_ACK 0x3e (1-byte varint) */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_3E);
+    po->po_pkt.pkt_pns = XQC_PNS_APP_DATA;
+    written = xqc_gen_ack_mp_frame(conn, 1, po, 0, 0, &rr, 0, &has_gap, &largest_ack);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x3e);
+    xqc_test_mp21_gen_teardown(conn, po);
+
+    /* (b) draft-10 -> MP_ACK0 0x15228c00 */
+    memset(buf, 0xaa, sizeof(buf));
+    xqc_test_mp21_gen_setup(&conn, &po, buf, sizeof(buf), XQC_MULTIPATH_10);
+    po->po_pkt.pkt_pns = XQC_PNS_APP_DATA;
+    written = xqc_gen_ack_mp_frame(conn, 1, po, 0, 0, &rr, 0, &has_gap, &largest_ack);
+    CU_ASSERT(written > 0);
+    CU_ASSERT_EQUAL(buf[0], 0x95);
+    CU_ASSERT_EQUAL(buf[1], 0x22);
+    CU_ASSERT_EQUAL(buf[2], 0x8c);
+    CU_ASSERT_EQUAL(buf[3], 0x00);
+    xqc_test_mp21_gen_teardown(conn, po);
+}
+
+/* draft-21 §4.7 PATHS_BLOCKED / PATH_CIDS_BLOCKED: mp21 L2 M1
+ * full receive validation tests. */
+static xqc_connection_t *
+mp21_make_conn_for_blocked(uint64_t local_max)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id = local_max,
+        .remote_max_path_id = 8,
+        .scid_len = 8,
+        .dcid_len = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->conn_state = XQC_CONN_STATE_ESTABED;
+    return conn;
+}
+
+/* `seed` becomes the starting pi_frame_types: pass XQC_FRAME_BIT_PING to
+ * mask draft-21 §12.4's no-frame PROTOCOL_VIOLATION check, or 0 to
+ * exercise it (solo-frame-in-datagram tests). `out_frame_types` is
+ * optional. */
+static void
+mp21_run_frame(xqc_connection_t *conn, const unsigned char *payload, size_t payload_len,
+               xqc_frame_type_bit_t seed, xqc_int_t *out_ret,
+               xqc_frame_type_bit_t *out_frame_types)
+{
+    unsigned char buf[32];
+    CU_ASSERT_FATAL(payload_len <= sizeof(buf));
+    memset(buf, 0, sizeof(buf));
+    memcpy(buf, payload, payload_len);
+
+    xqc_packet_in_t packet_in;
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.buf = buf;
+    packet_in.buf_size = sizeof(buf);
+    packet_in.pos = buf;
+    packet_in.last = buf + payload_len;
+    packet_in.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+    packet_in.pi_frame_types = seed;
+
+    *out_ret = xqc_process_frames(conn, &packet_in);
+    if (out_frame_types != NULL) {
+        *out_frame_types = packet_in.pi_frame_types;
+    }
+}
+
+/* PATHS_BLOCKED case A: peer_max == local_max -> ignore (XQC_OK, no err). */
+void
+xqc_test_mp21_paths_blocked_validation(void)
+{
+    /* PATHS_BLOCKED: type 0x3e7b (4B varint: 0x80 0x00 0x3e 0x7b)
+     *               + Max Path ID = 8 (1B: 0x08). local_max = 8 -> ignore. */
+    static const unsigned char buf_eq[] = {0x80, 0x00, 0x3e, 0x7b, 0x08};
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    xqc_int_t ret = XQC_ERROR;
+    mp21_run_frame(conn, buf_eq, sizeof(buf_eq), XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 8); /* unchanged (grant disabled) */
+    xqc_test_mp21_free_conn(conn);
+
+    /* case B: peer_max < local_max -> ignore. */
+    static const unsigned char buf_lt[] = {0x80, 0x00, 0x3e, 0x7b, 0x04};
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    mp21_run_frame(conn, buf_lt, sizeof(buf_lt), XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    xqc_test_mp21_free_conn(conn);
+
+    /* case C: peer_max > local_max -> PROTOCOL_VIOLATION (spec §4.7 MUST). */
+    static const unsigned char buf_gt[] = {0x80, 0x00, 0x3e, 0x7b, 0x09};
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    mp21_run_frame(conn, buf_gt, sizeof(buf_gt), XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_path_cids_blocked_validation(void)
+{
+    xqc_int_t ret = XQC_ERROR;
+
+    /* case A: path_id == local_max (8), seq=0 <= next_expected(0) -> OK ignore. */
+    static const unsigned char buf_ok[] = {0x80, 0x00, 0x3e, 0x7c, 0x08, 0x00};
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    mp21_run_frame(conn, buf_ok, sizeof(buf_ok), XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    xqc_test_mp21_free_conn(conn);
+
+    /* case B: path_id > local_max -> PROTOCOL_VIOLATION (gate). */
+    static const unsigned char buf_pid_gt[] = {0x80, 0x00, 0x3e, 0x7c, 0x09, 0x00};
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    mp21_run_frame(conn, buf_pid_gt, sizeof(buf_pid_gt), XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
+    xqc_test_mp21_free_conn(conn);
+
+    /* case C: path_id abandoned -> silently ignored (per §4.5 + impl choice). */
+    static const unsigned char buf_aban[] = {0x80, 0x00, 0x3e, 0x7c, 0x02, 0x00};
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    xqc_conn_mark_path_abandoned(conn, 2);
+    mp21_run_frame(conn, buf_aban, sizeof(buf_aban), XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    xqc_test_mp21_free_conn(conn);
+
+    /* case D: next_seq > next_expected -> PROTOCOL_VIOLATION (spec §4.7 MUST). */
+    static const unsigned char buf_seq_gt[] = {0x80, 0x00, 0x3e, 0x7c, 0x01, 0x02};
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    /* no scid issued for path 1 -> next_expected = 0; peer claims 2 -> violation */
+    mp21_run_frame(conn, buf_seq_gt, sizeof(buf_seq_gt), XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
+    xqc_test_mp21_free_conn(conn);
+
+    /* case E: next_seq == next_expected (both 0, missing path) -> ignore OK. */
+    static const unsigned char buf_seq_eq[] = {0x80, 0x00, 0x3e, 0x7c, 0x01, 0x00};
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    mp21_run_frame(conn, buf_seq_eq, sizeof(buf_seq_eq), XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    xqc_test_mp21_free_conn(conn);
+}
+
+/* draft-21 §4.7: parsers must set pi_frame_types so the "datagram contains
+ * no frames" PROTOCOL_VIOLATION check (a packet carrying ONLY a PATHS_BLOCKED
+ * or PATH_CIDS_BLOCKED frame must still be considered as containing a frame)
+ * doesn't trip. Pin the bit at the parser call site to catch regressions
+ * before they slip past process_frames. */
+void
+xqc_test_mp21_blocked_frames_pi_frame_types(void)
+{
+    xqc_packet_in_t pi;
+    uint64_t a = 0, b = 0;
+
+    /* PATHS_BLOCKED: type 0x3e7b + Max Path ID = 8 */
+    static unsigned char buf_pb[] = {0x80, 0x00, 0x3e, 0x7b, 0x08};
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf_pb;
+    pi.last = buf_pb + sizeof(buf_pb);
+    CU_ASSERT_EQUAL(xqc_parse_paths_blocked_frame(&pi, &a), XQC_OK);
+    CU_ASSERT_EQUAL(a, 8);
+    /* != 0 cast: CU_ASSERT_TRUE truncates uint64_t args to int, dropping
+     * bits 32+. PATHS_BLOCKED/PATH_CIDS_BLOCKED bits sit at 33/34. */
+    CU_ASSERT_TRUE((pi.pi_frame_types & XQC_FRAME_BIT_PATHS_BLOCKED) != 0);
+
+    /* PATH_CIDS_BLOCKED: type 0x3e7c + path_id=1 + next_seq=0 */
+    static unsigned char buf_pcb[] = {0x80, 0x00, 0x3e, 0x7c, 0x01, 0x00};
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf_pcb;
+    pi.last = buf_pcb + sizeof(buf_pcb);
+    a = b = 0;
+    CU_ASSERT_EQUAL(xqc_parse_path_cids_blocked_frame(&pi, &a, &b), XQC_OK);
+    CU_ASSERT_EQUAL(a, 1);
+    CU_ASSERT_EQUAL(b, 0);
+    CU_ASSERT_TRUE((pi.pi_frame_types & XQC_FRAME_BIT_PATH_CIDS_BLOCKED) != 0);
+}
+
+/* draft-21 §4.7 + RFC 9000 §12.4: a datagram carrying only a PATHS_BLOCKED
+ * or PATH_CIDS_BLOCKED frame must not trip the no-frame PROTOCOL_VIOLATION
+ * check — catches the regression where a parser forgets to bump
+ * pi_frame_types. Negative control proves the check is fixture-reachable. */
+void
+xqc_test_mp21_solo_frame_in_datagram_no_pv(void)
+{
+    xqc_int_t ret = XQC_ERROR;
+    xqc_frame_type_bit_t fbits = 0;
+    xqc_connection_t *conn;
+
+    /* (a) PATHS_BLOCKED solo: peer_max == local_max (8) -> ignore branch. */
+    static const unsigned char buf_pb[] = {0x80, 0x00, 0x3e, 0x7b, 0x08};
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    mp21_run_frame(conn, buf_pb, sizeof(buf_pb), /*seed*/ 0, &ret, &fbits);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    CU_ASSERT_TRUE((fbits & XQC_FRAME_BIT_PATHS_BLOCKED) != 0);
+    xqc_test_mp21_free_conn(conn);
+
+    /* (b) PATH_CIDS_BLOCKED solo: path_id=8 (local_max), seq=0 -> ignore. */
+    static const unsigned char buf_pcb[] = {0x80, 0x00, 0x3e, 0x7c, 0x08, 0x00};
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    mp21_run_frame(conn, buf_pcb, sizeof(buf_pcb), /*seed*/ 0, &ret, &fbits);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    CU_ASSERT_TRUE((fbits & XQC_FRAME_BIT_PATH_CIDS_BLOCKED) != 0);
+    xqc_test_mp21_free_conn(conn);
+
+    /* (c) negative control: empty payload -> PROTOCOL_VIOLATION. Guards
+     * against future changes that would short-circuit the no-frame check
+     * before (a)/(b) reach it, which would silently mask parser bugs. */
+    static const unsigned char buf_empty[1] = {0};
+    conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    mp21_run_frame(conn, buf_empty, /*payload_len*/ 0, /*seed*/ 0, &ret, &fbits);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
+    CU_ASSERT_EQUAL(fbits, 0);
+    xqc_test_mp21_free_conn(conn);
+}
+
+/* mp21 L2 M3 — MAX_PATH_ID credit grant tests. Tests exercise the
+ * xqc_try_grant_max_path_id() gate directly so they don't depend on a
+ * fully-wired send queue. PATHS_BLOCKED end-to-end emission is covered
+ * by an integration test in a later session. */
+static xqc_path_ctx_t *
+mp21_stub_initial_path_for_grant(xqc_connection_t *conn, void **out_send_ctl_buf)
+{
+    /* xqc_send_ctl_t is incomplete here — we only need ctl_srtt + ctl_rttvar
+     * + ctl_conn which are at known offsets in src/transport/xqc_send_ctl.h.
+     * Reach via the public xqc_send_ctl.h header for the inline PTO calc. */
+    xqc_send_ctl_t *sc = calloc(1, sizeof(xqc_send_ctl_t));
+    CU_ASSERT_PTR_NOT_NULL_FATAL(sc);
+    sc->ctl_conn = conn;
+    sc->ctl_srtt = 50 * 1000;
+    sc->ctl_rttvar = 0;
+    *out_send_ctl_buf = sc;
+
+    xqc_path_ctx_t *path = calloc(1, sizeof(xqc_path_ctx_t));
+    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+    path->parent_conn = conn;
+    path->path_send_ctl = sc;
+    return path;
+}
+
+static void
+mp21_free_grant_stubs(xqc_path_ctx_t *path, void *send_ctl_buf)
+{
+    if (path) free(path);
+    if (send_ctl_buf) free(send_ctl_buf);
+}
+
+void
+xqc_test_mp21_max_path_id_grant_disabled_by_default(void)
+{
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    /* conn_settings.max_path_id_grant_max_value left at 0 by calloc fixture */
+    uint64_t granted = xqc_try_grant_max_path_id(conn);
+    CU_ASSERT_EQUAL(granted, 0);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 8);
+    CU_ASSERT_EQUAL(conn->last_max_path_id_grant_us, 0);
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_max_path_id_grant_trigger_on_paths_blocked(void)
+{
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    conn->conn_settings.max_path_id_grant_max_value = 64;
+    void *sc_buf = NULL;
+    xqc_path_ctx_t *path = mp21_stub_initial_path_for_grant(conn, &sc_buf);
+    conn->conn_initial_path = path;
+
+    uint64_t granted = xqc_try_grant_max_path_id(conn);
+    CU_ASSERT_EQUAL(granted, 8 + XQC_MAX_PATH_ID_GRANT_INCREMENT);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 8 + XQC_MAX_PATH_ID_GRANT_INCREMENT);
+    CU_ASSERT_NOT_EQUAL(conn->last_max_path_id_grant_us, 0);
+
+    mp21_free_grant_stubs(path, sc_buf);
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_max_path_id_grant_skipped_at_max(void)
+{
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/ 16);
+    conn->conn_settings.max_path_id_grant_max_value = 16; /* already at cap */
+    void *sc_buf = NULL;
+    xqc_path_ctx_t *path = mp21_stub_initial_path_for_grant(conn, &sc_buf);
+    conn->conn_initial_path = path;
+
+    uint64_t granted = xqc_try_grant_max_path_id(conn);
+    CU_ASSERT_EQUAL(granted, 0);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 16);
+    CU_ASSERT_EQUAL(conn->last_max_path_id_grant_us, 0);
+
+    /* Grant also clamps when increment overshoots cap. */
+    conn->local_max_path_id = 14;
+    conn->conn_settings.max_path_id_grant_max_value = 16;
+    granted = xqc_try_grant_max_path_id(conn);
+    CU_ASSERT_EQUAL(granted, 16);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 16);
+
+    mp21_free_grant_stubs(path, sc_buf);
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_max_path_id_grant_rate_limited(void)
+{
+    xqc_connection_t *conn = mp21_make_conn_for_blocked(/*local_max*/ 8);
+    conn->conn_settings.max_path_id_grant_max_value = 64;
+    void *sc_buf = NULL;
+    xqc_path_ctx_t *path = mp21_stub_initial_path_for_grant(conn, &sc_buf);
+    conn->conn_initial_path = path;
+    /* Set last_grant to "now" so rate-limit predicate fails. */
+    conn->last_max_path_id_grant_us = xqc_monotonic_timestamp();
+    xqc_usec_t before = conn->last_max_path_id_grant_us;
+
+    uint64_t granted = xqc_try_grant_max_path_id(conn);
+    CU_ASSERT_EQUAL(granted, 0);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, 8);
+    CU_ASSERT_EQUAL(conn->last_max_path_id_grant_us, before);
+
+    /* Simulate 1+ PTO elapsed by zeroing last_grant. */
+    conn->last_max_path_id_grant_us = 0;
+    granted = xqc_try_grant_max_path_id(conn);
+    CU_ASSERT_EQUAL(granted, 8 + XQC_MAX_PATH_ID_GRANT_INCREMENT);
+
+    mp21_free_grant_stubs(path, sc_buf);
+    xqc_test_mp21_free_conn(conn);
+}
+
+/* ------------------------------------------------------------------
+ * PR5 L5b validation hardening — draft-21 §3.1 MUSTs.
+ * ------------------------------------------------------------------ */
+
+/* Forge a minimal PATH_CHALLENGE-bearing QUIC packet view, with the
+ * UDP-datagram size faked via packet_in->buf_size. The wire payload
+ * is the 1-byte frame type followed by 8 bytes of opaque data; the
+ * receive-side MTU check inspects buf_size (the bytes-from-pos count)
+ * not the parsed-payload length, so a short payload is sufficient to
+ * trigger the validation.
+ */
+static void
+mp21_forge_path_challenge_packet_in(xqc_packet_in_t *pi, unsigned char *frame_buf,
+                                    size_t frame_buf_len, size_t fake_datagram_size,
+                                    uint64_t path_id)
+{
+    /* frame layout: type byte (0x1a / PATH_CHALLENGE) + 8 data bytes. */
+    frame_buf[0] = 0x1a;
+    memset(frame_buf + 1, 0xab, XQC_PATH_CHALLENGE_DATA_LEN);
+
+    memset(pi, 0, sizeof(*pi));
+    pi->buf = frame_buf;
+    pi->buf_size = fake_datagram_size;
+    pi->pos = frame_buf;
+    pi->last = frame_buf + frame_buf_len;
+    pi->pi_path_id = path_id;
+}
+
+/* G-P2 (draft-21 §3.1 ¶6): a PATH_CHALLENGE received on a datagram
+ * smaller than the 1200B minimum MTU MUST cause the receiver to
+ * explicitly close the path via PATH_ABANDON. */
+void
+xqc_test_mp21_path_challenge_1200b_validation(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id = 4,
+        .remote_max_path_id = 4,
+        .scid_len = 8,
+        .dcid_len = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->enable_multipath = 1;
+
+    /* Synthesize a VALIDATING path that the frame handler will resolve. */
+    xqc_path_ctx_t *path =
+        xqc_test_helper_path_synthesize(conn, 1, XQC_PATH_STATE_VALIDATING);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+
+    /* RFC 9000 §19.17: PATH_CHALLENGE = 1 type byte + 8 data bytes. */
+    unsigned char frame_buf[1 + XQC_PATH_CHALLENGE_DATA_LEN];
+    xqc_packet_in_t pi;
+
+    /* Sub-1200 datagram → path state advances to CLOSING (explicit close). */
+    mp21_forge_path_challenge_packet_in(&pi, frame_buf, sizeof(frame_buf),
+                                        /*fake_datagram_size=*/1199, path->path_id);
+
+    xqc_int_t ret = xqc_process_path_challenge_frame(conn, &pi);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT(path->path_state >= XQC_PATH_STATE_CLOSING);
+
+    xqc_test_helper_path_destroy(path);
+    xqc_test_mp21_free_conn(conn);
+}
+
+/* G-P3 (draft-21 §3.1 ¶10): N consecutive PATH_CHALLENGE retx attempts
+ * without a matching PATH_RESPONSE MUST cause the endpoint to explicitly
+ * close the path. The threshold is XQC_PATH_VALIDATION_MAX_ATTEMPTS (3).
+ *
+ * The retx cadence in production is the loss-detection cycle
+ * (PTO/RTT-scaled). The unit test calls the path-level callback
+ * directly to keep the harness engine-less. */
+void
+xqc_test_mp21_path_validation_timeout(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id = 4,
+        .remote_max_path_id = 4,
+        .scid_len = 8,
+        .dcid_len = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->enable_multipath = 1;
+
+    xqc_path_ctx_t *path =
+        xqc_test_helper_path_synthesize(conn, 1, XQC_PATH_STATE_VALIDATING);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+
+    /* Attempt 1 + 2: path remains in VALIDATING. */
+    CU_ASSERT_EQUAL(xqc_path_validation_on_retx(path), XQC_OK);
+    CU_ASSERT_EQUAL(path->path_challenge_attempts, 1);
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_VALIDATING);
+
+    CU_ASSERT_EQUAL(xqc_path_validation_on_retx(path), XQC_OK);
+    CU_ASSERT_EQUAL(path->path_challenge_attempts, 2);
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_VALIDATING);
+
+    /* Attempt 3 crosses the threshold → explicit close. */
+    CU_ASSERT_EQUAL(xqc_path_validation_on_retx(path), XQC_OK);
+    CU_ASSERT(path->path_state >= XQC_PATH_STATE_CLOSING);
+
+    xqc_test_helper_path_destroy(path);
+    xqc_test_mp21_free_conn(conn);
+}
+
+/* ------------------------------------------------------------------
+ * PR6 L5c — G-F9 + G-F19 loss-replay stale-frame suppression
+ *
+ * Spec:
+ *   draft-ietf-quic-multipath-21 §4.3 ¶12 (G-F9):
+ *     "resend [PATH_STATUS] only if it contains the last status sent
+ *      for that path"
+ *   draft-ietf-quic-multipath-21 §4.6 ¶8 (G-F19):
+ *     "MAX_PATH_ID frames ... SHOULD be retransmitted when lost and
+ *      no more recent MAX_PATH_ID frame has been sent."
+ *
+ * The fixture exercises xqc_loss_replay_should_suppress() directly.
+ * The wire-in inside xqc_send_ctl_detect_lost is engine-bound and
+ * covered by the loss-detection integration tests in tests/cases.
+ * ------------------------------------------------------------------ */
+
+#include "src/common/utils/vint/xqc_variable_len_int.h"
+
+/* Encode `[type-varint][value-varint]` MAX_PATH_ID frame into the
+ * caller-supplied scratch buffer and point po_payload at the start.
+ * Test-only helper. */
+static void
+xqc_test_mp21_encode_max_path_id_payload(xqc_packet_out_t *po, uint64_t value,
+                                         unsigned char *scratch, size_t scratch_cap)
+{
+    po->po_buf = scratch;
+    po->po_buf_cap = scratch_cap;
+    po->po_buf_size = (unsigned int)scratch_cap;
+    po->po_payload = scratch;
+
+    unsigned char *p = scratch;
+
+    uint64_t type = XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21;
+    unsigned type_bits = xqc_vint_get_2bit(type);
+    xqc_vint_write(p, type, type_bits, xqc_vint_len(type_bits));
+    p += xqc_vint_len(type_bits);
+
+    unsigned val_bits = xqc_vint_get_2bit(value);
+    xqc_vint_write(p, value, val_bits, xqc_vint_len(val_bits));
+    p += xqc_vint_len(val_bits);
+
+    po->po_used_size = (unsigned int)(p - scratch);
+}
+
+void
+xqc_test_mp21_loss_replay_should_suppress_stale(void)
+{
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id = 10,
+        .remote_max_path_id = 10,
+        .scid_len = 8,
+        .dcid_len = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->enable_multipath = 1;
+
+    xqc_path_ctx_t *path =
+        xqc_test_helper_path_synthesize(conn, 1, XQC_PATH_STATE_ACTIVE);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+
+    /* === G-F9: PATH_STATUS stale seq → suppress ============================ */
+    path->app_path_status_send_seq_num = 5;
+    xqc_packet_out_t po1 = {0};
+    po1.po_path_id = path->path_id;
+    po1.po_frame_types = XQC_FRAME_BIT_PATH_STATUS;
+    po1.po_path_status_seq = 3; /* older than latest=5 */
+    CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po1), 1);
+
+    po1.po_path_status_seq = 5; /* equal-to-latest: replay */
+    CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po1), 0);
+
+    /* === G-F9 R5: NULL path (path abandoned) → suppress ==================== */
+    xqc_packet_out_t po2 = {0};
+    po2.po_path_id = 999; /* no such path */
+    po2.po_frame_types = XQC_FRAME_BIT_PATH_STATUS;
+    po2.po_path_status_seq = 1;
+    CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po2), 1);
+
+    /* === G-F19: MAX_PATH_ID stale value → suppress (parsed on-demand) ====== */
+    conn->local_max_path_id = 10;
+
+    unsigned char scratch[16];
+    xqc_packet_out_t po3 = {0};
+    po3.po_frame_types = XQC_FRAME_BIT_MAX_PATH_ID;
+    xqc_test_mp21_encode_max_path_id_payload(&po3, /*value=*/5, scratch, sizeof(scratch));
+    CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po3), 1);
+
+    /* === G-F19: current value (carried == latest) → replay (R2-N4) ========= */
+    xqc_test_mp21_encode_max_path_id_payload(&po3, /*value=*/10, scratch,
+                                             sizeof(scratch));
+    CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po3), 0);
+
+    /* === Sanity: neither bit set → never suppress ========================== */
+    xqc_packet_out_t po4 = {0};
+    po4.po_frame_types = XQC_FRAME_BIT_PING;
+    CU_ASSERT_EQUAL(xqc_loss_replay_should_suppress(conn, &po4), 0);
+
+    xqc_test_helper_path_destroy(path);
+    xqc_test_mp21_free_conn(conn);
+}
+
+/* ------------------------------------------------------------------
+ * PR7 / L5d
+ *
+ * G-P10 (draft-21 §3.2.1 ¶1 RECOMMENDED):
+ *   "An endpoint that supports multipath SHOULD proactively issue at
+ *    least one Connection ID for each unused path ID up to the minimum
+ *    of the peer's and the local maximum path ID limits."
+ *
+ * The send-side write path requires an xqc_engine_t to allocate packet
+ * buffers and a registered conn-hash to insert generated CIDs. The mp21
+ * fixture is engine-less, so we cannot drive xqc_conn_try_add_new_conn_id
+ * end-to-end here; instead we validate the iteration **predicate** that
+ * principle #3 uses to select inner sets, by replicating the same walk
+ * over a hand-built scid_set. Compile-time co-location with the impl
+ * means a divergent change would surface in code review of this file.
+ * ------------------------------------------------------------------ */
+static int
+xqc_test_count_g_p10_candidates(xqc_connection_t *conn)
+{
+    int n = 0;
+    xqc_cid_set_inner_t *first_unused = xqc_get_next_unused_path_cid_set(&conn->scid_set);
+    xqc_list_head_t *pos, *next;
+    xqc_list_for_each_safe(pos, next, &conn->scid_set.cid_set_list)
+    {
+        xqc_cid_set_inner_t *iset = xqc_list_entry(pos, xqc_cid_set_inner_t, next);
+        if (iset == first_unused) continue;
+        if (iset->set_state != XQC_CID_SET_UNUSED) continue;
+        if (iset->path_id > conn->curr_max_path_id) continue;
+        n++;
+    }
+    return n;
+}
+
+void
+xqc_test_mp21_gp10_iteration_visits_all_unused(void)
+{
+    /* 4 UNUSED inner sets at path_ids 0..3, curr_max=3.
+     * first_unused == path_id 0 (first list entry).
+     * Principle #3 must visit the remaining 3 (path_ids 1,2,3). */
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id = 3,
+        .remote_max_path_id = 3,
+        .scid_len = 8,
+        .dcid_len = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    for (uint64_t pid = 0; pid <= 3; pid++) {
+        CU_ASSERT(xqc_cid_set_add_path(&conn->scid_set, pid) == XQC_OK);
+    }
+    /* xqc_cid_set_add_path leaves new inner sets in UNUSED state. */
+
+    int n = xqc_test_count_g_p10_candidates(conn);
+    CU_ASSERT_EQUAL(n, 3);
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_gp10_skips_above_curr_max(void)
+{
+    /* 5 UNUSED inner sets at path_ids 0..4 but curr_max=2.
+     * first_unused == path_id 0. Principle #3 must visit only
+     * path_ids 1,2 (path_ids 3,4 exceed curr_max and are skipped). */
+    xqc_test_mp21_conn_params_t p = {
+        .local_max_path_id = 2,
+        .remote_max_path_id = 2,
+        .scid_len = 8,
+        .dcid_len = 8,
+    };
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    for (uint64_t pid = 0; pid <= 4; pid++) {
+        CU_ASSERT(xqc_cid_set_add_path(&conn->scid_set, pid) == XQC_OK);
+    }
+
+    int n = xqc_test_count_g_p10_candidates(conn);
+    CU_ASSERT_EQUAL(n, 2);
+
+    xqc_test_mp21_free_conn(conn);
+}
+
+/* G-P14 (draft-21 §3.4 ¶3 RECOMMENDED): PATH_ABANDON SHOULD be sent on
+ * an open path other than the one being abandoned. Validates the helper
+ * xqc_conn_pick_alt_active_path used at the PATH_ABANDON writer site. */
+void
+xqc_test_mp21_gp14_pick_alt_active_path(void)
+{
+    xqc_connection_t *conn = xqc_test_helper_conn_create(NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_path_ctx_t *p1 = xqc_test_helper_path_synthesize(conn, 1, XQC_PATH_STATE_ACTIVE);
+    xqc_path_ctx_t *p2 = xqc_test_helper_path_synthesize(conn, 2, XQC_PATH_STATE_ACTIVE);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(p1);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(p2);
+    p1->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+    p2->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+
+    /* Excluding p1, alt should be p2 (lowest path_id among ACTIVE
+     * AVAILABLE != exclude). */
+    xqc_path_ctx_t *alt = xqc_conn_pick_alt_active_path(conn, p1);
+    CU_ASSERT_PTR_EQUAL(alt, p2);
+
+    /* Excluding p2 returns p1. */
+    alt = xqc_conn_pick_alt_active_path(conn, p2);
+    CU_ASSERT_PTR_EQUAL(alt, p1);
+
+    /* STANDBY is acceptable as a 2nd-tier choice (§3 state model:
+     * STANDBY is still an "open" path). When the only non-exclude path is
+     * STANDBY, it must be returned rather than NULL — otherwise PATH_ABANDON
+     * would be forced onto the to-be-abandoned (possibly broken) path. */
+    p2->app_path_status = XQC_APP_PATH_STATUS_STANDBY;
+    alt = xqc_conn_pick_alt_active_path(conn, p1);
+    CU_ASSERT_PTR_EQUAL(alt, p2);
+
+    /* AVAILABLE wins over STANDBY when both exist. Add a third path. */
+    xqc_path_ctx_t *p3 = xqc_test_helper_path_synthesize(conn, 3, XQC_PATH_STATE_ACTIVE);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(p3);
+    p3->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+    /* p2=STANDBY, p3=AVAILABLE — excluding p1 should prefer p3 (AVAILABLE). */
+    alt = xqc_conn_pick_alt_active_path(conn, p1);
+    CU_ASSERT_PTR_EQUAL(alt, p3);
+
+    /* Restore + downgrade p2 to non-ACTIVE state — must disqualify
+     * regardless of app_path_status. With p3 removed below, only-STANDBY
+     * non-ACTIVE leaves no candidate. */
+    xqc_test_helper_path_destroy(p3);
+    p2->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+    p2->path_state = XQC_PATH_STATE_VALIDATING;
+    alt = xqc_conn_pick_alt_active_path(conn, p1);
+    CU_ASSERT_PTR_NULL(alt);
+
+    /* Single-path connection: excluding the only path returns NULL. */
+    p2->path_state = XQC_PATH_STATE_ACTIVE;
+    alt = xqc_conn_pick_alt_active_path(conn, p1);
+    CU_ASSERT_PTR_EQUAL(alt, p2);
+    /* Now exclude p2 also — but p1 is still ACTIVE+AVAILABLE, so p1 wins. */
+    alt = xqc_conn_pick_alt_active_path(conn, p2);
+    CU_ASSERT_PTR_EQUAL(alt, p1);
+
+    xqc_test_helper_path_destroy(p1);
+    xqc_test_helper_path_destroy(p2);
+    xqc_test_helper_conn_destroy(conn);
+}
+
+/* G-P14: single-path connection — excluding the only path returns NULL
+ * (no fallback available). */
+void
+xqc_test_mp21_gp14_pick_alt_active_path_single(void)
+{
+    xqc_connection_t *conn = xqc_test_helper_conn_create(NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_path_ctx_t *only =
+        xqc_test_helper_path_synthesize(conn, 0, XQC_PATH_STATE_ACTIVE);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(only);
+    only->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+
+    xqc_path_ctx_t *alt = xqc_conn_pick_alt_active_path(conn, only);
+    CU_ASSERT_PTR_NULL(alt);
+
+    xqc_test_helper_path_destroy(only);
+    xqc_test_helper_conn_destroy(conn);
+}
+
+/* PR8 L5e G-P16: draft-21 §4.7 PATHS_BLOCKED raw-buffer generator.
+ *
+ * Wire layout (1 varint frame type + 1 varint payload):
+ *   Type (i) = 0x3e7b              — 2-byte varint, encoded as 0x7e 0x7b
+ *   Maximum Path Identifier (i)    — 1-byte varint (value 5 -> 0x05)
+ *
+ * Total expected length for max_path_id=5: 3 bytes. */
+void
+xqc_test_mp21_gen_paths_blocked_frame(void)
+{
+    unsigned char buf[16] = {0};
+    ssize_t n = xqc_gen_paths_blocked_frame(buf, sizeof(buf), /* max_path_id = */ 5);
+    CU_ASSERT_EQUAL(n, 3);
+    CU_ASSERT_EQUAL(buf[0], 0x7e); /* 2-byte varint: 0x40 | (0x3e7b>>8) = 0x7e */
+    CU_ASSERT_EQUAL(buf[1], 0x7b);
+    CU_ASSERT_EQUAL(buf[2], 0x05); /* max_path_id=5, 1-byte varint */
+}

@@ -31,17 +31,23 @@ typedef enum {
 } xqc_trans_err_code_t;
 
 
-/**
- * @brief Multipath error codes
- *
- * The value exceeds INT_MAX. MSVC's C compiler always uses int as the
- * underlying type for plain enum, silently truncating it — which would
- * cause CONNECTION_CLOSE on multipath protocol violations to send the
- * wrong error code (low 32 bits only) on Windows builds. Define as a
- * uint64_t macro with a typedef-aliased uint64_t for API stability.
- */
-typedef uint64_t xqc_mp_err_code_t;
-#define TRA_MP_PROTOCOL_VIOLATION ((xqc_mp_err_code_t)0x1001d76d3ded42f3ULL)
+/* draft-ietf-quic-multipath-21 error codes for PATH_ABANDON Error Code field */
+#define TRA_APPLICATION_ABANDON_PATH        0x3eULL
+#define TRA_PATH_RESOURCE_LIMIT_REACHED     0x3e75ULL
+#define TRA_PATH_UNSTABLE_OR_POOR           0x3e76ULL
+#define TRA_NO_CID_AVAILABLE_FOR_PATH       0x3e77ULL
+
+/* PR5 G-P2: pin the wire codepoint against future upstream drift.
+ * draft-ietf-quic-multipath-21 §4.2.1 defines PATH_UNSTABLE_OR_POOR =
+ * 0x3e76; xquic emits this code from xqc_path_request_abandon() on
+ * MTU validation failure (§3.1 ¶6) and validation timeout (§3.1 ¶10). */
+_Static_assert(TRA_PATH_UNSTABLE_OR_POOR == 0x3e76ULL,
+               "draft-21 §4.2.1: PATH_UNSTABLE_OR_POOR wire codepoint pin");
+/* TODO(G-F6): draft-21 §4.2.1 names additional codepoints
+ * (STATELESS_RESET, MIGRATION_REFUSED, NO_ERROR). Receive-side parser
+ * is tolerant; send-side has no current emitter. Add named constants
+ * when IANA codepoints are reconfirmed against latest draft.
+ * See docs/audit-notes/pr4-l5a-audit-findings.md row G-F6. */
 
 
 #define TRA_CRYPTO_ERROR_BASE   0x100

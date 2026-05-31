@@ -1231,6 +1231,13 @@ xqc_client_write_socket_ex(uint64_t path_id,
         else if (g_test_case == 104 && path_id == 1 && g_client_path[1].send_size > 10240) {
             fd = g_client_path[1].rebinding_path_fd;
         }
+        /* D1: IP-change rebinding (case 105) and port-only rebinding
+         * (case 106) reuse the case-103 send pattern on path 0. */
+        else if ((g_test_case == 105 || g_test_case == 106)
+                 && path_id == 0
+                 && g_client_path[0].send_size > g_send_body_size/10) {
+            fd = g_client_path[0].rebinding_path_fd;
+        }
     }
 
     do {
@@ -1593,13 +1600,50 @@ xqc_client_create_path_socket(xqc_user_path_t *path,
         return XQC_ERROR;
     }
 
-    if (g_test_case == 103 || g_test_case == 104) {
-        path->rebinding_path_fd = xqc_client_create_socket((g_ipv6 ? AF_INET6 : AF_INET), 
+    if (g_test_case == 103 || g_test_case == 104 || g_test_case == 106) {
+        /* Cases 103/104/106: kernel-chosen src IP (port-only rebinding). */
+        path->rebinding_path_fd = xqc_client_create_socket((g_ipv6 ? AF_INET6 : AF_INET),
                                         path->peer_addr, path->peer_addrlen, path_interface);
         if (path->rebinding_path_fd < 0) {
             printf("|xqc_client_create_path_socket error|");
             return XQC_ERROR;
         }
+
+    } else if (g_test_case == 105) {
+        /* Case 105: RFC 9000 §9.4 ¶1 IP-change test. xqc_client_create_socket
+         * calls connect() inline; a UDP socket cannot be bind()-ed after
+         * connect() (EINVAL). So build the rebinding fd manually with the
+         * correct order: socket → setsockopt → bind(127.0.0.2:0) →
+         * connect(peer). This forces the kernel to use 127.0.0.2 as src IP
+         * so the server detects an IP-change rebinding. */
+        int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0) {
+            printf("|case 105 socket failed: %s|", strerror(errno));
+            return XQC_ERROR;
+        }
+        int one = 1;
+        int size = 1 * 1024 * 1024;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(int));
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(int));
+        fcntl(fd, F_SETFL, O_NONBLOCK);
+
+        struct sockaddr_in local2;
+        memset(&local2, 0, sizeof(local2));
+        local2.sin_family = AF_INET;
+        local2.sin_addr.s_addr = htonl(0x7F000002);  /* 127.0.0.2 */
+        local2.sin_port = 0;
+        if (bind(fd, (struct sockaddr *)&local2, sizeof(local2)) < 0) {
+            printf("|case 105 bind 127.0.0.2 failed: %s|", strerror(errno));
+            close(fd);
+            return XQC_ERROR;
+        }
+        if (connect(fd, (struct sockaddr *)path->peer_addr, path->peer_addrlen) < 0) {
+            printf("|case 105 connect failed: %s|", strerror(errno));
+            close(fd);
+            return XQC_ERROR;
+        }
+        path->rebinding_path_fd = fd;
     }
 #endif
 
@@ -1627,7 +1671,8 @@ xqc_client_create_path(xqc_user_path_t *path,
                 EV_READ | EV_PERSIST, xqc_client_socket_event_callback, user_conn);
     event_add(path->ev_socket, NULL);
 
-    if (g_test_case == 103 || g_test_case == 104) {
+    if (g_test_case == 103 || g_test_case == 104
+        || g_test_case == 105 || g_test_case == 106) {
         path->rebinding_ev_socket = event_new(eb, path->rebinding_path_fd, EV_READ | EV_PERSIST,
                                               xqc_client_socket_event_callback, user_conn);
         event_add(path->rebinding_ev_socket, NULL);

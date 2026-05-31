@@ -1,4 +1,6 @@
 /**
+ * @copyright Copyright (c) 2026, mp0rta
+ *
  * MASQUE CONNECT-UDP / CONNECT-IP test client (RFC 9298, RFC 9484).
  * Connects to a MASQUE proxy via H3 and establishes a tunnel.
  *
@@ -39,114 +41,114 @@
 extern xqc_usec_t xqc_now(void);
 
 #ifndef XQC_SYS_WINDOWS
-#include <unistd.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <getopt.h>
+#  include <unistd.h>
+#  include <sys/socket.h>
+#  include <netdb.h>
+#  include <getopt.h>
 #endif
 
 /* ──────────────────────────────────────────────────────────── */
 /*  Constants                                                   */
 /* ──────────────────────────────────────────────────────────── */
 
-#define MASQUE_PACKET_BUF_LEN       1600
-#define MASQUE_MAX_HEADER_CNT       16
-#define MASQUE_LOG_BUF_LEN          2048
-#define MASQUE_DEFAULT_LOG_LEVEL    XQC_LOG_DEBUG
+#define MASQUE_PACKET_BUF_LEN    1600
+#define MASQUE_MAX_HEADER_CNT    16
+#define MASQUE_LOG_BUF_LEN       2048
+#define MASQUE_DEFAULT_LOG_LEVEL XQC_LOG_DEBUG
 
 /* ──────────────────────────────────────────────────────────── */
 /*  Data structures                                             */
 /* ──────────────────────────────────────────────────────────── */
 
-typedef struct masque_ctx_s         masque_ctx_t;
-typedef struct masque_conn_s        masque_conn_t;
-typedef struct masque_tunnel_s      masque_tunnel_t;
+typedef struct masque_ctx_s masque_ctx_t;
+typedef struct masque_conn_s masque_conn_t;
+typedef struct masque_tunnel_s masque_tunnel_t;
 
 struct masque_ctx_s {
-    xqc_engine_t           *engine;
-    struct event_base      *eb;
-    struct event           *ev_engine;     /* timer for xqc_engine_main_logic */
-    struct event           *ev_sigint;     /* SIGINT handler */
-    int                     log_fd;
+    xqc_engine_t *engine;
+    struct event_base *eb;
+    struct event *ev_engine; /* timer for xqc_engine_main_logic */
+    struct event *ev_sigint; /* SIGINT handler */
+    int log_fd;
 };
 
 struct masque_conn_s {
-    masque_ctx_t           *ctx;
-    xqc_cid_t              cid;
+    masque_ctx_t *ctx;
+    xqc_cid_t cid;
 
-    int                     fd;            /* UDP socket to proxy */
-    struct event           *ev_socket;     /* read event on fd */
-    struct event           *ev_timeout;    /* idle timeout */
+    int fd;                   /* UDP socket to proxy */
+    struct event *ev_socket;  /* read event on fd */
+    struct event *ev_timeout; /* idle timeout */
 
-    struct sockaddr_in6     local_addr;
-    socklen_t               local_addrlen;
-    struct sockaddr_in6     peer_addr;
-    socklen_t               peer_addrlen;
+    struct sockaddr_in6 local_addr;
+    socklen_t local_addrlen;
+    struct sockaddr_in6 peer_addr;
+    socklen_t peer_addrlen;
 
-    xqc_h3_conn_t         *h3_conn;
+    xqc_h3_conn_t *h3_conn;
 
-    size_t                  dgram_mss;     /* datagram MSS from H3 ext */
+    size_t dgram_mss; /* datagram MSS from H3 ext */
 
-    masque_tunnel_t        *tunnel;        /* single tunnel for now */
+    masque_tunnel_t *tunnel; /* single tunnel for now */
 
-    int                     connected;     /* H3 handshake done */
-    int                     settings_ok;   /* peer SETTINGS received */
+    int connected;   /* H3 handshake done */
+    int settings_ok; /* peer SETTINGS received */
 };
 
 struct masque_tunnel_s {
-    masque_conn_t          *conn;
-    xqc_h3_request_t      *h3_request;
-    xqc_stream_id_t         stream_id;
+    masque_conn_t *conn;
+    xqc_h3_request_t *h3_request;
+    xqc_stream_id_t stream_id;
 
-    char                    target_host[256];
-    int                     target_port;
+    char target_host[256];
+    int target_port;
 
-    int                     headers_sent;
-    int                     response_ok;   /* got 2xx from proxy */
+    int headers_sent;
+    int response_ok; /* got 2xx from proxy */
 
     /* payload to send */
-    const char             *send_data;
-    size_t                  send_data_len;
-    int                     send_done;
-    int                     send_count;    /* datagrams sent so far */
+    const char *send_data;
+    size_t send_data_len;
+    int send_done;
+    int send_count; /* datagrams sent so far */
 
     /* received data */
-    uint8_t                 recv_buf[65536];
-    size_t                  recv_len;
-    int                     recv_done;
-    int                     recv_count;    /* datagrams received so far */
+    uint8_t recv_buf[65536];
+    size_t recv_len;
+    int recv_done;
+    int recv_count; /* datagrams received so far */
 
     /* CONNECT-IP state */
-    uint8_t                 assigned_ip[16];
-    size_t                  assigned_ip_len;
-    uint8_t                 assigned_prefix;
-    int                     address_assigned;  /* ADDRESS_ASSIGN received */
+    uint8_t assigned_ip[16];
+    size_t assigned_ip_len;
+    uint8_t assigned_prefix;
+    int address_assigned; /* ADDRESS_ASSIGN received */
 
     /* statistics */
-    xqc_usec_t              first_send_time;   /* timestamp of first datagram sent */
-    xqc_usec_t              last_recv_time;     /* timestamp of last datagram received */
-    int                     dgram_acked;       /* datagrams ACKed */
-    int                     dgram_lost;        /* datagrams reported lost */
+    xqc_usec_t first_send_time; /* timestamp of first datagram sent */
+    xqc_usec_t last_recv_time;  /* timestamp of last datagram received */
+    int dgram_acked;            /* datagrams ACKed */
+    int dgram_lost;             /* datagrams reported lost */
 };
 
 /* ──────────────────────────────────────────────────────────── */
 /*  Globals (command-line args)                                 */
 /* ──────────────────────────────────────────────────────────── */
 
-static char     g_proxy_addr[256]       = "127.0.0.1";
-static int      g_proxy_port            = 4443;
-static char     g_target_host[256]      = "127.0.0.1";
-static int      g_target_port           = 9999;
-static char     g_send_data[4096]       = "Hello MASQUE!";
-static int      g_no_crypto             = 0;
-static int      g_log_level             = MASQUE_DEFAULT_LOG_LEVEL;
-static char     g_proxy_host[256]       = "";  /* SNI host, defaults to proxy_addr */
-static char     g_uri_path[1024]        = "";  /* override .well-known URI template */
-static int      g_allow_self_signed     = 0;   /* -S: accept self-signed certs */
-static int      g_connect_ip            = 0;   /* -I: use CONNECT-IP instead of CONNECT-UDP */
-static int      g_send_count            = 1;   /* -n: number of datagrams/echoes to send */
-static int      g_timeout_sec           = 30;  /* -t: idle timeout in seconds */
-static int      g_quiet                 = 0;   /* -q: quiet mode (summary only) */
+static char g_proxy_addr[256] = "127.0.0.1";
+static int g_proxy_port = 4443;
+static char g_target_host[256] = "127.0.0.1";
+static int g_target_port = 9999;
+static char g_send_data[4096] = "Hello MASQUE!";
+static int g_no_crypto = 0;
+static int g_log_level = MASQUE_DEFAULT_LOG_LEVEL;
+static char g_proxy_host[256] = ""; /* SNI host, defaults to proxy_addr */
+static char g_uri_path[1024] = "";  /* override .well-known URI template */
+static int g_allow_self_signed = 0; /* -S: accept self-signed certs */
+static int g_connect_ip = 0;        /* -I: use CONNECT-IP instead of CONNECT-UDP */
+static int g_send_count = 1;        /* -n: number of datagrams/echoes to send */
+static int g_timeout_sec = 30;      /* -t: idle timeout in seconds */
+static int g_quiet = 0;             /* -q: quiet mode (summary only) */
 
 /* ──────────────────────────────────────────────────────────── */
 /*  Forward declarations                                        */
@@ -181,7 +183,7 @@ masque_set_event_timer(xqc_usec_t wake_after, void *eng_user_data)
 {
     masque_ctx_t *ctx = (masque_ctx_t *)eng_user_data;
     struct timeval tv;
-    tv.tv_sec  = (long)(wake_after / 1000000);
+    tv.tv_sec = (long)(wake_after / 1000000);
     tv.tv_usec = (long)(wake_after % 1000000);
     event_add(ctx->ev_engine, &tv);
 }
@@ -289,8 +291,8 @@ masque_save_tp(const char *data, size_t len, void *user)
 }
 
 static int
-masque_cert_verify(const unsigned char *certs[],
-    const size_t cert_len[], size_t certs_len, void *conn_user_data)
+masque_cert_verify(const unsigned char *certs[], const size_t cert_len[],
+                   size_t certs_len, void *conn_user_data)
 {
     /* Accept all certificates (self-signed certs for interop testing) */
     return 0;
@@ -312,11 +314,11 @@ masque_tunnel_send_headers(masque_tunnel_t *tun)
     if (g_uri_path[0] != '\0') {
         snprintf(path, sizeof(path), "%s", g_uri_path);
     } else if (g_connect_ip) {
-        snprintf(path, sizeof(path), "/.well-known/masque/ip/%s/%d/",
-                 tun->target_host, tun->target_port);
+        snprintf(path, sizeof(path), "/.well-known/masque/ip/%s/%d/", tun->target_host,
+                 tun->target_port);
     } else {
-        snprintf(path, sizeof(path), "/.well-known/masque/udp/%s/%d/",
-                 tun->target_host, tun->target_port);
+        snprintf(path, sizeof(path), "/.well-known/masque/udp/%s/%d/", tun->target_host,
+                 tun->target_port);
     }
 
     /* Build :authority */
@@ -325,35 +327,34 @@ masque_tunnel_send_headers(masque_tunnel_t *tun)
              g_proxy_host[0] ? g_proxy_host : g_proxy_addr, g_proxy_port);
 
     xqc_http_header_t headers[] = {
-        { .name  = {.iov_base = ":method",    .iov_len = 7},
-          .value = {.iov_base = "CONNECT",    .iov_len = 7},
-          .flags = 0 },
-        { .name  = {.iov_base = ":protocol",  .iov_len = 9},
-          .value = {.iov_base = g_connect_ip ? "connect-ip" : "connect-udp",
-                    .iov_len  = g_connect_ip ? 10 : 11},
-          .flags = 0 },
-        { .name  = {.iov_base = ":scheme",    .iov_len = 7},
-          .value = {.iov_base = "https",       .iov_len = 5},
-          .flags = 0 },
-        { .name  = {.iov_base = ":authority",  .iov_len = 10},
-          .value = {.iov_base = authority,     .iov_len = strlen(authority)},
-          .flags = 0 },
-        { .name  = {.iov_base = ":path",      .iov_len = 5},
-          .value = {.iov_base = path,          .iov_len = strlen(path)},
-          .flags = 0 },
-        { .name  = {.iov_base = "capsule-protocol", .iov_len = 16},
-          .value = {.iov_base = "?1",                .iov_len = 2},
-          .flags = 0 },
+        {.name = {.iov_base = ":method", .iov_len = 7},
+         .value = {.iov_base = "CONNECT", .iov_len = 7},
+         .flags = 0},
+        {.name = {.iov_base = ":protocol", .iov_len = 9},
+         .value = {.iov_base = g_connect_ip ? "connect-ip" : "connect-udp",
+                   .iov_len = g_connect_ip ? 10 : 11},
+         .flags = 0},
+        {.name = {.iov_base = ":scheme", .iov_len = 7},
+         .value = {.iov_base = "https", .iov_len = 5},
+         .flags = 0},
+        {.name = {.iov_base = ":authority", .iov_len = 10},
+         .value = {.iov_base = authority, .iov_len = strlen(authority)},
+         .flags = 0},
+        {.name = {.iov_base = ":path", .iov_len = 5},
+         .value = {.iov_base = path, .iov_len = strlen(path)},
+         .flags = 0},
+        {.name = {.iov_base = "capsule-protocol", .iov_len = 16},
+         .value = {.iov_base = "?1", .iov_len = 2},
+         .flags = 0},
     };
 
     xqc_http_headers_t hdrs = {
-        .headers  = headers,
-        .count    = sizeof(headers) / sizeof(headers[0]),
+        .headers = headers,
+        .count = sizeof(headers) / sizeof(headers[0]),
         .capacity = sizeof(headers) / sizeof(headers[0]),
     };
 
-    printf("[masque] Sending Extended CONNECT: %s %s %s\n",
-           "CONNECT", path, authority);
+    printf("[masque] Sending Extended CONNECT: %s %s %s\n", "CONNECT", path, authority);
 
     /* fin=0: keep the stream open for capsules/datagrams */
     ssize_t ret = xqc_h3_request_send_headers(tun->h3_request, &hdrs, 0);
@@ -365,8 +366,7 @@ masque_tunnel_send_headers(masque_tunnel_t *tun)
     tun->stream_id = xqc_h3_stream_id(tun->h3_request);
     tun->headers_sent = 1;
 
-    printf("[masque] Headers sent, stream_id=%" PRIu64
-           ", quarter_id=%" PRIu64 "\n",
+    printf("[masque] Headers sent, stream_id=%" PRIu64 ", quarter_id=%" PRIu64 "\n",
            tun->stream_id, tun->stream_id / 4);
 
     return 0;
@@ -388,16 +388,16 @@ masque_tunnel_send_dgram(masque_tunnel_t *tun, const uint8_t *data, size_t len)
 
     /* Frame the UDP payload with quarter-stream-ID + context_id=0 */
     uint8_t framed[65536];
-    size_t framed_len = masque_frame_udp_datagram(
-        framed, sizeof(framed), tun->stream_id, data, len);
+    size_t framed_len =
+        masque_frame_udp_datagram(framed, sizeof(framed), tun->stream_id, data, len);
     if (framed_len == 0) {
         printf("[masque] Failed to frame datagram (too large?)\n");
         return -1;
     }
 
     uint64_t dgram_id = 0;
-    xqc_int_t ret = xqc_h3_ext_datagram_send(
-        conn->h3_conn, framed, framed_len, &dgram_id, XQC_DATA_QOS_HIGH);
+    xqc_int_t ret = xqc_h3_ext_datagram_send(conn->h3_conn, framed, framed_len, &dgram_id,
+                                             XQC_DATA_QOS_HIGH);
     if (ret < 0) {
         if (ret == -XQC_EAGAIN) {
             if (!g_quiet) printf("[masque] datagram send EAGAIN, will retry\n");
@@ -412,8 +412,8 @@ masque_tunnel_send_dgram(masque_tunnel_t *tun, const uint8_t *data, size_t len)
     }
 
     if (!g_quiet) {
-        printf("[masque] Sent datagram: %zu bytes payload, dgram_id=%" PRIu64 "\n",
-               len, dgram_id);
+        printf("[masque] Sent datagram: %zu bytes payload, dgram_id=%" PRIu64 "\n", len,
+               dgram_id);
     }
     return 0;
 }
@@ -444,16 +444,15 @@ masque_tunnel_send_address_request(masque_tunnel_t *tun)
 
     /* Wrap in capsule: [type=0x02][length][payload] */
     uint8_t capsule_buf[64];
-    size_t cap_len = masque_capsule_encode(
-        capsule_buf, sizeof(capsule_buf),
-        MASQUE_CAPSULE_ADDRESS_REQUEST, payload, pay_len);
+    size_t cap_len =
+        masque_capsule_encode(capsule_buf, sizeof(capsule_buf),
+                              MASQUE_CAPSULE_ADDRESS_REQUEST, payload, pay_len);
     if (cap_len == 0) {
         printf("[masque] Failed to encode ADDRESS_REQUEST capsule\n");
         return -1;
     }
 
-    ssize_t ret = xqc_h3_request_send_body(tun->h3_request,
-                                            capsule_buf, cap_len, 0);
+    ssize_t ret = xqc_h3_request_send_body(tun->h3_request, capsule_buf, cap_len, 0);
     if (ret < 0) {
         printf("[masque] ADDRESS_REQUEST send error: %zd\n", ret);
         return (int)ret;
@@ -476,18 +475,17 @@ masque_tunnel_send_ip_data(masque_tunnel_t *tun)
 
     uint8_t dst_ip[4] = {10, 0, 0, 1};
     uint8_t ip_pkt[64];
-    size_t ip_len = masque_build_icmp_echo(
-        ip_pkt, sizeof(ip_pkt), tun->assigned_ip, dst_ip);
+    size_t ip_len =
+        masque_build_icmp_echo(ip_pkt, sizeof(ip_pkt), tun->assigned_ip, dst_ip);
     if (ip_len == 0) {
         printf("[masque] Failed to build IP packet\n");
         return -1;
     }
 
     printf("[masque] Sending ICMP echo [%d/%d]: %u.%u.%u.%u -> %u.%u.%u.%u (%zu bytes)\n",
-           tun->send_count + 1, g_send_count,
-           tun->assigned_ip[0], tun->assigned_ip[1],
-           tun->assigned_ip[2], tun->assigned_ip[3],
-           dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], ip_len);
+           tun->send_count + 1, g_send_count, tun->assigned_ip[0], tun->assigned_ip[1],
+           tun->assigned_ip[2], tun->assigned_ip[3], dst_ip[0], dst_ip[1], dst_ip[2],
+           dst_ip[3], ip_len);
 
     int ret = masque_tunnel_send_dgram(tun, ip_pkt, ip_len);
     if (ret == 0) {
@@ -518,8 +516,8 @@ masque_dgram_read_cb(xqc_h3_conn_t *h3c, const void *data, size_t data_len,
     /* Unframe: [quarter-stream-ID] [context_id] [payload] */
     uint64_t qsid = 0, ctx_id = 0;
     size_t pay_off = 0, pay_len = 0;
-    if (masque_unframe_udp_datagram(data, data_len, &qsid, &ctx_id,
-                                    &pay_off, &pay_len) < 0) {
+    if (masque_unframe_udp_datagram(data, data_len, &qsid, &ctx_id, &pay_off, &pay_len) <
+        0) {
         printf("[masque] dgram_read: failed to unframe datagram\n");
         return;
     }
@@ -534,7 +532,8 @@ masque_dgram_read_cb(xqc_h3_conn_t *h3c, const void *data, size_t data_len,
     uint64_t expected_qsid = tun->stream_id / 4;
     if (qsid != expected_qsid) {
         printf("[masque] dgram_read: unexpected quarter_stream_id=%" PRIu64
-               " (expected %" PRIu64 ")\n", qsid, expected_qsid);
+               " (expected %" PRIu64 ")\n",
+               qsid, expected_qsid);
         return;
     }
 
@@ -543,7 +542,8 @@ masque_dgram_read_cb(xqc_h3_conn_t *h3c, const void *data, size_t data_len,
     tun->recv_count++;
     tun->last_recv_time = xqc_now();
     if (!g_quiet) {
-        printf("[masque] Received datagram [%d/%d]: %zu bytes payload, ctx_id=%" PRIu64 "\n",
+        printf("[masque] Received datagram [%d/%d]: %zu bytes payload, ctx_id=%" PRIu64
+               "\n",
                tun->recv_count, g_send_count, pay_len, ctx_id);
     } else if (tun->recv_count % 100 == 0 || tun->recv_count == g_send_count) {
         printf("[masque] Progress: %d/%d received\n", tun->recv_count, g_send_count);
@@ -562,8 +562,7 @@ masque_dgram_read_cb(xqc_h3_conn_t *h3c, const void *data, size_t data_len,
             uint8_t proto = payload[9];
             printf("[masque] IP packet: version=%u, proto=%u, "
                    "src=%u.%u.%u.%u, dst=%u.%u.%u.%u\n",
-                   version, proto,
-                   payload[12], payload[13], payload[14], payload[15],
+                   version, proto, payload[12], payload[13], payload[14], payload[15],
                    payload[16], payload[17], payload[18], payload[19]);
         }
 
@@ -580,11 +579,11 @@ masque_dgram_read_cb(xqc_h3_conn_t *h3c, const void *data, size_t data_len,
         /* CONNECT-UDP: send next datagram if more to send */
         if (!tun->send_done) {
             if (!g_quiet) {
-                printf("[masque] Sending datagram [%d/%d]\n",
-                       tun->send_count + 1, g_send_count);
+                printf("[masque] Sending datagram [%d/%d]\n", tun->send_count + 1,
+                       g_send_count);
             }
-            int ret = masque_tunnel_send_dgram(tun,
-                (const uint8_t *)tun->send_data, tun->send_data_len);
+            int ret = masque_tunnel_send_dgram(tun, (const uint8_t *)tun->send_data,
+                                               tun->send_data_len);
             if (ret == 0) {
                 tun->send_count++;
                 if (tun->send_count >= g_send_count) {
@@ -615,8 +614,8 @@ masque_dgram_write_cb(xqc_h3_conn_t *h3c, void *user_data)
     if (tun->response_ok && !tun->send_done && !g_connect_ip) {
         /* CONNECT-UDP: retry send if EAGAIN on prior attempt */
         if (!g_quiet) printf("[masque] dgram_write: tunnel ready, sending data\n");
-        int ret = masque_tunnel_send_dgram(tun,
-            (const uint8_t *)tun->send_data, tun->send_data_len);
+        int ret = masque_tunnel_send_dgram(tun, (const uint8_t *)tun->send_data,
+                                           tun->send_data_len);
         if (ret == 0) {
             tun->send_count++;
             if (tun->send_count >= g_send_count) {
@@ -659,7 +658,7 @@ masque_dgram_lost_cb(xqc_h3_conn_t *h3c, uint64_t dgram_id, void *user_data)
         conn->tunnel->dgram_lost++;
     }
     printf("[masque] Datagram lost: dgram_id=%" PRIu64 "\n", dgram_id);
-    return 0;  /* don't retransmit */
+    return 0; /* don't retransmit */
 }
 
 /* ──────────────────────────────────────────────────────────── */
@@ -667,8 +666,7 @@ masque_dgram_lost_cb(xqc_h3_conn_t *h3c, uint64_t dgram_id, void *user_data)
 /* ──────────────────────────────────────────────────────────── */
 
 static int
-masque_h3_conn_create_cb(xqc_h3_conn_t *h3c, const xqc_cid_t *cid,
-                         void *user_data)
+masque_h3_conn_create_cb(xqc_h3_conn_t *h3c, const xqc_cid_t *cid, void *user_data)
 {
     masque_conn_t *conn = (masque_conn_t *)user_data;
     conn->h3_conn = h3c;
@@ -681,8 +679,7 @@ masque_h3_conn_create_cb(xqc_h3_conn_t *h3c, const xqc_cid_t *cid,
 }
 
 static int
-masque_h3_conn_close_cb(xqc_h3_conn_t *h3c, const xqc_cid_t *cid,
-                        void *user_data)
+masque_h3_conn_close_cb(xqc_h3_conn_t *h3c, const xqc_cid_t *cid, void *user_data)
 {
     masque_conn_t *conn = (masque_conn_t *)user_data;
 
@@ -709,8 +706,7 @@ masque_h3_handshake_finished_cb(xqc_h3_conn_t *h3c, void *user_data)
     masque_tunnel_t *tun = conn->tunnel;
     if (tun && !tun->headers_sent) {
         /* Create H3 request for the tunnel */
-        tun->h3_request = xqc_h3_request_create(
-            conn->ctx->engine, &conn->cid, NULL, tun);
+        tun->h3_request = xqc_h3_request_create(conn->ctx->engine, &conn->cid, NULL, tun);
         if (tun->h3_request == NULL) {
             printf("[masque] Failed to create H3 request\n");
             return;
@@ -721,8 +717,7 @@ masque_h3_handshake_finished_cb(xqc_h3_conn_t *h3c, void *user_data)
 }
 
 static void
-masque_h3_conn_init_settings_cb(xqc_h3_conn_t *h3c,
-                                xqc_h3_conn_settings_t *settings,
+masque_h3_conn_init_settings_cb(xqc_h3_conn_t *h3c, xqc_h3_conn_settings_t *settings,
                                 void *user_data)
 {
     /* Enable Extended CONNECT and HTTP Datagrams in our SETTINGS */
@@ -740,14 +735,12 @@ static int
 masque_h3_request_close_cb(xqc_h3_request_t *h3r, void *user_data)
 {
     masque_tunnel_t *tun = (masque_tunnel_t *)user_data;
-    printf("[masque] H3 request closed (stream_id=%" PRIu64 ")\n",
-           tun->stream_id);
+    printf("[masque] H3 request closed (stream_id=%" PRIu64 ")\n", tun->stream_id);
     return 0;
 }
 
 static int
-masque_h3_request_read_cb(xqc_h3_request_t *h3r,
-                          xqc_request_notify_flag_t flag,
+masque_h3_request_read_cb(xqc_h3_request_t *h3r, xqc_request_notify_flag_t flag,
                           void *user_data)
 {
     masque_tunnel_t *tun = (masque_tunnel_t *)user_data;
@@ -763,8 +756,7 @@ masque_h3_request_read_cb(xqc_h3_request_t *h3r,
 
         printf("[masque] Response headers (%zu):\n", headers->count);
         for (size_t i = 0; i < headers->count; i++) {
-            printf("  %.*s: %.*s\n",
-                   (int)headers->headers[i].name.iov_len,
+            printf("  %.*s: %.*s\n", (int)headers->headers[i].name.iov_len,
                    (char *)headers->headers[i].name.iov_base,
                    (int)headers->headers[i].value.iov_len,
                    (char *)headers->headers[i].value.iov_base);
@@ -791,8 +783,8 @@ masque_h3_request_read_cb(xqc_h3_request_t *h3r,
                                 printf("[masque] Sending datagram [%d/%d]\n",
                                        tun->send_count + 1, g_send_count);
                             }
-                            int ret = masque_tunnel_send_dgram(tun,
-                                (const uint8_t *)tun->send_data, tun->send_data_len);
+                            int ret = masque_tunnel_send_dgram(
+                                tun, (const uint8_t *)tun->send_data, tun->send_data_len);
                             if (ret == 0) {
                                 tun->send_count++;
                                 if (tun->send_count >= g_send_count) {
@@ -843,17 +835,18 @@ masque_h3_request_read_cb(xqc_h3_request_t *h3r,
                         uint64_t req_id;
                         uint8_t ip_ver, ip_addr[16], pfx_len;
                         size_t ip_addr_len;
-                        if (masque_parse_address_assign(
-                                body_buf + off + pay_off, pay_len,
-                                &req_id, &ip_ver, ip_addr, &ip_addr_len, &pfx_len) == 0) {
+                        if (masque_parse_address_assign(body_buf + off + pay_off, pay_len,
+                                                        &req_id, &ip_ver, ip_addr,
+                                                        &ip_addr_len, &pfx_len) == 0) {
                             if (ip_ver == 4) {
                                 printf("[masque] ADDRESS_ASSIGN: req_id=%" PRIu64
                                        " IPv4=%u.%u.%u.%u/%u\n",
-                                       req_id, ip_addr[0], ip_addr[1],
-                                       ip_addr[2], ip_addr[3], pfx_len);
+                                       req_id, ip_addr[0], ip_addr[1], ip_addr[2],
+                                       ip_addr[3], pfx_len);
                             } else {
                                 printf("[masque] ADDRESS_ASSIGN: req_id=%" PRIu64
-                                       " IPv6=.../%u\n", req_id, pfx_len);
+                                       " IPv6=.../%u\n",
+                                       req_id, pfx_len);
                             }
 
                             /* Store the assigned address */
@@ -867,7 +860,8 @@ masque_h3_request_read_cb(xqc_h3_request_t *h3r,
                                 masque_tunnel_send_ip_data(tun);
                             }
                         }
-                    } else if (cap_type == MASQUE_CAPSULE_ROUTE_ADVERTISEMENT && pay_len > 0) {
+                    } else if (cap_type == MASQUE_CAPSULE_ROUTE_ADVERTISEMENT &&
+                               pay_len > 0) {
                         /* Control capsule: route advertisement */
                         const uint8_t *route_buf = body_buf + off + pay_off;
                         size_t route_remaining = pay_len;
@@ -876,27 +870,27 @@ masque_h3_request_read_cb(xqc_h3_request_t *h3r,
                             uint8_t r_ver, r_start[16], r_end[16], r_proto;
                             size_t r_addr_len, r_consumed;
                             if (masque_parse_route_advertisement(
-                                    route_buf, route_remaining,
-                                    &r_ver, r_start, r_end, &r_addr_len,
-                                    &r_proto, &r_consumed) < 0) {
+                                    route_buf, route_remaining, &r_ver, r_start, r_end,
+                                    &r_addr_len, &r_proto, &r_consumed) < 0) {
                                 break;
                             }
                             if (r_ver == 4) {
                                 printf("[masque] ROUTE[%d]: IPv4 %u.%u.%u.%u - "
-                                       "%u.%u.%u.%u proto=%u\n", entry_idx,
-                                       r_start[0], r_start[1], r_start[2], r_start[3],
-                                       r_end[0], r_end[1], r_end[2], r_end[3], r_proto);
+                                       "%u.%u.%u.%u proto=%u\n",
+                                       entry_idx, r_start[0], r_start[1], r_start[2],
+                                       r_start[3], r_end[0], r_end[1], r_end[2], r_end[3],
+                                       r_proto);
                             } else {
-                                printf("[masque] ROUTE[%d]: IPv6 proto=%u\n",
-                                       entry_idx, r_proto);
+                                printf("[masque] ROUTE[%d]: IPv6 proto=%u\n", entry_idx,
+                                       r_proto);
                             }
                             route_buf += r_consumed;
                             route_remaining -= r_consumed;
                             entry_idx++;
                         }
                     } else {
-                        printf("[masque] Capsule type=%" PRIu64
-                               " (%zu bytes)\n", cap_type, pay_len);
+                        printf("[masque] Capsule type=%" PRIu64 " (%zu bytes)\n",
+                               cap_type, pay_len);
                     }
 
                     off += cap_total;
@@ -964,8 +958,8 @@ masque_socket_read_cb(int fd, short what, void *arg)
     socklen_t from_len = sizeof(from_addr);
 
     do {
-        recv_size = recvfrom(fd, buf, sizeof(buf), 0,
-                             (struct sockaddr *)&from_addr, &from_len);
+        recv_size =
+            recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr *)&from_addr, &from_len);
         if (recv_size < 0) {
             if (get_sys_errno() == EAGAIN) {
                 break;
@@ -981,8 +975,7 @@ masque_socket_read_cb(int fd, short what, void *arg)
         xqc_int_t ret = xqc_engine_packet_process(
             conn->ctx->engine, buf, (size_t)recv_size,
             (struct sockaddr *)&conn->local_addr, conn->local_addrlen,
-            (struct sockaddr *)&from_addr, from_len,
-            (xqc_msec_t)xqc_now(), conn);
+            (struct sockaddr *)&from_addr, from_len, (xqc_msec_t)xqc_now(), conn);
         if (ret != XQC_OK) {
             printf("[masque] packet_process error: %d\n", ret);
             return;
@@ -1011,13 +1004,13 @@ masque_resolve(const char *host, int port, struct sockaddr_in6 *addr, socklen_t 
     char port_str[16];
     snprintf(port_str, sizeof(port_str), "%d", port);
 
-    hints.ai_family   = AF_UNSPEC;
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_DGRAM;
 
     int rc = getaddrinfo(host, port_str, &hints, &res);
     if (rc != 0 || res == NULL) {
-        printf("[masque] DNS resolution failed for %s:%d: %s\n",
-               host, port, gai_strerror(rc));
+        printf("[masque] DNS resolution failed for %s:%d: %s\n", host, port,
+               gai_strerror(rc));
         return -1;
     }
 
@@ -1089,9 +1082,7 @@ main(int argc, char *argv[])
         case 'k': g_no_crypto = 1; break;
         case 'l': g_log_level = atoi(optarg); break;
         case 'h':
-        default:
-            masque_usage(argv[0]);
-            return opt == 'h' ? 0 : 1;
+        default: masque_usage(argv[0]); return opt == 'h' ? 0 : 1;
         }
     }
 
@@ -1121,20 +1112,21 @@ main(int argc, char *argv[])
 
     /* ── Engine callbacks ── */
     xqc_engine_callback_t engine_cbs = {
-        .log_callbacks = {
-            .xqc_log_write_err  = masque_write_log,
-            .xqc_log_write_stat = masque_write_log,
-        },
+        .log_callbacks =
+            {
+                .xqc_log_write_err = masque_write_log,
+                .xqc_log_write_stat = masque_write_log,
+            },
         .set_event_timer = masque_set_event_timer,
     };
 
     xqc_transport_callbacks_t transport_cbs = {
-        .write_socket    = masque_write_socket,
+        .write_socket = masque_write_socket,
         .write_socket_ex = masque_write_socket_ex,
-        .save_token      = masque_save_token,
+        .save_token = masque_save_token,
         .save_session_cb = masque_save_session,
-        .save_tp_cb      = masque_save_tp,
-        .cert_verify_cb  = masque_cert_verify,
+        .save_tp_cb = masque_save_tp,
+        .cert_verify_cb = masque_cert_verify,
     };
 
     /* ── Engine config ── */
@@ -1148,11 +1140,11 @@ main(int argc, char *argv[])
     /* ── TLS config ── */
     xqc_engine_ssl_config_t ssl_cfg = {0};
     ssl_cfg.ciphers = XQC_TLS_CIPHERS;
-    ssl_cfg.groups  = XQC_TLS_GROUPS;
+    ssl_cfg.groups = XQC_TLS_GROUPS;
 
     /* ── Create engine ── */
-    ctx.engine = xqc_engine_create(XQC_ENGINE_CLIENT, &engine_cfg,
-                                   &ssl_cfg, &engine_cbs, &transport_cbs, &ctx);
+    ctx.engine = xqc_engine_create(XQC_ENGINE_CLIENT, &engine_cfg, &ssl_cfg, &engine_cbs,
+                                   &transport_cbs, &ctx);
     if (ctx.engine == NULL) {
         printf("[masque] xqc_engine_create failed\n");
         return 1;
@@ -1160,24 +1152,27 @@ main(int argc, char *argv[])
 
     /* ── H3 callbacks ── */
     xqc_h3_callbacks_t h3_cbs = {
-        .h3c_cbs = {
-            .h3_conn_create_notify     = masque_h3_conn_create_cb,
-            .h3_conn_close_notify      = masque_h3_conn_close_cb,
-            .h3_conn_handshake_finished = masque_h3_handshake_finished_cb,
-            .h3_conn_init_settings     = masque_h3_conn_init_settings_cb,
-        },
-        .h3r_cbs = {
-            .h3_request_close_notify   = masque_h3_request_close_cb,
-            .h3_request_read_notify    = masque_h3_request_read_cb,
-            .h3_request_write_notify   = masque_h3_request_write_cb,
-        },
-        .h3_ext_dgram_cbs = {
-            .dgram_read_notify         = masque_dgram_read_cb,
-            .dgram_write_notify        = masque_dgram_write_cb,
-            .dgram_mss_updated_notify  = masque_dgram_mss_cb,
-            .dgram_acked_notify        = masque_dgram_acked_cb,
-            .dgram_lost_notify         = masque_dgram_lost_cb,
-        },
+        .h3c_cbs =
+            {
+                .h3_conn_create_notify = masque_h3_conn_create_cb,
+                .h3_conn_close_notify = masque_h3_conn_close_cb,
+                .h3_conn_handshake_finished = masque_h3_handshake_finished_cb,
+                .h3_conn_init_settings = masque_h3_conn_init_settings_cb,
+            },
+        .h3r_cbs =
+            {
+                .h3_request_close_notify = masque_h3_request_close_cb,
+                .h3_request_read_notify = masque_h3_request_read_cb,
+                .h3_request_write_notify = masque_h3_request_write_cb,
+            },
+        .h3_ext_dgram_cbs =
+            {
+                .dgram_read_notify = masque_dgram_read_cb,
+                .dgram_write_notify = masque_dgram_write_cb,
+                .dgram_mss_updated_notify = masque_dgram_mss_cb,
+                .dgram_acked_notify = masque_dgram_acked_cb,
+                .dgram_lost_notify = masque_dgram_lost_cb,
+            },
     };
 
     if (xqc_h3_ctx_init(ctx.engine, &h3_cbs) != XQC_OK) {
@@ -1190,8 +1185,8 @@ main(int argc, char *argv[])
     conn.ctx = &ctx;
 
     /* Resolve proxy address */
-    if (masque_resolve(g_proxy_addr, g_proxy_port,
-                       &conn.peer_addr, &conn.peer_addrlen) < 0) {
+    if (masque_resolve(g_proxy_addr, g_proxy_port, &conn.peer_addr, &conn.peer_addrlen) <
+        0) {
         return 1;
     }
 
@@ -1202,13 +1197,13 @@ main(int argc, char *argv[])
     }
 
     /* Socket read event */
-    conn.ev_socket = event_new(ctx.eb, conn.fd, EV_READ | EV_PERSIST,
-                               masque_socket_read_cb, &conn);
+    conn.ev_socket =
+        event_new(ctx.eb, conn.fd, EV_READ | EV_PERSIST, masque_socket_read_cb, &conn);
     event_add(conn.ev_socket, NULL);
 
     /* Idle timeout */
     conn.ev_timeout = event_new(ctx.eb, -1, 0, masque_timeout_cb, &conn);
-    struct timeval tv_timeout = { .tv_sec = g_timeout_sec, .tv_usec = 0 };
+    struct timeval tv_timeout = {.tv_sec = g_timeout_sec, .tv_usec = 0};
     event_add(conn.ev_timeout, &tv_timeout);
 
     /* ── Allocate tunnel ── */
@@ -1227,21 +1222,20 @@ main(int argc, char *argv[])
 
     xqc_conn_ssl_config_t conn_ssl_cfg = {0};
     if (g_allow_self_signed) {
-        conn_ssl_cfg.cert_verify_flag = XQC_TLS_CERT_FLAG_NEED_VERIFY
-                                      | XQC_TLS_CERT_FLAG_ALLOW_SELF_SIGNED;
+        conn_ssl_cfg.cert_verify_flag =
+            XQC_TLS_CERT_FLAG_NEED_VERIFY | XQC_TLS_CERT_FLAG_ALLOW_SELF_SIGNED;
     }
 
     const char *sni = g_proxy_host[0] ? g_proxy_host : g_proxy_addr;
 
     printf("[masque] Mode: %s\n", g_connect_ip ? "CONNECT-IP" : "CONNECT-UDP");
-    printf("[masque] Connecting to proxy %s:%d (SNI: %s)\n",
-           g_proxy_addr, g_proxy_port, sni);
+    printf("[masque] Connecting to proxy %s:%d (SNI: %s)\n", g_proxy_addr, g_proxy_port,
+           sni);
     printf("[masque] Target: %s:%d\n", g_target_host, g_target_port);
 
     const xqc_cid_t *cid = xqc_h3_connect(
-        ctx.engine, &conn_settings, NULL, 0, sni, g_no_crypto,
-        &conn_ssl_cfg, (struct sockaddr *)&conn.peer_addr, conn.peer_addrlen,
-        &conn);
+        ctx.engine, &conn_settings, NULL, 0, sni, g_no_crypto, &conn_ssl_cfg,
+        (struct sockaddr *)&conn.peer_addr, conn.peer_addrlen, &conn);
     if (cid == NULL) {
         printf("[masque] xqc_h3_connect failed\n");
         return 1;
@@ -1260,19 +1254,19 @@ main(int argc, char *argv[])
 
     int exit_code;
     if (tunnel.recv_done) {
-        printf("[masque] SUCCESS: sent=%d recv=%d (%zu bytes total)\n",
-               tunnel.send_count, tunnel.recv_count, tunnel.recv_len);
+        printf("[masque] SUCCESS: sent=%d recv=%d (%zu bytes total)\n", tunnel.send_count,
+               tunnel.recv_count, tunnel.recv_len);
         exit_code = 0;
     } else if (tunnel.response_ok && tunnel.recv_count > 0) {
-        printf("[masque] PARTIAL: sent=%d recv=%d (expected %d)\n",
-               tunnel.send_count, tunnel.recv_count, g_send_count);
-        exit_code = 2;  /* partial success */
+        printf("[masque] PARTIAL: sent=%d recv=%d (expected %d)\n", tunnel.send_count,
+               tunnel.recv_count, g_send_count);
+        exit_code = 2; /* partial success */
     } else if (!tunnel.response_ok && tunnel.headers_sent) {
         printf("[masque] FAIL: proxy did not accept tunnel\n");
-        exit_code = 3;  /* proxy rejection */
+        exit_code = 3; /* proxy rejection */
     } else {
-        printf("[masque] FAIL: sent=%d recv=%d (expected %d)\n",
-               tunnel.send_count, tunnel.recv_count, g_send_count);
+        printf("[masque] FAIL: sent=%d recv=%d (expected %d)\n", tunnel.send_count,
+               tunnel.recv_count, g_send_count);
         exit_code = 1;
     }
 

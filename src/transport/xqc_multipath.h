@@ -1,6 +1,7 @@
 
 /**
  * @copyright Copyright (c) 2022, Alibaba Group Holding Limited
+ * @copyright Copyright (c) 2026, mp0rta
  */
 
 #ifndef XQC_MULTIPATH_H
@@ -115,6 +116,11 @@ struct xqc_path_ctx_s {
     xqc_path_state_t    path_state;
     unsigned char       path_challenge_data[XQC_PATH_CHALLENGE_DATA_LEN];
 
+    /* draft-21 §3.1 ¶10 (G-P3): counts consecutive PATH_CHALLENGE
+     * retransmit attempts observed on the loss-detection cycle without
+     * a matching PATH_RESPONSE. Reset to 0 on PATH_RESPONSE match. */
+    uint8_t             path_challenge_attempts;
+
     xqc_path_flag_t     path_flag;
 
     /* application layer path status, sync via PATH_STATUS frame */
@@ -187,6 +193,7 @@ typedef struct {
 } xqc_path_info_t;
 
 xqc_bool_t xqc_is_same_addr(const struct sockaddr *sa1, const struct sockaddr *sa2);
+xqc_bool_t xqc_is_same_ip(const struct sockaddr *sa1, const struct sockaddr *sa2);
 xqc_bool_t xqc_is_same_addr_as_any_path(xqc_connection_t *conn, const struct sockaddr *peer_addr);
 
 xqc_int_t xqc_generate_path_challenge_data(xqc_connection_t *conn, xqc_path_ctx_t *path);
@@ -222,6 +229,30 @@ void xqc_set_path_state(xqc_path_ctx_t *path, xqc_path_state_t state);
 /* path state: "ACTIVE" -> "CLOSING" */
 xqc_int_t xqc_path_immediate_close(xqc_path_ctx_t *path);
 
+/* draft-21 §3.1 ¶6 / §3.1 ¶10: explicitly close a path due to a
+ * validation MUST violation. Enqueues PATH_ABANDON (best-effort) and
+ * transitions path_state to CLOSING. Idempotent for paths already
+ * >= CLOSING. */
+xqc_int_t xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code);
+
+/* G-P3 (draft-21 §3.1 ¶10): after this many consecutive PATH_CHALLENGE
+ * retransmits without a matching PATH_RESPONSE, the path is treated as
+ * failing validation and explicitly closed. Spec does not pin a
+ * specific value; 3 is the implementer-chosen default matching QUIC's
+ * general retry-budget shape. Cadence is the loss-detection cycle
+ * (PTO/RTT-scaled), NOT a fixed wall-clock interval — see
+ * docs/audit-notes/pr5-l5b-audit.md row "Pre-5 cadence". */
+#define XQC_PATH_VALIDATION_MAX_ATTEMPTS  3
+
+/* G-P3 retx-cycle callback: invoked each time a PATH_CHALLENGE on a
+ * VALIDATING path is observed as lost by the loss-detection cycle.
+ * Increments path->path_challenge_attempts; on reaching the threshold,
+ * explicitly closes the path with PATH_UNSTABLE_OR_POOR.
+ *
+ * Returns XQC_OK on success (regardless of whether the threshold
+ * triggered). Idempotent on already-CLOSING paths. */
+xqc_int_t xqc_path_validation_on_retx(xqc_path_ctx_t *path);
+
 /* path state: "ACTIVE/CLOSING/DRAINING" -> "CLOSED" */
 xqc_int_t xqc_path_closed(xqc_path_ctx_t *path);
 
@@ -234,6 +265,14 @@ void xqc_path_send_buffer_remove(xqc_path_ctx_t *path, xqc_packet_out_t *packet_
 void xqc_path_send_buffer_clear(xqc_connection_t *conn, xqc_path_ctx_t *path, xqc_list_head_t *head, xqc_send_type_t send_type);
 
 xqc_int_t xqc_set_application_path_status(xqc_path_ctx_t *path, xqc_app_path_status_t status, xqc_bool_t is_tx);
+
+/* G-P14 (draft-21 §3.4 ¶3 RECOMMENDED): pick an open path other than
+ * `exclude`, preferring AVAILABLE over STANDBY (lowest path_id within
+ * each tier for deterministic selection). Open = path_state == ACTIVE
+ * per draft-21 §3 state model (CLOSING / CLOSED / VALIDATING excluded).
+ * Returns NULL if no candidate exists. Used by PATH_ABANDON emission
+ * to send the frame on an alt open path. */
+xqc_path_ctx_t *xqc_conn_pick_alt_active_path(xqc_connection_t *conn, xqc_path_ctx_t *exclude);
 
 /* path statistics */
 void xqc_conn_path_metrics_print(xqc_connection_t *conn, xqc_conn_stats_t *stats);
@@ -248,6 +287,54 @@ xqc_msec_t xqc_path_get_idle_timeout(xqc_path_ctx_t *path);
 void xqc_path_validate(xqc_path_ctx_t *path);
 
 xqc_int_t xqc_conn_is_current_mp_version_supported(xqc_multipath_version_t mp_version);
+
+/* draft-21 §3.1.1: receivers MUST treat path_id > local_max_path_id as
+ * PROTOCOL_VIOLATION. Returns XQC_OK on accept, -TRA_PROTOCOL_VIOLATION
+ * on reject (caller logs + XQC_CONN_ERR before propagating). */
+xqc_int_t xqc_validate_recv_path_id(xqc_connection_t *conn, uint64_t path_id);
+
+/* draft-21 §4.6: MAX_PATH_ID validation outcome. Pure (no side effects);
+ * caller is responsible for state updates / error reporting. */
+typedef enum {
+    XQC_MAX_PATH_ID_ACCEPT       = 0,   /* value > remote_max_path_id, growth */
+    XQC_MAX_PATH_ID_IGNORE_STALE = 1,   /* value <= remote_max_path_id        */
+    XQC_MAX_PATH_ID_BAD_TOO_LARGE = 2,  /* value > 2^32-1 -> VIOLATION        */
+    XQC_MAX_PATH_ID_BAD_BELOW_INIT = 3, /* value < remote initial -> VIOLATION */
+} xqc_max_path_id_validation_t;
+
+xqc_max_path_id_validation_t xqc_validate_max_path_id(xqc_connection_t *conn,
+                                                      uint64_t value);
+
+/* draft-21 §3.2.1 / §4.6 mp21 L2 — MAX_PATH_ID credit grant.
+ * Increment applied per grant when granting auto-credit on PATHS_BLOCKED
+ * receipt. Magnitude is implementation-defined (spec unspec); chosen to
+ * give peer ~8 fresh paths per grant which matches typical XQC_MAX_PATHS
+ * deployments. */
+#define XQC_MAX_PATH_ID_GRANT_INCREMENT  8
+
+/* Evaluate whether a MAX_PATH_ID credit grant should fire on receipt of
+ * PATHS_BLOCKED. Side-effects: when the grant fires, advances
+ * conn->local_max_path_id and updates conn->last_max_path_id_grant_us.
+ * Returns the new local_max_path_id to emit (>0) or 0 when no grant
+ * fires (disabled, at cap, rate-limited, or initial path missing PTO).
+ *
+ * Caller is responsible for emitting the MAX_PATH_ID frame when the
+ * return value is non-zero. Splitting state mutation from emission lets
+ * tests exercise the gate without a fully-wired send queue. */
+uint64_t xqc_try_grant_max_path_id(xqc_connection_t *conn);
+
+/* draft-21 §3.1: zero-length CIDs are forbidden once multipath is
+ * negotiated — packets are demultiplexed by DCID across paths, so a
+ * zero-length CID would collapse the per-path identity. Returns XQC_OK
+ * when both scid_len and dcid_len are non-zero, -TRA_PROTOCOL_VIOLATION
+ * otherwise. */
+xqc_int_t xqc_validate_mp_cid_lengths(uint8_t scid_len, uint8_t dcid_len);
+
+/* draft-21 §4.5 abandoned-path bookkeeping. Bitmap is sized to 256 ids;
+ * path_id values outside that range are clamped (treated as not abandoned)
+ * — the validate_recv_path_id helper has already enforced the cap. */
+void      xqc_conn_mark_path_abandoned(xqc_connection_t *conn, uint64_t path_id);
+xqc_bool_t xqc_conn_is_path_abandoned(xqc_connection_t *conn, uint64_t path_id);
 
 xqc_bool_t xqc_path_is_initial_path(xqc_path_ctx_t *path);
 

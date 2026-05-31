@@ -1759,6 +1759,42 @@ else
 fi
 grep_err_log
 
+clear_log
+echo -e "NAT rebinding IP change cwnd reset ...\c"
+sudo ${CLIENT_BIN} -s 102400 -l d -t 3 -M -i lo -i lo -E -n 2 -x 105 > stdlog
+result=`grep ">>>>>>>> pass:0" stdlog`
+errlog=`grep_err_log`
+rebind=`grep "|path:0|REBINDING|validate NAT rebinding addr|" slog`
+# RFC 9000 §9.4 ¶1 MUST: IP changed -> reset; assert srtt=initial_rtt to catch
+# impls that reset cwnd but forget RTT.
+cwnd_reset=`grep "|path:0|MIGRATION|cwnd_rtt_reset|srtt:250000|" slog`
+if [ -z "$errlog" ] && [ "$rebind" != "" ] && [ "$cwnd_reset" != "" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "NAT_rebinding_IP_change_cwnd_reset" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "NAT_rebinding_IP_change_cwnd_reset" "fail"
+fi
+grep_err_log
+
+clear_log
+echo -e "NAT rebinding port-only retain ...\c"
+sudo ${CLIENT_BIN} -s 102400 -l d -t 3 -M -i lo -i lo -E -n 2 -x 106 > stdlog
+result=`grep ">>>>>>>> pass:0" stdlog`
+errlog=`grep_err_log`
+rebind=`grep "|path:0|REBINDING|validate NAT rebinding addr|" slog`
+# RFC 9000 §9.4 paragraph 1 carve-out: port-only change MAY retain.
+# Negative assertion: cwnd_rtt_reset MUST NOT appear.
+cwnd_reset=`grep "|path:0|MIGRATION|cwnd_rtt_reset|" slog`
+if [ -z "$errlog" ] && [ "$rebind" != "" ] && [ -z "$cwnd_reset" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "NAT_rebinding_port_only_retain" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "NAT_rebinding_port_only_retain" "fail"
+fi
+grep_err_log
+
 killall test_server
 ${SERVER_BIN} -l d -e -M -y > /dev/null &
 sleep 1

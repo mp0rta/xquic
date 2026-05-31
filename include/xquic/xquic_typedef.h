@@ -334,6 +334,12 @@ typedef enum {
     XQC_APP_PATH_STATUS_MAX,
 } xqc_app_path_status_t;
 
+/* draft-21 §4.4 renamed PATH_STATUS_STANDBY -> PATH_STATUS_BACKUP.
+ * Semantics are identical; we keep the STANDBY symbol for draft-10
+ * compat and provide BACKUP as an alias so draft-21-flavoured call
+ * sites can use the new name. */
+#define XQC_APP_PATH_STATUS_BACKUP XQC_APP_PATH_STATUS_STANDBY
+
 typedef enum xqc_tls_msg_type_e {
     XQC_TLS_1_3_CLIENT_HELLO,
     XQC_TLS_1_3_SERVER_HELLO

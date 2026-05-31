@@ -222,5 +222,16 @@ xqc_int_t xqc_tls_update_tp(xqc_tls_t *tls, uint8_t *tp_buf, size_t tp_len);
  */
 void *xqc_tls_get_ssl(xqc_tls_t *tls);
 
+/**
+ * @brief draft-21 §3 / §C.1 MUST: if multipath is enabled, the negotiated
+ *        1-RTT AEAD MUST provide nonce length >= 12 bytes. Resolves the
+ *        1-RTT pp_aead noncelen and delegates to xqc_crypto_check_mp_nonce_len.
+ *
+ * @return XQC_OK on success;
+ *         -TRA_TRANSPORT_PARAMETER_ERROR if multipath is on but nonce < 12B;
+ *         -XQC_TLS_INTERNAL if 1-RTT crypto is not installed yet.
+ */
+xqc_int_t xqc_tls_check_mp_aead_nonce_len(xqc_tls_t *tls, uint8_t multipath_enabled);
+
 
 #endif

@@ -1,5 +1,6 @@
 /**
  * @copyright Copyright (c) 2022, Alibaba Group Holding Limited
+ * @copyright Copyright (c) 2026, mp0rta
  */
 
 #ifndef _XQC_FRAME_PARSER_H_INCLUDED_
@@ -25,7 +26,32 @@
 #define XQC_TRANS_FRAME_TYPE_MP_NEW_CONN_ID             0x15228c09
 #define XQC_TRANS_FRAME_TYPE_MP_RETIRE_CONN_ID          0x15228c0a
 #define XQC_TRANS_FRAME_TYPE_MAX_PATH_ID                0x15228c0c
+/* MP_FROZEN is an xquic vendor extension (not in any IETF multipath draft).
+ * Emitted/parsed ONLY when conn_settings.multipath_version == XQC_MULTIPATH_10
+ * for legacy xquic<->xquic FROZEN status signalling. On XQC_MULTIPATH_3E
+ * (draft-21 §4.4) the FROZEN wire codepoint does not exist; the internal
+ * XQC_APP_PATH_STATUS_FROZEN enum is retained for scheduler use but is
+ * never serialised on a draft-21 connection, and a draft-21 receiver
+ * silently ignores the codepoint to remain spec-correct on its own side. */
 #define XQC_TRANS_FRAME_TYPE_MP_FROZEN                  0x15228cff
+
+/* draft-ietf-quic-multipath-21 frame types (IANA permanent registry).
+ *
+ * Naming convention: draft-21 frame TYPE constants carry a "_V21" suffix
+ * ONLY when their unsuffixed name would collide with a draft-10 constant
+ * (e.g. PATH_ABANDON_V21 vs the draft-10 MP_ABANDON-era symbolic name).
+ * New draft-21 names with no draft-10 analog (PATH_ACK, PATH_STATUS_BACKUP,
+ * PATHS_BLOCKED, PATH_CIDS_BLOCKED) carry no suffix. */
+#define XQC_TRANS_FRAME_TYPE_PATH_ACK                       0x3eULL
+#define XQC_TRANS_FRAME_TYPE_PATH_ACK_ECN                   0x3fULL
+#define XQC_TRANS_FRAME_TYPE_PATH_ABANDON_V21               0x3e75ULL
+#define XQC_TRANS_FRAME_TYPE_PATH_STATUS_BACKUP             0x3e76ULL
+#define XQC_TRANS_FRAME_TYPE_PATH_STATUS_AVAILABLE_V21      0x3e77ULL
+#define XQC_TRANS_FRAME_TYPE_PATH_NEW_CONNECTION_ID_V21     0x3e78ULL
+#define XQC_TRANS_FRAME_TYPE_PATH_RETIRE_CONNECTION_ID_V21  0x3e79ULL
+#define XQC_TRANS_FRAME_TYPE_MAX_PATH_ID_V21                0x3e7aULL
+#define XQC_TRANS_FRAME_TYPE_PATHS_BLOCKED                  0x3e7bULL
+#define XQC_TRANS_FRAME_TYPE_PATH_CIDS_BLOCKED              0x3e7cULL
 
 #define XQC_TRANS_FRAME_TYPE_ACK_EXT                    0xB1
 
@@ -142,11 +168,18 @@ ssize_t xqc_gen_ack_mp_frame(xqc_connection_t *conn, uint64_t path_id, xqc_packe
 xqc_int_t xqc_parse_ack_mp_frame(xqc_packet_in_t *packet_in, xqc_connection_t *conn,
     uint64_t *path_id, xqc_ack_info_t *ack_info);
 
+/* draft-21 §4.1 PATH_ACK_ECN (type 0x3f): identical to PATH_ACK wire layout
+ * except three trailing ECN Counts varints (ECT0, ECT1, CE). The parser
+ * delegates to the PATH_ACK body and then skips the 3 ECN varints; no ECN
+ * accounting is performed in this layer (Chunk 3 parse-only). */
+xqc_int_t xqc_parse_path_ack_ecn_frame(xqc_packet_in_t *packet_in,
+    xqc_connection_t *conn, uint64_t *path_id, xqc_ack_info_t *ack_info);
+
 ssize_t xqc_gen_path_abandon_frame(xqc_connection_t *conn, 
     xqc_packet_out_t *packet_out, uint64_t path_id, uint64_t error_code);
 
 xqc_int_t xqc_parse_path_abandon_frame(xqc_packet_in_t *packet_in,
-    uint64_t *path_id, uint64_t *error_code);
+    uint64_t *path_id, uint64_t *error_code, uint8_t mp_version);
 
 ssize_t xqc_gen_path_status_frame(xqc_connection_t *conn,
     xqc_packet_out_t *packet_out,
@@ -168,18 +201,35 @@ xqc_int_t xqc_gen_repair_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_
 xqc_int_t xqc_parse_repair_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in,
     xqc_fec_rpr_syb_t *rpr_symbol);
 
-ssize_t xqc_gen_mp_new_conn_id_frame(xqc_packet_out_t *packet_out, xqc_cid_t *new_cid,
-    uint64_t retire_prior_to, const uint8_t *sr_token, uint64_t path_id);
+ssize_t xqc_gen_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
+    xqc_cid_t *new_cid, uint64_t retire_prior_to, const uint8_t *sr_token, uint64_t path_id);
 
 xqc_int_t xqc_parse_mp_new_conn_id_frame(xqc_packet_in_t *packet_in,
     xqc_cid_t *new_cid, uint64_t *retire_prior_to, uint64_t *path_id, xqc_connection_t *conn);
 
-ssize_t xqc_gen_mp_retire_conn_id_frame(xqc_packet_out_t *packet_out, uint64_t seq_num, uint64_t path_id);
+ssize_t xqc_gen_mp_retire_conn_id_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
+    uint64_t seq_num, uint64_t path_id);
 
 xqc_int_t xqc_parse_mp_retire_conn_id_frame(xqc_packet_in_t *packet_in, uint64_t *seq_num, uint64_t *path_id);
 
-ssize_t xqc_gen_max_path_id_frame(xqc_packet_out_t *packet_out, uint64_t max_path_id);
+ssize_t xqc_gen_max_path_id_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out, uint64_t max_path_id);
 xqc_int_t xqc_parse_max_path_id_frame(xqc_packet_in_t *packet_in, uint64_t *max_path_id);
+
+/* draft-21 §4.7 PATHS_BLOCKED generator: 1 varint frame type (0x3e7b)
+ * + 1 varint payload (Maximum Path Identifier). Writes into a raw buffer
+ * (no conn/packet_out indirection — the trigger site in xqc_multipath.c
+ * wraps this in xqc_write_paths_blocked_frame_to_packet). Returns the
+ * number of bytes written, or a negative xqc_int_t error code if the
+ * buffer is too small. */
+ssize_t xqc_gen_paths_blocked_frame(unsigned char *buf, size_t buf_len, uint64_t max_path_id);
+
+/* draft-21 §4.7 PATHS_BLOCKED: 1 varint payload (Maximum Path Identifier). */
+xqc_int_t xqc_parse_paths_blocked_frame(xqc_packet_in_t *packet_in, uint64_t *max_path_id);
+
+/* draft-21 §4.7 PATH_CIDS_BLOCKED: 2 varint payload
+ * (Path Identifier, Next Sequence Number). */
+xqc_int_t xqc_parse_path_cids_blocked_frame(xqc_packet_in_t *packet_in,
+    uint64_t *path_id, uint64_t *next_seq);
 
 void xqc_try_process_fec_decode(xqc_connection_t *conn, xqc_int_t block_id);
 

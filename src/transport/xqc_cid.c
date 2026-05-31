@@ -216,7 +216,17 @@ xqc_cid_set_get_unused_cnt(xqc_cid_set_t *cid_set, uint64_t path_id)
     return XQC_ERROR;
 }
 
-int64_t 
+int
+xqc_cid_set_has_unused(xqc_cid_set_t *cid_set, uint64_t path_id)
+{
+    xqc_cid_set_inner_t *inner_set = xqc_get_path_cid_set(cid_set, path_id);
+    if (inner_set == NULL) {
+        return 0;
+    }
+    return inner_set->unused_cnt > 0 ? 1 : 0;
+}
+
+int64_t
 xqc_cid_set_get_used_cnt(xqc_cid_set_t *cid_set, uint64_t path_id)
 {
     xqc_cid_set_inner_t *inner_set;

@@ -68,10 +68,14 @@ xqc_test_new_cid()
     ret = xqc_write_new_conn_id_frame_to_packet(conn, 0);
     CU_ASSERT(ret == XQC_OK);
     CU_ASSERT(xqc_cid_set_get_unused_cnt(&conn->scid_set, 0) == 1);
+    /* Non-mutating has_unused wrapper agrees with the count helper. */
+    CU_ASSERT(xqc_cid_set_has_unused(&conn->scid_set, 0) == 1);
+    CU_ASSERT(xqc_cid_set_has_unused(&conn->scid_set, 99) == 0);
 
     ret = xqc_get_unused_cid(&conn->scid_set, &test_scid, 0);
     CU_ASSERT(ret == XQC_OK);
     CU_ASSERT(xqc_cid_set_get_unused_cnt(&conn->scid_set, 0) == 0);
+    CU_ASSERT(xqc_cid_set_has_unused(&conn->scid_set, 0) == 0);
 
     xqc_engine_destroy(conn->engine);
 }

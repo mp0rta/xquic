@@ -131,6 +131,12 @@ typedef struct xqc_packet_out_s {
 
     uint64_t                po_new_cid_seq;
     uint32_t                po_new_cid_path;
+
+    /* G-F9 (draft-21 §4.3 ¶12): PATH_STATUS sequence carried by this
+     * packet. Only meaningful when XQC_FRAME_BIT_PATH_STATUS is set on
+     * po_frame_types. Compared against path->app_path_status_send_seq_num
+     * at loss-replay time so stale PATH_STATUS frames are suppressed. */
+    uint64_t                po_path_status_seq;
 } xqc_packet_out_t;
 
 xqc_bool_t xqc_packet_out_on_specific_path(xqc_connection_t *conn, 
@@ -217,7 +223,8 @@ xqc_int_t xqc_write_path_response_frame_to_packet(xqc_connection_t *conn, xqc_pa
 int xqc_write_ack_mp_to_one_packet(xqc_connection_t *conn, xqc_path_ctx_t *path,
     xqc_packet_out_t *packet_out, xqc_pkt_num_space_t pns);
 
-xqc_int_t xqc_write_path_abandon_frame_to_packet(xqc_connection_t *conn, xqc_path_ctx_t *path);
+xqc_int_t xqc_write_path_abandon_frame_to_packet(xqc_connection_t *conn, xqc_path_ctx_t *path,
+                                                 uint64_t error_code);
 
 xqc_int_t xqc_write_path_status_frame_to_packet(xqc_connection_t *conn, xqc_path_ctx_t *path);
 
@@ -236,6 +243,10 @@ xqc_int_t xqc_write_mp_new_conn_id_frame_to_packet(xqc_connection_t *conn, uint6
 xqc_int_t xqc_write_mp_retire_conn_id_frame_to_packet(xqc_connection_t *conn, uint64_t seq_num, uint64_t path_id);
 
 int xqc_write_max_path_id_to_packet(xqc_connection_t *conn, uint64_t max_path_id);
+
+/* G-P16 (draft-21 §4.7): emit PATHS_BLOCKED on path-create-fail.
+ * PTO rate-limited by caller via conn->last_paths_blocked_sent_time. */
+xqc_int_t xqc_write_paths_blocked_frame_to_packet(xqc_connection_t *conn, uint64_t max_path_id);
 
 /**
  * @brief Get remained space size in packet out buff.

@@ -8,6 +8,8 @@
 #include <xquic/xquic_typedef.h>
 #include <xquic/xquic.h>
 #include "src/common/xqc_list.h"
+#include "src/common/xqc_malloc.h"
+#include "src/common/xqc_str.h"
 #include "src/transport/xqc_packet.h"
 
 #define XQC_UNDEFINE_STREAM_ID XQC_MAX_UINT64_VALUE
@@ -109,6 +111,13 @@ typedef struct xqc_stream_write_buff_list_s {
     uint64_t                total_len;
 } xqc_stream_write_buff_list_t;
 
+/* PR3 §4.3 Rev 4: per-stream path metric slot. Replaces fixed-size
+ * indexing of paths_info[path_id]. Looked up via linear scan. */
+typedef struct xqc_stream_path_metric_s {
+    uint64_t                path_id;
+    xqc_path_metrics_t      metrics;
+} xqc_stream_path_metric_t;
+
 struct xqc_stream_s {
     xqc_connection_t       *stream_conn;
     xqc_stream_id_t         stream_id;
@@ -173,7 +182,11 @@ struct xqc_stream_s {
         uint32_t            fec_send_rpr_cnt;       /* FEC repair packets sent on current stream */
     } stream_stats;
 
-    xqc_path_metrics_t      paths_info[XQC_MAX_PATHS_COUNT];
+    /* PR3 §4.3 Rev 4: dynamic per-stream path metrics. Linear-scan flat array,
+     * realloc-grown (start cap 4, doubling), capped at XQC_PATH_HARD_CAP. */
+    xqc_stream_path_metric_t *paths_info;
+    uint32_t                paths_info_count;
+    uint32_t                paths_info_capacity;
     uint8_t                 stream_mp_usage_schedule;
     uint8_t                 stream_mp_usage_reinject;
     uint8_t                 stream_fec_blk_mode;
@@ -297,5 +310,58 @@ void xqc_stream_close_discarded_stream(xqc_stream_t *stream);
 xqc_bool_t xqc_is_stream_finished(xqc_stream_t *stream);
 
 void xqc_record_stream_state(xqc_stream_t *stream);
+
+/* PR3 §4.3 Rev 4: flat dynamic per-stream paths_info helpers. */
+static inline xqc_path_metrics_t *
+xqc_stream_path_metrics_get_or_grow(xqc_stream_t *s, uint64_t path_id)
+{
+    for (uint32_t i = 0; i < s->paths_info_count; i++) {
+        if (s->paths_info[i].path_id == path_id) {
+            return &s->paths_info[i].metrics;
+        }
+    }
+    if (s->paths_info_count >= XQC_PATH_HARD_CAP) {
+        return NULL;
+    }
+    if (s->paths_info_count == s->paths_info_capacity) {
+        uint32_t newcap = s->paths_info_capacity ? s->paths_info_capacity * 2 : 4;
+        if (newcap > XQC_PATH_HARD_CAP) {
+            newcap = XQC_PATH_HARD_CAP;
+        }
+        void *nb = xqc_realloc(s->paths_info,
+                               (size_t)newcap * sizeof(*s->paths_info));
+        if (!nb) {
+            return NULL;
+        }
+        s->paths_info = nb;
+        s->paths_info_capacity = newcap;
+    }
+    xqc_memzero(&s->paths_info[s->paths_info_count], sizeof(*s->paths_info));
+    s->paths_info[s->paths_info_count].path_id = path_id;
+    return &s->paths_info[s->paths_info_count++].metrics;
+}
+
+static inline xqc_path_metrics_t *
+xqc_stream_path_metrics_find(xqc_stream_t *s, uint64_t path_id)
+{
+    for (uint32_t i = 0; i < s->paths_info_count; i++) {
+        if (s->paths_info[i].path_id == path_id) {
+            return &s->paths_info[i].metrics;
+        }
+    }
+    return NULL;
+}
+
+static inline void
+xqc_stream_path_metrics_destroy(xqc_stream_t *s)
+{
+    if (s->paths_info) {
+        xqc_free(s->paths_info);
+        s->paths_info = NULL;
+    }
+    s->paths_info_count = 0;
+    s->paths_info_capacity = 0;
+}
+
 #endif /* _XQC_STREAM_H_INCLUDED_ */
 

@@ -617,10 +617,9 @@ xqc_create_stream_with_conn(xqc_connection_t *conn, xqc_stream_id_t stream_id,
     xqc_memset(&stream->stream_stats, 0, sizeof(stream->stream_stats));
     stream->stream_stats.create_time = xqc_monotonic_timestamp();
 
-    xqc_memset(&stream->paths_info, 0, sizeof(stream->paths_info));
-    for (int i = 0; i < XQC_MAX_PATHS_COUNT; ++i) {
-        stream->paths_info[i].path_id = XQC_MAX_UINT64_VALUE;
-    }
+    /* PR3 §4.3 Rev 4: paths_info is now a flat dynamic array, lazily grown
+     * on first packet/byte accounting per path. xqc_calloc'd stream zeroes
+     * the pointer + counters already; no explicit reset needed. */
 
     xqc_stream_set_flow_ctl(stream);
 
@@ -814,8 +813,16 @@ xqc_destroy_stream(xqc_stream_t *stream)
 
     stream->stream_flag |= XQC_STREAM_FLAG_CLOSED;
 
-    char path_info_buff[200 * XQC_MAX_PATHS_COUNT] = {'\0'};
-    xqc_stream_path_metrics_print(stream->stream_conn, stream, path_info_buff, 50 * XQC_MAX_PATHS_COUNT);
+    /* PR3 §4.3 Rev 4: heap-alloc the print buffer sized by actual path
+     * count + headroom, instead of a HARD_CAP-sized stack array (~50KB
+     * would blow Android's 8KB default thread stack). */
+    size_t pi_buff_cap = 200 * (size_t)stream->paths_info_count + 32;
+    char *path_info_buff = xqc_malloc(pi_buff_cap);
+    if (path_info_buff != NULL) {
+        path_info_buff[0] = '\0';
+        xqc_stream_path_metrics_print(stream->stream_conn, stream,
+                                      path_info_buff, pi_buff_cap);
+    }
 
     xqc_log(stream->stream_conn->log, XQC_LOG_STATS,
             "|err:0x%xi|close_msg:%s|enable_multipath:%d|"
@@ -849,13 +856,19 @@ xqc_destroy_stream(xqc_stream_t *stream)
             __calc_delay(stream->stream_stats.local_reset_time, stream->stream_stats.create_time),
             __calc_delay(stream->stream_stats.peer_reset_time, stream->stream_stats.create_time),
             xqc_conn_addr_str(stream->stream_conn),
-            path_info_buff,
+            path_info_buff ? path_info_buff : "",
             (stream->stream_stats.recv_time_with_fec == 0 || (stream->stream_stats.final_packet_time < stream->stream_stats.recv_time_with_fec)) ? 0 : (stream->stream_stats.final_packet_time - stream->stream_stats.recv_time_with_fec),
             stream->stream_stats.fec_send_rpr_cnt,
             stream->stream_stats.retrans_pkt_cnt
         );
 #undef __calc_delay
 
+    if (path_info_buff != NULL) {
+        xqc_free(path_info_buff);
+    }
+
+    /* PR3 §4.3 Rev 4: free dynamic paths_info before freeing stream. */
+    xqc_stream_path_metrics_destroy(stream);
     xqc_free(stream);
 }
 

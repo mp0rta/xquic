@@ -94,6 +94,10 @@ typedef enum {
  * them as uint64_t macros so they survive on every compiler regardless
  * of /std:c11 mode. */
 #define XQC_TRANSPORT_PARAM_INIT_MAX_PATH_ID_V10 ((uint64_t)0x0f739bbc1b666d09ULL)
+/* draft-21 §3.1 transport parameter codepoint (final IANA value). Lives in
+ * the transport-parameter id namespace, which is disjoint from the frame
+ * TYPE namespace where 0x3e is PATH_ACK — no collision. */
+#define XQC_TRANSPORT_PARAM_INIT_MAX_PATH_ID_V21 ((uint64_t)0x3eULL)
 #define XQC_TRANSPORT_PARAM_PMTUD_OPTIONS        ((uint64_t)0x0e08a234ff112300ULL)
 
 
