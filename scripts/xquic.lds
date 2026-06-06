@@ -76,6 +76,7 @@ XQUIC_VERS_1.0 {
         xqc_h3_conn_send_ping;
         xqc_conn_send_ping;
         xqc_engine_conns_hash_find;
+        xqc_engine_get_conn_by_scid;
         xqc_conn_create_path;
         xqc_conn_close_path;
         xqc_conn_mark_path_standby;
@@ -99,6 +100,7 @@ XQUIC_VERS_1.0 {
         xqc_deadline_reinj_ctl_cb;
         xqc_dgram_reinj_ctl_cb;
         xqc_datagram_get_mss;
+        xqc_datagram_get_mss_on_path;
         xqc_datagram_send;
         xqc_datagram_send_multiple;
         xqc_datagram_set_user_data;
