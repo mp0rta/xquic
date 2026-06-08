@@ -13,4 +13,6 @@ void xqc_test_large_ack_frame();
 
 void xqc_test_stream_frame_offset_overflow();
 
+void xqc_test_new_conn_id_zero_len_cid(void);
+
 #endif /* _XQC_PROCESS_FRAME_TEST_H_INCLUDED_ */

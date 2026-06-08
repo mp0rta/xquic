@@ -258,7 +258,9 @@ main()
         !CU_add_test(pSuite, "xqc_test_initial_salt_v1_value",
                      xqc_test_initial_salt_v1_value) ||
         !CU_add_test(pSuite, "xqc_test_initial_salt_null_byte_regression",
-                     xqc_test_initial_salt_null_byte_regression)
+                     xqc_test_initial_salt_null_byte_regression) ||
+        !CU_add_test(pSuite, "xqc_test_new_conn_id_zero_len_cid",
+                     xqc_test_new_conn_id_zero_len_cid)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();
