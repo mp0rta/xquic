@@ -46,6 +46,7 @@
 #include "xqc_test_helpers.h"
 #include "xqc_test_path_hard_cap.h"
 #include "xqc_set_conn_settings_test.h"
+#include "xqc_crypto_frame_test.h"
 
 static int
 xqc_init_suite(void)
@@ -276,7 +277,13 @@ main()
         !CU_add_test(pSuite, "xqc_test_h3_forbidden_headers_rejected",
                      xqc_test_h3_forbidden_headers_rejected) ||
         !CU_add_test(pSuite, "xqc_test_h3_allowed_headers_pass",
-                     xqc_test_h3_allowed_headers_pass)
+                     xqc_test_h3_allowed_headers_pass) ||
+        !CU_add_test(pSuite, "xqc_test_crypto_frame_flood",
+                     xqc_test_crypto_frame_flood) ||
+        !CU_add_test(pSuite, "xqc_test_crypto_frame_bytes_limit",
+                     xqc_test_crypto_frame_bytes_limit) ||
+        !CU_add_test(pSuite, "xqc_test_crypto_frame_recycle",
+                     xqc_test_crypto_frame_recycle)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();
