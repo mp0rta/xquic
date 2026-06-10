@@ -324,6 +324,7 @@ main()
         || !CU_add_test(pSuite, "xqc_test_reno_init_cwnd_override", xqc_test_reno_init_cwnd_override)
         || !CU_add_test(pSuite, "xqc_test_h3_control_frame_unexpected", xqc_test_h3_control_frame_unexpected)
         || !CU_add_test(pSuite, "xqc_test_h3_request_frame_unexpected", xqc_test_h3_request_frame_unexpected)
+        || !CU_add_test(pSuite, "xqc_test_stateless_reset_parse_boundary", xqc_test_stateless_reset_parse_boundary)
         /* ADD TESTS HERE */)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
