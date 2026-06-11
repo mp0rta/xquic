@@ -64,8 +64,13 @@ xqc_test_engine_packet_process()
     xqc_connection_t *conn = xqc_engine_conns_hash_find(engine, &scid, 's');
     CU_ASSERT(conn != NULL);
 
-    /* set handshake completed */
-    conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_COMPLETED;
+    /* NOTE: do NOT force XQC_CONN_FLAG_HANDSHAKE_COMPLETED here. This is a
+     * half-created conn (truncated Initial, no real handshake) so conn->tls is
+     * NULL. Forcing handshake-completed routes the SHORT_HEADER packet below
+     * into the 1RTT decrypt path, which dereferences conn->tls -> SEGV. In
+     * production HANDSHAKE_COMPLETED is only set once TLS (and 1RTT keys) are
+     * ready, so this state is unreachable; the packet below is processed in
+     * the pre-handshake state (buffered/dropped) which is what we exercise. */
 
     recv_time = xqc_monotonic_timestamp();
     rc = xqc_engine_packet_process(engine, XQC_TEST_SHORT_HEADER_PACKET_A,
