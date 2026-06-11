@@ -1266,12 +1266,14 @@ killall test_server
 echo -e "client Initial scid corruption ...\c"
 ${SERVER_BIN} -l d -e > /dev/null &
 sleep 1
-client_print_res=`${CLIENT_BIN} -s 1024000 -l d -t 1 -x 23 -E | grep ">>>>>>>> pass"`
+client_print_res=`${CLIENT_BIN} -s 1024000 -l d -t 1 -x 23 -E | grep ">>>>>>>> pass:1"`
 errlog=`grep_err_log`
-server_log_res=`grep "decrypt data error" slog`
-server_dcid_res=`grep "dcid change" slog`
+server_iscid_res=`grep "iscid mismatch" slog`
 echo "$client_print_res"
-if [ "$client_print_res" != "" ] && [ "$server_log_res" != NULL ] && [ "$server_dcid_res" != NULL ]; then
+# After ISCID validation, server detects the corrupted SCID does not match
+# the client's transport-parameter ISCID and closes the connection, so client
+# fails the transfer (no pass:1) and server logs iscid mismatch.
+if [ "$client_print_res" == "" ] && [ "$server_iscid_res" != "" ]; then
     case_print_result "client_initial_scid_corruption" "pass"
 else
     case_print_result "client_initial_scid_corruption" "fail"
@@ -5007,6 +5009,28 @@ if [ "$cli_res1" -gt 0 ] && [ "$svr_res1" -gt 0 ]; then
 else
     echo ">>>>>>>> pass:0"
     case_print_result "ack_timestamp_frame_case_6" "fail"
+fi
+
+killall test_server 2> /dev/null
+> svr_stdlog
+stdbuf -oL ${SERVER_BIN} -l d -e -x 48 > svr_stdlog &
+sleep 1
+
+rm -f test_session tp_localhost xqc_token
+
+clear_log
+echo -e "initial salt v1 key derivation ...\c"
+${CLIENT_BIN} -s 1024 -l d -t 1 -E -x 48 > stdlog
+result=`grep ">>>>>>>> pass" stdlog`
+salt_cli=`grep "\[initial-salt-test\] handshake ok, conn_err:0" stdlog`
+salt_svr=`grep -a "\[initial-salt-test\] server handshake ok, conn_err:0" svr_stdlog`
+errlog=`grep "derive initial secret error" clog slog`
+if [ "$result" == ">>>>>>>> pass:1" ] && [ -n "$salt_cli" ] && [ -n "$salt_svr" ] && [ -z "$errlog" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "initial_salt_v1_key_derivation" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "initial_salt_v1_key_derivation" "fail"
 fi
 
 cd -

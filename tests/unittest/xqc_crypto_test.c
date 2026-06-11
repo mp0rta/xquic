@@ -3,6 +3,7 @@
  */
 
 #include <CUnit/CUnit.h>
+#include <string.h>
 #include "xqc_common_test.h"
 #include "src/transport/xqc_conn.h"
 #include "src/tls/xqc_tls_defs.h"
@@ -36,7 +37,7 @@ xqc_test_derive_initial_secret()
     ret = xqc_crypto_derive_initial_secret(
         client_initial_secret, INITIAL_SECRET_MAX_LEN, server_initial_secret,
         INITIAL_SECRET_MAX_LEN, odcid, xqc_crypto_initial_salt[XQC_VERSION_V1],
-        strlen(xqc_crypto_initial_salt[XQC_VERSION_V1]));
+        XQC_INITIAL_SALT_LEN);
     CU_ASSERT(ret == XQC_OK);
 
     xqc_engine_destroy(conn->engine);
@@ -291,3 +292,146 @@ xqc_test_crypto()
     xqc_test_derive_initial_secret();
     xqc_test_derive_packet_protection_keys();
 }
+
+/*
+ * Tests for issue #574 - RFC 9001 §5.4.2 HP sample boundary check.
+ * Verifies that encrypt_header and decrypt_header reject packets too short
+ * for a complete 16-byte HP sample (pktno + 4 + 16 > end).
+ */
+static void
+xqc_test_hp_sample_boundary_one(xqc_bool_t is_encrypt, size_t total_len,
+                                xqc_int_t expected_ret)
+{
+    xqc_engine_t *engine = test_create_engine();
+    CU_ASSERT_FATAL(engine != NULL);
+
+    xqc_crypto_t *crypto = xqc_crypto_create(XQC_TLS13_AES_128_GCM_SHA256, engine->log);
+    CU_ASSERT_FATAL(crypto != NULL);
+
+    /* derive keys so hp key is non-NULL */
+    xqc_int_t ret;
+    ret =
+        xqc_crypto_derive_keys(crypto, XQC_TEST_CLIENT_SECRET,
+                               sizeof(XQC_TEST_CLIENT_SECRET) - 1, XQC_KEY_TYPE_RX_READ);
+    CU_ASSERT_FATAL(ret == XQC_OK);
+    ret =
+        xqc_crypto_derive_keys(crypto, XQC_TEST_CLIENT_SECRET,
+                               sizeof(XQC_TEST_CLIENT_SECRET) - 1, XQC_KEY_TYPE_TX_WRITE);
+    CU_ASSERT_FATAL(ret == XQC_OK);
+
+    /*
+     * Build a fake short-header packet buffer.
+     * Layout: [header_byte] [... padding ...] [pktno @ offset 1] [... to end]
+     * header[0] & 0x03 = 0 -> pktno_len = 1, so pktno + 1 <= end is satisfied
+     * as long as total_len >= 2. The HP sample check requires pktno + 4 + 16 <= end.
+     * With pktno at offset 1, that means total_len >= 1 + 4 + 16 = 21.
+     */
+    uint8_t buf[64];
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 0x40; /* short header, pktno_len bits = 0 -> pktno_len = 1 */
+
+    uint8_t *header = buf;
+    uint8_t *pktno = buf + 1;
+    uint8_t *end = buf + total_len;
+
+    if (is_encrypt) {
+        ret =
+            xqc_crypto_encrypt_header(crypto, XQC_PTYPE_SHORT_HEADER, header, pktno, end);
+    } else {
+        ret =
+            xqc_crypto_decrypt_header(crypto, XQC_PTYPE_SHORT_HEADER, header, pktno, end);
+    }
+
+    if (expected_ret < 0) {
+        CU_ASSERT(ret == expected_ret);
+    } else {
+        CU_ASSERT(ret >= 0);
+    }
+
+    xqc_crypto_destroy(crypto);
+    xqc_engine_destroy(engine);
+}
+
+void
+xqc_test_hp_sample_boundary()
+{
+    /*
+     * pktno at offset 1, sample starts at pktno+4 = offset 5.
+     * Need sample + 16 <= end, i.e. total_len >= 5 + 16 = 21.
+     */
+
+    /* Case 1: decrypt, pktno present but sample offset itself is short. */
+    xqc_test_hp_sample_boundary_one(XQC_FALSE, 2, -XQC_EILLPKT);
+
+    /* Case 2: decrypt, sample starts exactly at end. */
+    xqc_test_hp_sample_boundary_one(XQC_FALSE, 5, -XQC_EILLPKT);
+
+    /* Case 3: decrypt, too short (20 bytes) -> -XQC_EILLPKT */
+    xqc_test_hp_sample_boundary_one(XQC_FALSE, 20, -XQC_EILLPKT);
+
+    /* Case 4: decrypt, exact boundary (21 bytes) -> should pass check */
+    xqc_test_hp_sample_boundary_one(XQC_FALSE, 21, XQC_OK);
+
+    /* Case 5: encrypt, pktno present but sample offset itself is short. */
+    xqc_test_hp_sample_boundary_one(XQC_TRUE, 2, -XQC_EILLPKT);
+
+    /* Case 6: encrypt, sample starts exactly at end. */
+    xqc_test_hp_sample_boundary_one(XQC_TRUE, 5, -XQC_EILLPKT);
+
+    /* Case 7: encrypt, too short (20 bytes) -> -XQC_EILLPKT */
+    xqc_test_hp_sample_boundary_one(XQC_TRUE, 20, -XQC_EILLPKT);
+
+    /* Case 8: encrypt, exact boundary (21 bytes) -> should pass check */
+    xqc_test_hp_sample_boundary_one(XQC_TRUE, 21, XQC_OK);
+}
+
+void
+xqc_test_initial_salt_length()
+{
+    /* XQC_INITIAL_SALT_LEN must be 20 (all QUIC versions) */
+    CU_ASSERT_EQUAL(XQC_INITIAL_SALT_LEN, 20);
+
+    /* sizeof each row must match the constant */
+    CU_ASSERT_EQUAL(sizeof(xqc_crypto_initial_salt[XQC_VERSION_V1]),
+                    XQC_INITIAL_SALT_LEN);
+    CU_ASSERT_EQUAL(sizeof(xqc_crypto_initial_salt[XQC_IDRAFT_VER_29]),
+                    XQC_INITIAL_SALT_LEN);
+}
+
+void
+xqc_test_initial_salt_v1_value()
+{
+    /* RFC 9001 Section 5.2: 0x38762cf7f55934b34d179ae6a4c80cadccbb7f0a */
+    static const uint8_t rfc9001_v1_salt[20] = {
+        0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3,
+        0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad,
+        0xcc, 0xbb, 0x7f, 0x0a
+    };
+
+    CU_ASSERT_EQUAL(memcmp(xqc_crypto_initial_salt[XQC_VERSION_V1],
+                           rfc9001_v1_salt, 20), 0);
+}
+
+void
+xqc_test_initial_salt_null_byte_regression()
+{
+    /* salt with embedded 0x00: sizeof must still return 20 */
+    static const uint8_t salt_with_null[XQC_INITIAL_SALT_LEN] = {
+        0xAA, 0xBB, 0xCC, 0xDD,
+        0x00,  /* embedded null */
+        0x11, 0x22, 0x33, 0x44, 0x55,
+        0x66, 0x77, 0x88, 0x99, 0xAA,
+        0xBB, 0xCC, 0xDD, 0xEE, 0xFF
+    };
+
+    /* sizeof on a fixed-size uint8_t array is immune to 0x00 */
+    CU_ASSERT_EQUAL(sizeof(salt_with_null), XQC_INITIAL_SALT_LEN);
+
+    /* strlen would return 4 here -- that is the bug we are guarding */
+    CU_ASSERT(strlen((const char *)salt_with_null) < XQC_INITIAL_SALT_LEN);
+
+    /* the real salt table must also be immune */
+    CU_ASSERT_EQUAL(sizeof(xqc_crypto_initial_salt[XQC_IDRAFT_INIT_VER]),
+                    XQC_INITIAL_SALT_LEN);
+}
+
