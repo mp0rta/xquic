@@ -916,69 +916,113 @@ void
 xqc_test_h3_forbidden_headers_rejected()
 {
     /* transfer-encoding: always forbidden */
-    CU_ASSERT(xqc_h3_hdr_is_forbidden(
-        (const unsigned char *)"transfer-encoding", 17,
-        (const unsigned char *)"chunked", 7) == XQC_TRUE);
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"transfer-encoding", 17,
+                                      (const unsigned char *)"chunked", 7) == XQC_TRUE);
 
     /* keep-alive: always forbidden */
-    CU_ASSERT(xqc_h3_hdr_is_forbidden(
-        (const unsigned char *)"keep-alive", 10,
-        (const unsigned char *)"timeout=5", 9) == XQC_TRUE);
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"keep-alive", 10,
+                                      (const unsigned char *)"timeout=5", 9) == XQC_TRUE);
 
     /* proxy-connection: always forbidden */
-    CU_ASSERT(xqc_h3_hdr_is_forbidden(
-        (const unsigned char *)"proxy-connection", 16,
-        (const unsigned char *)"keep-alive", 10) == XQC_TRUE);
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"proxy-connection", 16,
+                                      (const unsigned char *)"keep-alive",
+                                      10) == XQC_TRUE);
 
     /* te with non-trailers value: forbidden */
-    CU_ASSERT(xqc_h3_hdr_is_forbidden(
-        (const unsigned char *)"te", 2,
-        (const unsigned char *)"chunked", 7) == XQC_TRUE);
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"te", 2,
+                                      (const unsigned char *)"chunked", 7) == XQC_TRUE);
 
     /* te with non-trailers value in mixed case: still forbidden */
-    CU_ASSERT(xqc_h3_hdr_is_forbidden(
-        (const unsigned char *)"te", 2,
-        (const unsigned char *)"Chunked", 7) == XQC_TRUE);
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"te", 2,
+                                      (const unsigned char *)"Chunked", 7) == XQC_TRUE);
 }
-
-
 
 
 void
 xqc_test_h3_allowed_headers_pass()
 {
     /* content-type: normal header, never forbidden */
-    CU_ASSERT(xqc_h3_hdr_is_forbidden(
-        (const unsigned char *)"content-type", 12,
-        (const unsigned char *)"text/html", 9) == XQC_FALSE);
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"content-type", 12,
+                                      (const unsigned char *)"text/html",
+                                      9) == XQC_FALSE);
 
     /* te with value "trailers": RFC exception, allowed */
-    CU_ASSERT(xqc_h3_hdr_is_forbidden(
-        (const unsigned char *)"te", 2,
-        (const unsigned char *)"trailers", 8) == XQC_FALSE);
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"te", 2,
+                                      (const unsigned char *)"trailers", 8) == XQC_FALSE);
 
     /* te with value "Trailers" (mixed case): QPACK sends lowercase, reject non-exact */
-    CU_ASSERT(xqc_h3_hdr_is_forbidden(
-        (const unsigned char *)"te", 2,
-        (const unsigned char *)"Trailers", 8) == XQC_TRUE);
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"te", 2,
+                                      (const unsigned char *)"Trailers", 8) == XQC_TRUE);
 
     /* te with value "TRAILERS" (all caps): same reasoning */
-    CU_ASSERT(xqc_h3_hdr_is_forbidden(
-        (const unsigned char *)"te", 2,
-        (const unsigned char *)"TRAILERS", 8) == XQC_TRUE);
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"te", 2,
+                                      (const unsigned char *)"TRAILERS", 8) == XQC_TRUE);
 
     /* connection: allowed for WebSocket-over-HTTP/3 (Connection: Upgrade) */
-    CU_ASSERT(xqc_h3_hdr_is_forbidden(
-        (const unsigned char *)"connection", 10,
-        (const unsigned char *)"Upgrade", 7) == XQC_FALSE);
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"connection", 10,
+                                      (const unsigned char *)"Upgrade", 7) == XQC_FALSE);
 
     /* upgrade: allowed for WebSocket-over-HTTP/3 (Upgrade: websocket) */
-    CU_ASSERT(xqc_h3_hdr_is_forbidden(
-        (const unsigned char *)"upgrade", 7,
-        (const unsigned char *)"websocket", 9) == XQC_FALSE);
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"upgrade", 7,
+                                      (const unsigned char *)"websocket",
+                                      9) == XQC_FALSE);
 
     /* host: normal header */
-    CU_ASSERT(xqc_h3_hdr_is_forbidden(
-        (const unsigned char *)"host", 4,
-        (const unsigned char *)"example.com", 11) == XQC_FALSE);
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"host", 4,
+                                      (const unsigned char *)"example.com",
+                                      11) == XQC_FALSE);
+}
+
+
+/*
+ * #811 QPACK DDoS (CWE-770): a peer sends HEADERS that reference dynamic-table
+ * entries which never arrive, forcing the decoder to block and buffer the
+ * field section indefinitely. Drive that through the real H3 receive path
+ * (xqc_h3_stream_process_in) with a tiny per-stream cap and assert the
+ * connection enforces the blocked-buffer limit (H3_EXCESSIVE_LOAD) instead of
+ * buffering without bound.
+ */
+void
+xqc_test_h3_blocked_buf_limit(void)
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+
+    /* shrink the per-stream blocked-buffer cap so a small blocked remainder
+     * trips it (real default is 1 MB). */
+    h3c->max_blocked_buf_per_stream = 4;
+
+    /* HEADERS whose QPACK field section needs dynamic entries that have NOT
+     * been inserted (Required Insert Count > 0) -> decoder must block. */
+    uint64_t max_entries = 512; /* default 16KB decoder dtable -> 512 entries */
+    uint64_t ric = 1;
+    uint64_t base = 1;
+
+    xqc_var_buf_t *fs = xqc_var_buf_create(256);
+    CU_ASSERT_FATAL(fs != NULL);
+    CU_ASSERT(xqc_rep_write_prefix(fs, max_entries, ric, base) == XQC_OK);
+    /* padding dynamic-indexed fields so the blocked remainder exceeds the cap */
+    for (int i = 0; i < 16; i++) {
+        CU_ASSERT(xqc_rep_write_indexed(fs, XQC_DTABLE_FLAG, xqc_abs2brel(base, 0)) ==
+                  XQC_OK);
+    }
+
+    /* wrap field section in an HTTP/3 HEADERS frame: type(0x01)+len+section */
+    unsigned char frame[300];
+    size_t fl = 0;
+    frame[fl++] = 0x01;                        /* HEADERS frame type */
+    frame[fl++] = (unsigned char)fs->data_len; /* length (1-byte varint, < 64) */
+    memcpy(frame + fl, fs->data, fs->data_len);
+    fl += fs->data_len;
+
+    xqc_int_t ret = xqc_h3_stream_process_in(h3s, frame, fl, XQC_TRUE);
+
+    /* blocked-buffer cap must have fired */
+    CU_ASSERT(conn->conn_err == H3_EXCESSIVE_LOAD);
+    CU_ASSERT(ret == -XQC_H3_EPROC_REQUEST);
+
+    xqc_var_buf_free(fs);
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
 }

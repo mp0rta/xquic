@@ -47,6 +47,7 @@
 #include "xqc_test_path_hard_cap.h"
 #include "xqc_set_conn_settings_test.h"
 #include "xqc_crypto_frame_test.h"
+#include "xqc_dos_e2e_test.h"
 
 static int
 xqc_init_suite(void)
@@ -252,8 +253,7 @@ main()
                      xqc_test_h3_uncompressed_fields_size) ||
         !CU_add_test(pSuite, "xqc_test_h3_recv_header_field_section_size",
                      xqc_test_h3_recv_header_field_section_size) ||
-        !CU_add_test(pSuite, "xqc_test_tp_cid_overflow",
-                     xqc_test_tp_cid_overflow) ||
+        !CU_add_test(pSuite, "xqc_test_tp_cid_overflow", xqc_test_tp_cid_overflow) ||
         !CU_add_test(pSuite, "xqc_test_initial_salt_length",
                      xqc_test_initial_salt_length) ||
         !CU_add_test(pSuite, "xqc_test_initial_salt_v1_value",
@@ -283,7 +283,11 @@ main()
         !CU_add_test(pSuite, "xqc_test_crypto_frame_bytes_limit",
                      xqc_test_crypto_frame_bytes_limit) ||
         !CU_add_test(pSuite, "xqc_test_crypto_frame_recycle",
-                     xqc_test_crypto_frame_recycle)
+                     xqc_test_crypto_frame_recycle) ||
+        !CU_add_test(pSuite, "xqc_test_dos_crypto_frame_flood_recv_path",
+                     xqc_test_dos_crypto_frame_flood_recv_path) ||
+        !CU_add_test(pSuite, "xqc_test_h3_blocked_buf_limit",
+                     xqc_test_h3_blocked_buf_limit)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();
