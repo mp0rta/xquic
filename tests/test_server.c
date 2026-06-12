@@ -393,6 +393,9 @@ xqc_server_datagram_read_callback(xqc_connection_t *conn, void *user_data,
                 // expand buffer size
                 size_t new_len = (user_conn->dgram_blk->data_recv + data_len) << 1;
                 unsigned char *new_data = calloc(1, new_len);
+                if (new_data == NULL) {
+                    return;
+                }
                 memcpy(new_data, user_conn->dgram_blk->data,
                        user_conn->dgram_blk->data_recv);
                 if (user_conn->dgram_blk->data) {
