@@ -644,6 +644,10 @@ xqc_server_h3_ext_datagram_read_callback(xqc_h3_conn_t *conn, const void *data,
                 // expand buffer size
                 size_t new_len = (user_conn->dgram_blk->data_recv + data_len) << 1;
                 unsigned char *new_data = calloc(1, new_len);
+                if (new_data == NULL) {
+                    printf("calloc for dgram buffer failed, need=%zu\n", new_len);
+                    return;
+                }
                 memcpy(new_data, user_conn->dgram_blk->data,
                        user_conn->dgram_blk->data_recv);
                 if (user_conn->dgram_blk->data) {
