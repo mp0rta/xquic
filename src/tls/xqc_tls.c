@@ -14,56 +14,57 @@
 
 typedef enum xqc_tls_flag_e {
     /* initial state */
-    XQC_TLS_FLAG_NONE                   = 0,
+    XQC_TLS_FLAG_NONE = 0,
 
-    /* received peer's transport parameter. this is used for transport parameter callback */
-    XQC_TLS_FLAG_TRANSPORT_PARAM_RCVD   = 1 << 0,
+    /* received peer's transport parameter. this is used for transport parameter callback
+     */
+    XQC_TLS_FLAG_TRANSPORT_PARAM_RCVD = 1 << 0,
 
     /*
      * handshake completed flag. this is set when ssl library report handshake completion,
      * and is used for process crypto data
      */
-    XQC_TLS_FLAG_HSK_COMPLETED          = 1 << 1,
+    XQC_TLS_FLAG_HSK_COMPLETED = 1 << 1,
 
 } xqc_tls_flag_t;
 
 
 typedef struct xqc_tls_s {
     /* tls context */
-    xqc_tls_ctx_t              *ctx;
+    xqc_tls_ctx_t *ctx;
 
     /* SSL handler */
-    SSL                        *ssl;
+    SSL *ssl;
 
     /* tls type. instance of client and server got different behaviour */
-    xqc_tls_type_t              type;
+    xqc_tls_type_t type;
 
     /* cert verify config */
-    uint8_t                     cert_verify_flag;
+    uint8_t cert_verify_flag;
 
     /* no crypto */
-    xqc_bool_t                  no_crypto;
+    xqc_bool_t no_crypto;
 
     /* crypto context */
-    xqc_crypto_t               *crypto[XQC_ENC_LEV_MAX];
+    xqc_crypto_t *crypto[XQC_ENC_LEV_MAX];
 
     /* log handler */
-    xqc_log_t                  *log;
+    xqc_log_t *log;
 
     /* callback functions and user_data */
-    xqc_tls_callbacks_t        *cbs;
-    void                       *user_data;
+    xqc_tls_callbacks_t *cbs;
+    void *user_data;
 
     /* whether client used resumption. aka, whether client inputs session ticket */
-    xqc_bool_t                  resumption;
+    xqc_bool_t resumption;
 
     /* tls state flag */
-    xqc_tls_flag_t              flag;
+    xqc_tls_flag_t flag;
 
     /* quic version. used to decide protection salt */
-    xqc_proto_version_t         version;
+    xqc_proto_version_t version;
 
-    xqc_bool_t                  key_update_confirmed;
+    xqc_bool_t key_update_confirmed;
 
 } xqc_tls_t;
 
@@ -154,8 +155,8 @@ xqc_tls_set_alpn(SSL *ssl, const char *alpn)
         return -XQC_TLS_INVALID_ARGUMENT;
     }
 
-    /* 
-     * ALPN protocol is a series of non-empty, 8-bit length-prefixed strings, 
+    /*
+     * ALPN protocol is a series of non-empty, 8-bit length-prefixed strings,
      * the length is one byte more than input alpn string.
      */
     size_t protos_len = alpn_len + 1;
@@ -181,9 +182,9 @@ xqc_tls_set_alpn(SSL *ssl, const char *alpn)
 xqc_int_t
 xqc_tls_init_client_ssl(xqc_tls_t *tls, xqc_tls_config_t *cfg)
 {
-    xqc_int_t   ret = XQC_OK;
-    char       *hostname = NULL;
-    SSL        *ssl = tls->ssl;
+    xqc_int_t ret = XQC_OK;
+    char *hostname = NULL;
+    SSL *ssl = tls->ssl;
 
     /* configure ssl as client */
     SSL_set_connect_state(ssl);
@@ -210,8 +211,8 @@ xqc_tls_init_client_ssl(xqc_tls_t *tls, xqc_tls_config_t *cfg)
     }
 
     /*
-     * set alpn in ClientHello. for client, xquic set alpn for every ssl instance. while server set 
-     * the alpn select callback function while initializing tls context. 
+     * set alpn in ClientHello. for client, xquic set alpn for every ssl instance. while
+     * server set the alpn select callback function while initializing tls context.
      */
     ret = xqc_tls_set_alpn(ssl, cfg->alpn);
     if (ret != XQC_OK) {
@@ -222,20 +223,18 @@ xqc_tls_init_client_ssl(xqc_tls_t *tls, xqc_tls_config_t *cfg)
     /* set session data and enable early data */
     if (cfg->session_ticket && cfg->session_ticket_len > 0) {
         if (xqc_tls_cli_set_session_data(tls, cfg->session_ticket,
-                                         cfg->session_ticket_len) == XQC_OK)
-        {
+                                         cfg->session_ticket_len) == XQC_OK) {
             tls->resumption = XQC_TRUE;
             xqc_ssl_enable_max_early_data(ssl);
         }
     }
 
     /* set verify if flag set */
-    if (cfg->cert_verify_flag & XQC_TLS_CERT_FLAG_NEED_VERIFY) { 
+    if (cfg->cert_verify_flag & XQC_TLS_CERT_FLAG_NEED_VERIFY) {
         if (X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl), hostname,
-                                        strlen(hostname)) != XQC_SSL_SUCCESS)
-        {
+                                        strlen(hostname)) != XQC_SSL_SUCCESS) {
             /* hostname set failed need log */
-            xqc_log(tls->log,  XQC_LOG_DEBUG, "|certificate verify set hostname failed|");
+            xqc_log(tls->log, XQC_LOG_DEBUG, "|certificate verify set hostname failed|");
             ret = -XQC_TLS_INTERNAL;
             goto end;
         }
@@ -258,7 +257,7 @@ xqc_tls_init_server_ssl(xqc_tls_t *tls, xqc_tls_config_t *cfg)
 
     /* enable early data and set context */
     xqc_ssl_enable_max_early_data(ssl);
-    SSL_set_quic_early_data_context(ssl, (const uint8_t *)XQC_EARLY_DATA_CONTEXT, 
+    SSL_set_quic_early_data_context(ssl, (const uint8_t *)XQC_EARLY_DATA_CONTEXT,
                                     XQC_EARLY_DATA_CONTEXT_LEN);
 
     return ret;
@@ -280,7 +279,7 @@ xqc_tls_create_ssl(xqc_tls_t *tls, xqc_tls_config_t *cfg)
     }
     tls->ssl = ssl;
 
-    /* 
+    /*
      * make tls the app data of ssl instance, which will be used in callback
      * functions defined in xqc_ssl_cbs.h
      */
@@ -301,7 +300,8 @@ xqc_tls_create_ssl(xqc_tls_t *tls, xqc_tls_config_t *cfg)
     }
 
     /* set local transport parameter */
-    ssl_ret = SSL_set_quic_transport_params(tls->ssl, cfg->trans_params, cfg->trans_params_len);
+    ssl_ret =
+        SSL_set_quic_transport_params(tls->ssl, cfg->trans_params, cfg->trans_params_len);
     if (ssl_ret != XQC_SSL_SUCCESS) {
         xqc_log(tls->log, XQC_LOG_ERROR, "|set transport params error|%s|",
                 ERR_error_string(ERR_get_error(), NULL));
@@ -322,7 +322,7 @@ end:
     return ret;
 }
 
-xqc_int_t 
+xqc_int_t
 xqc_tls_update_tp(xqc_tls_t *tls, uint8_t *tp_buf, size_t tp_len)
 {
     xqc_int_t ret = XQC_OK;
@@ -402,7 +402,8 @@ xqc_tls_process_trans_param(xqc_tls_t *tls)
 xqc_int_t
 xqc_tls_do_handshake(xqc_tls_t *tls)
 {
-    xqc_ssl_handshake_res_t res = xqc_ssl_do_handshake(tls->ssl, tls->user_data, tls->log);
+    xqc_ssl_handshake_res_t res =
+        xqc_ssl_do_handshake(tls->ssl, tls->user_data, tls->log);
 
     xqc_log(tls->log, XQC_LOG_DEBUG, "|TLS handshake|ret:%d|", res);
 
@@ -448,16 +449,16 @@ xqc_tls_derive_and_install_initial_keys(xqc_tls_t *tls, const xqc_cid_t *odcid)
     /* install initial rx/tx keys */
     if (tls->type == XQC_TLS_TYPE_CLIENT) {
         /* client use client initial secret to derive tx key */
-        ret = xqc_crypto_derive_keys(init_crypto, cli_initial_secret, INITIAL_SECRET_MAX_LEN,
-                                     XQC_KEY_TYPE_TX_WRITE);
+        ret = xqc_crypto_derive_keys(init_crypto, cli_initial_secret,
+                                     INITIAL_SECRET_MAX_LEN, XQC_KEY_TYPE_TX_WRITE);
         if (ret != XQC_OK) {
             xqc_log(tls->log, XQC_LOG_ERROR, "|client install initial write key error");
             return ret;
         }
 
         /* client use server initial secret to derive rx key */
-        ret = xqc_crypto_derive_keys(init_crypto, svr_initial_secret, INITIAL_SECRET_MAX_LEN,
-                                     XQC_KEY_TYPE_RX_READ);
+        ret = xqc_crypto_derive_keys(init_crypto, svr_initial_secret,
+                                     INITIAL_SECRET_MAX_LEN, XQC_KEY_TYPE_RX_READ);
         if (ret != XQC_OK) {
             xqc_log(tls->log, XQC_LOG_ERROR, "|client install initial read key error");
             return ret;
@@ -465,16 +466,16 @@ xqc_tls_derive_and_install_initial_keys(xqc_tls_t *tls, const xqc_cid_t *odcid)
 
     } else {
         /* server use server initial secret to derive tx key */
-        ret = xqc_crypto_derive_keys(init_crypto, svr_initial_secret, INITIAL_SECRET_MAX_LEN,
-                                     XQC_KEY_TYPE_TX_WRITE);
+        ret = xqc_crypto_derive_keys(init_crypto, svr_initial_secret,
+                                     INITIAL_SECRET_MAX_LEN, XQC_KEY_TYPE_TX_WRITE);
         if (ret != XQC_OK) {
             xqc_log(tls->log, XQC_LOG_ERROR, "|server install initial write key error");
             return ret;
         }
 
         /* server use client initial secret to derive rx key */
-        ret = xqc_crypto_derive_keys(init_crypto, cli_initial_secret, INITIAL_SECRET_MAX_LEN,
-                                     XQC_KEY_TYPE_RX_READ);
+        ret = xqc_crypto_derive_keys(init_crypto, cli_initial_secret,
+                                     INITIAL_SECRET_MAX_LEN, XQC_KEY_TYPE_RX_READ);
         if (ret != XQC_OK) {
             xqc_log(tls->log, XQC_LOG_ERROR, "|client install initial read key error");
             return ret;
@@ -513,7 +514,8 @@ xqc_tls_init(xqc_tls_t *tls, xqc_proto_version_t version, const xqc_cid_t *odcid
     SSL_set_quic_use_legacy_codepoint(tls->ssl, tls->version != XQC_VERSION_V1);
 
     /* create init level crypto */
-    tls->crypto[XQC_ENC_LEV_INIT] = xqc_crypto_create(XQC_TLS13_AES_128_GCM_SHA256, tls->log);
+    tls->crypto[XQC_ENC_LEV_INIT] =
+        xqc_crypto_create(XQC_TLS13_AES_128_GCM_SHA256, tls->log);
     if (NULL == tls->crypto[XQC_ENC_LEV_INIT]) {
         xqc_log(tls->log, XQC_LOG_ERROR, "|create init level crypto error|");
         return -XQC_TLS_NOMEM;
@@ -563,17 +565,17 @@ xqc_tls_destroy(xqc_tls_t *tls)
 
 xqc_int_t
 xqc_tls_process_crypto_data(xqc_tls_t *tls, xqc_encrypt_level_t level,
-    const uint8_t *crypto_data, size_t data_len)
+                            const uint8_t *crypto_data, size_t data_len)
 {
     SSL *ssl = tls->ssl;
     int ret;
     int err;
 
-    xqc_log(tls->log, XQC_LOG_DEBUG, "|xqc_tls_process_crypto_data|level:%d|%zu|", level, data_len);
+    xqc_log(tls->log, XQC_LOG_DEBUG, "|xqc_tls_process_crypto_data|level:%d|%zu|", level,
+            data_len);
 
-    if (SSL_provide_quic_data(ssl, (enum ssl_encryption_level_t)level, crypto_data, data_len)
-        != XQC_SSL_SUCCESS)
-    {
+    if (SSL_provide_quic_data(ssl, (enum ssl_encryption_level_t)level, crypto_data,
+                              data_len) != XQC_SSL_SUCCESS) {
         xqc_log(tls->log, XQC_LOG_ERROR, "|SSL_provide_quic_data failed|level:%d|%s|",
                 level, ERR_error_string(ERR_get_error(), NULL));
         return -XQC_TLS_INTERNAL;
@@ -594,12 +596,12 @@ xqc_tls_process_crypto_data(xqc_tls_t *tls, xqc_encrypt_level_t level,
             err = SSL_get_error(ssl, ret);
             switch (err) {
             case SSL_ERROR_WANT_READ:
-            case SSL_ERROR_WANT_WRITE:
-                return XQC_OK;
+            case SSL_ERROR_WANT_WRITE: return XQC_OK;
             case SSL_ERROR_SSL:
             case SSL_ERROR_ZERO_RETURN:
             default:
-                xqc_log(tls->log, XQC_LOG_ERROR, "|SSL_process_quic_post_handshake failed|%s",
+                xqc_log(tls->log, XQC_LOG_ERROR,
+                        "|SSL_process_quic_post_handshake failed|%s",
                         ERR_error_string(ERR_get_error(), NULL));
                 return -XQC_TLS_POST_HANDSHAKE_ERROR;
             }
@@ -611,36 +613,37 @@ xqc_tls_process_crypto_data(xqc_tls_t *tls, xqc_encrypt_level_t level,
 
 
 xqc_int_t
-xqc_tls_encrypt_header(xqc_tls_t *tls, xqc_encrypt_level_t level,
-    xqc_pkt_type_t pkt_type, uint8_t *header, uint8_t *pktno, uint8_t *end)
+xqc_tls_encrypt_header(xqc_tls_t *tls, xqc_encrypt_level_t level, xqc_pkt_type_t pkt_type,
+                       uint8_t *header, uint8_t *pktno, uint8_t *end)
 {
     return xqc_crypto_encrypt_header(tls->crypto[level], pkt_type, header, pktno, end);
 }
 
 
 xqc_int_t
-xqc_tls_encrypt_payload(xqc_tls_t *tls, xqc_encrypt_level_t level,
-    uint64_t pktno, uint32_t path_id,
-    uint8_t *header, size_t header_len, uint8_t *payload, size_t payload_len,
-    uint8_t *dst, size_t dst_cap, size_t *dst_len)
+xqc_tls_encrypt_payload(xqc_tls_t *tls, xqc_encrypt_level_t level, uint64_t pktno,
+                        uint32_t path_id, uint8_t *header, size_t header_len,
+                        uint8_t *payload, size_t payload_len, uint8_t *dst,
+                        size_t dst_cap, size_t *dst_len)
 {
     xqc_uint_t key_phase = 0;
     if (level == XQC_ENC_LEV_1RTT) {
         key_phase = XQC_PACKET_SHORT_HEADER_KEY_PHASE(header);
         if (key_phase >= XQC_KEY_PHASE_CNT) {
-            xqc_log(tls->log, XQC_LOG_ERROR, "|illegal key phase|key_phase:%ui|", key_phase);
+            xqc_log(tls->log, XQC_LOG_ERROR, "|illegal key phase|key_phase:%ui|",
+                    key_phase);
             return -XQC_TLS_INVALID_STATE;
         }
     }
 
     return xqc_crypto_encrypt_payload(tls->crypto[level], pktno, key_phase, path_id,
-                                      header, header_len, payload, payload_len,
-                                      dst, dst_cap, dst_len);
+                                      header, header_len, payload, payload_len, dst,
+                                      dst_cap, dst_len);
 }
 
 xqc_int_t
-xqc_tls_decrypt_header(xqc_tls_t *tls, xqc_encrypt_level_t level, 
-    xqc_pkt_type_t pkt_type, uint8_t *header, uint8_t *pktno, uint8_t *end)
+xqc_tls_decrypt_header(xqc_tls_t *tls, xqc_encrypt_level_t level, xqc_pkt_type_t pkt_type,
+                       uint8_t *header, uint8_t *pktno, uint8_t *end)
 {
     xqc_crypto_t *crypto = tls->crypto[level];
     if (crypto == NULL) {
@@ -653,10 +656,10 @@ xqc_tls_decrypt_header(xqc_tls_t *tls, xqc_encrypt_level_t level,
 
 
 xqc_int_t
-xqc_tls_decrypt_payload(xqc_tls_t *tls, xqc_encrypt_level_t level,
-    uint64_t pktno, uint32_t path_id,
-    uint8_t *header, size_t header_len, uint8_t *payload, size_t payload_len,
-    uint8_t *dst, size_t dst_cap, size_t *dst_len)
+xqc_tls_decrypt_payload(xqc_tls_t *tls, xqc_encrypt_level_t level, uint64_t pktno,
+                        uint32_t path_id, uint8_t *header, size_t header_len,
+                        uint8_t *payload, size_t payload_len, uint8_t *dst,
+                        size_t dst_cap, size_t *dst_len)
 {
     xqc_crypto_t *crypto = tls->crypto[level];
     if (crypto == NULL) {
@@ -668,14 +671,15 @@ xqc_tls_decrypt_payload(xqc_tls_t *tls, xqc_encrypt_level_t level,
     if (level == XQC_ENC_LEV_1RTT) {
         key_phase = XQC_PACKET_SHORT_HEADER_KEY_PHASE(header);
         if (key_phase >= XQC_KEY_PHASE_CNT) {
-            xqc_log(tls->log, XQC_LOG_ERROR, "|illegal key phase|key_phase:%ui|", key_phase);
+            xqc_log(tls->log, XQC_LOG_ERROR, "|illegal key phase|key_phase:%ui|",
+                    key_phase);
             return -XQC_TLS_INVALID_STATE;
         }
     }
 
-    return xqc_crypto_decrypt_payload(crypto, pktno, key_phase, path_id,
-                                      header, header_len, payload, payload_len,
-                                      dst, dst_cap, dst_len);
+    return xqc_crypto_decrypt_payload(crypto, pktno, key_phase, path_id, header,
+                                      header_len, payload, payload_len, dst, dst_cap,
+                                      dst_len);
 }
 
 
@@ -690,11 +694,11 @@ xqc_tls_is_key_ready(xqc_tls_t *tls, xqc_encrypt_level_t level, xqc_key_type_t k
 }
 
 uint32_t
-xqc_tls_get_cipher_id(SSL *ssl, const SSL_CIPHER *cipher, xqc_encrypt_level_t level, xqc_bool_t no_crypto)
+xqc_tls_get_cipher_id(SSL *ssl, const SSL_CIPHER *cipher, xqc_encrypt_level_t level,
+                      xqc_bool_t no_crypto)
 {
-    if (no_crypto == XQC_TRUE
-        && (level == XQC_ENC_LEV_0RTT || level == XQC_ENC_LEV_1RTT))
-    {
+    if (no_crypto == XQC_TRUE &&
+        (level == XQC_ENC_LEV_0RTT || level == XQC_ENC_LEV_1RTT)) {
         return NID_undef;
     }
 
@@ -713,8 +717,8 @@ xqc_tls_is_early_data_accepted(xqc_tls_t *tls)
         return XQC_TLS_NO_EARLY_DATA;
     }
 
-    return xqc_ssl_is_early_data_accepted(tls->ssl)
-        ? XQC_TLS_EARLY_DATA_ACCEPT : XQC_TLS_EARLY_DATA_REJECT;
+    return xqc_ssl_is_early_data_accepted(tls->ssl) ? XQC_TLS_EARLY_DATA_ACCEPT
+                                                    : XQC_TLS_EARLY_DATA_REJECT;
 }
 
 xqc_bool_t
@@ -791,9 +795,9 @@ xqc_tls_discard_old_1rtt_keys(xqc_tls_t *tls)
 }
 
 xqc_int_t
-xqc_tls_cal_retry_integrity_tag(xqc_log_t *log,
-    uint8_t *retry_pseudo_packet, size_t retry_pseudo_packet_len,
-    uint8_t *dst, size_t dst_cap, size_t *dst_len, xqc_proto_version_t ver)
+xqc_tls_cal_retry_integrity_tag(xqc_log_t *log, uint8_t *retry_pseudo_packet,
+                                size_t retry_pseudo_packet_len, uint8_t *dst,
+                                size_t dst_cap, size_t *dst_len, xqc_proto_version_t ver)
 {
     xqc_int_t ret = XQC_OK;
 
@@ -803,11 +807,10 @@ xqc_tls_cal_retry_integrity_tag(xqc_log_t *log,
         return -XQC_TLS_NOMEM;
     }
 
-    ret = xqc_crypto_aead_encrypt(crypto, "", 0,
-                                  xqc_crypto_retry_key[ver], strlen(xqc_crypto_retry_key[ver]),
-                                  xqc_crypto_retry_nonce[ver], strlen(xqc_crypto_retry_nonce[ver]),
-                                  retry_pseudo_packet, retry_pseudo_packet_len,
-                                  dst, dst_cap, dst_len);
+    ret = xqc_crypto_aead_encrypt(
+        crypto, "", 0, xqc_crypto_retry_key[ver], strlen(xqc_crypto_retry_key[ver]),
+        xqc_crypto_retry_nonce[ver], strlen(xqc_crypto_retry_nonce[ver]),
+        retry_pseudo_packet, retry_pseudo_packet_len, dst, dst_cap, dst_len);
     if (ret != XQC_OK) {
         xqc_log(log, XQC_LOG_ERROR, "|calculate retry integrity tag error|");
     }
@@ -833,24 +836,22 @@ xqc_ssl_keylog_cb(const SSL *ssl, const char *line)
 }
 
 void
-xqc_ssl_msg_cb(int write_p, int version, int content_type, 
-    const void *buf, size_t len, SSL *ssl, void *arg)
+xqc_ssl_msg_cb(int write_p, int version, int content_type, const void *buf, size_t len,
+               SSL *ssl, void *arg)
 {
     xqc_tls_t *tls = (xqc_tls_t *)SSL_get_app_data(ssl);
     if (content_type == SSL3_RT_HANDSHAKE) {
         const unsigned char *p = buf;
-        if (*p == SSL3_MT_CLIENT_HELLO && !write_p) { 
+        if (*p == SSL3_MT_CLIENT_HELLO && !write_p) {
             // Incoming ClientHello
             if (tls->cbs->msg_cb) {
-                tls->cbs->msg_cb(XQC_TLS_1_3_CLIENT_HELLO, 
-                                 buf, len, tls->user_data);
+                tls->cbs->msg_cb(XQC_TLS_1_3_CLIENT_HELLO, buf, len, tls->user_data);
             }
 
         } else if (*p == SSL3_MT_SERVER_HELLO && write_p) {
             // Outgoing ServerHello
             if (tls->cbs->msg_cb) {
-                tls->cbs->msg_cb(XQC_TLS_1_3_SERVER_HELLO, 
-                                 buf, len, tls->user_data);
+                tls->cbs->msg_cb(XQC_TLS_1_3_SERVER_HELLO, buf, len, tls->user_data);
             }
         }
     }
@@ -859,7 +860,7 @@ xqc_ssl_msg_cb(int write_p, int version, int content_type,
 
 int
 xqc_ssl_alpn_select_cb(SSL *ssl, const unsigned char **out, unsigned char *outlen,
-    const unsigned char *in, unsigned int inlen, void *arg)
+                       const unsigned char *in, unsigned int inlen, void *arg)
 {
     xqc_tls_t *tls = (xqc_tls_t *)SSL_get_app_data(ssl);
 
@@ -873,11 +874,9 @@ xqc_ssl_alpn_select_cb(SSL *ssl, const unsigned char **out, unsigned char *outle
     xqc_tls_ctx_get_alpn_list(tls->ctx, &alpn_list, &alpn_list_len);
 
     /* select alp */
-    if (SSL_select_next_proto((unsigned char **)out, outlen, alpn_list, alpn_list_len, in, inlen)
-        != OPENSSL_NPN_NEGOTIATED)
-    {
-        xqc_log(tls->log, XQC_LOG_ERROR, "|select proto error|in:%*s",
-                (size_t)inlen, in);
+    if (SSL_select_next_proto((unsigned char **)out, outlen, alpn_list, alpn_list_len, in,
+                              inlen) != OPENSSL_NPN_NEGOTIATED) {
+        xqc_log(tls->log, XQC_LOG_ERROR, "|select proto error|in:%*s", (size_t)inlen, in);
         return SSL_TLSEXT_ERR_NOACK;
     }
 
@@ -888,15 +887,15 @@ xqc_ssl_alpn_select_cb(SSL *ssl, const unsigned char **out, unsigned char *outle
     if (XQC_OK != ret) {
         return SSL_TLSEXT_ERR_ALERT_FATAL;
     }
-    xqc_log_event(tls->log, TRA_ALPN_INFORMATION, alpn_list, alpn_list_len, in,
-        inlen, alpn, alpn_len);
+    xqc_log_event(tls->log, TRA_ALPN_INFORMATION, alpn_list, alpn_list_len, in, inlen,
+                  alpn, alpn_len);
     return SSL_TLSEXT_ERR_OK;
 }
 
 
 int
 xqc_ssl_session_ticket_key_cb(SSL *ssl, uint8_t *key_name, uint8_t *iv,
-    EVP_CIPHER_CTX *cipher_ctx, HMAC_CTX *hmac_ctx, int encrypt)
+                              EVP_CIPHER_CTX *cipher_ctx, HMAC_CTX *hmac_ctx, int encrypt)
 {
     size_t size = 0;
     const EVP_CIPHER *cipher = NULL;
@@ -945,7 +944,8 @@ xqc_ssl_session_ticket_key_cb(SSL *ssl, uint8_t *key_name, uint8_t *iv,
          * 0 if decrypting the ticket failed, and 1 or 2 on success
          */
         if (memcmp(key_name, key->name, 16) != 0) {
-            xqc_log(tls->log, XQC_LOG_ERROR, "|ssl session ticket decrypt, key name not match|");
+            xqc_log(tls->log, XQC_LOG_ERROR,
+                    "|ssl session ticket decrypt, key name not match|");
             return -1;
         }
 
@@ -994,7 +994,7 @@ xqc_ssl_new_session_cb(SSL *ssl, SSL_SESSION *session)
         }
 
         PEM_write_bio_SSL_SESSION(bio, session);
-        size_t data_len = BIO_get_mem_data(bio,  &data);
+        size_t data_len = BIO_get_mem_data(bio, &data);
         if (data_len == 0 || data == NULL) {
             xqc_log(tls->log, XQC_LOG_ERROR, "|save new session error|");
 
@@ -1024,7 +1024,8 @@ xqc_ssl_cert_verify_cb(int ok, X509_STORE_CTX *store_ctx)
         return XQC_SSL_SUCCESS;
     }
 
-    SSL *ssl = X509_STORE_CTX_get_ex_data(store_ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
+    SSL *ssl =
+        X509_STORE_CTX_get_ex_data(store_ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
     if (ssl == NULL) {
         return XQC_SSL_FAIL;
     }
@@ -1035,12 +1036,12 @@ xqc_ssl_cert_verify_cb(int ok, X509_STORE_CTX *store_ctx)
     }
 
     int err_code = X509_STORE_CTX_get_error(store_ctx);
-    if (err_code != X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
-        && err_code != X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
-        && !((tls->cert_verify_flag & XQC_TLS_CERT_FLAG_ALLOW_SELF_SIGNED) != 0
-             && XQC_TLS_SELF_SIGNED_CERT(err_code)))
-    {
-        xqc_log(tls->log, XQC_LOG_ERROR, "|certificate verify failed with err_code:%d|", err_code);
+    if (err_code != X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY &&
+        err_code != X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY &&
+        !((tls->cert_verify_flag & XQC_TLS_CERT_FLAG_ALLOW_SELF_SIGNED) != 0 &&
+          XQC_TLS_SELF_SIGNED_CERT(err_code))) {
+        xqc_log(tls->log, XQC_LOG_ERROR, "|certificate verify failed with err_code:%d|",
+                err_code);
         if (tls->cbs->error_cb) {
             tls->cbs->error_cb(err_code, tls->user_data);
         }
@@ -1048,8 +1049,8 @@ xqc_ssl_cert_verify_cb(int ok, X509_STORE_CTX *store_ctx)
     }
 
     /* get certs array */
-    xqc_int_t ret = xqc_ssl_get_certs_array(ssl, store_ctx, certs_array, XQC_MAX_VERIFY_DEPTH,
-                                            &certs_array_len, certs_len);
+    xqc_int_t ret = xqc_ssl_get_certs_array(
+        ssl, store_ctx, certs_array, XQC_MAX_VERIFY_DEPTH, &certs_array_len, certs_len);
     if (ret != XQC_OK) {
         xqc_log(tls->log, XQC_LOG_ERROR, "|get cert array error|%d|", ret);
         if (tls->cbs->error_cb) {
@@ -1061,9 +1062,8 @@ xqc_ssl_cert_verify_cb(int ok, X509_STORE_CTX *store_ctx)
 
     /* callback to upper layer */
     if (tls->cbs->cert_verify_cb != NULL) {
-        if (tls->cbs->cert_verify_cb((const unsigned char **)certs_array, certs_len, 
-                                     certs_array_len, tls->user_data) != XQC_OK)
-        {
+        if (tls->cbs->cert_verify_cb((const unsigned char **)certs_array, certs_len,
+                                     certs_array_len, tls->user_data) != XQC_OK) {
             verify_res = XQC_SSL_FAIL;
 
         } else {
@@ -1080,13 +1080,13 @@ end:
 int
 xqc_ssl_cert_cb(SSL *ssl, void *arg)
 {
-    int                 ssl_ret     = XQC_SSL_SUCCESS;
-    xqc_int_t           ret         = XQC_OK;
-    const char         *hostname    = NULL;
-    STACK_OF(X509)     *chain       = NULL;
-    X509               *crt         = NULL;
-    EVP_PKEY           *key         = NULL;
-    xqc_tls_t          *tls         = (xqc_tls_t *)SSL_get_app_data(ssl);
+    int ssl_ret = XQC_SSL_SUCCESS;
+    xqc_int_t ret = XQC_OK;
+    const char *hostname = NULL;
+    STACK_OF(X509) *chain = NULL;
+    X509 *crt = NULL;
+    EVP_PKEY *key = NULL;
+    xqc_tls_t *tls = (xqc_tls_t *)SSL_get_app_data(ssl);
 
     if (tls == NULL) {
         return XQC_SSL_FAIL;
@@ -1101,42 +1101,58 @@ xqc_ssl_cert_cb(SSL *ssl, void *arg)
     /* callback to upper layer to get SSL_CTX */
     if (tls->cbs->cert_cb) {
         /* if error returned by upper layer, use default ssl_ctx */
-        ret = tls->cbs->cert_cb(hostname, (void **)&chain, (void **)&crt,
-                                (void **)&key, tls->user_data);
+        ret = tls->cbs->cert_cb(hostname, (void **)&chain, (void **)&crt, (void **)&key,
+                                tls->user_data);
         if (XQC_OK != ret) {
-            xqc_log(tls->log, XQC_LOG_INFO, "|cert cb error|sni:%s|ret:%d",
-                    hostname, ret);
+            xqc_log(tls->log, XQC_LOG_INFO, "|cert cb error|sni:%s|ret:%d", hostname,
+                    ret);
             goto end;
         }
 
         /* if no cert or key returned, use default ssl_ctx */
         if (NULL == crt || NULL == key) {
-            xqc_log(tls->log, XQC_LOG_INFO, "|cert chain or key empty|sni:%s",
-                    hostname);
+            xqc_log(tls->log, XQC_LOG_INFO, "|cert chain or key empty|sni:%s", hostname);
             goto end;
+        }
+
+        /*
+         * IMPORTANT: SSL_use_certificate MUST be called BEFORE SSL_set1_chain.
+         *
+         * SSL_use_certificate() internally calls ssl_set_cert(), which switches
+         * ssl->cert->key to the pkey slot matching the new certificate type
+         * (e.g., RSA → ECC).  SSL_set1_chain() operates on ssl->cert->key->chain,
+         * i.e., the *current* slot.
+         *
+         * If SSL_set1_chain is called first (old order), the chain is written to
+         * the OLD slot (inherited from xquic SSL_CTX).  Then SSL_use_certificate
+         * switches to the NEW slot, whose chain is NULL.  During handshake,
+         * BabaSSL reads ssl->cert->key->chain from the NEW slot → NULL → client
+         * receives only the leaf certificate → TLS alert unknown_ca (0x130).
+         *
+         * The correct order matches BabaSSL's own SSL_CTX_use_certificate_chain_file:
+         *   1. SSL_CTX_use_certificate  (switch slot)
+         *   2. SSL_CTX_add0_chain_cert  (add chain to current slot)
+         */
+        ssl_ret = SSL_use_certificate(ssl, crt);
+        if (ssl_ret != XQC_SSL_SUCCESS) {
+            xqc_log(tls->log, XQC_LOG_ERROR, "|set certificate error|sni:%s|ret:%d",
+                    hostname, ssl_ret);
+            return XQC_SSL_FAIL;
         }
 
         ssl_ret = SSL_set1_chain(ssl, chain);
         if (ssl_ret != XQC_SSL_SUCCESS) {
-            xqc_log(tls->log, XQC_LOG_ERROR,
-                    "|set chain error|sni:%s|ret:%d", hostname, ssl_ret);
-            return XQC_SSL_FAIL;
-        }
-
-        ssl_ret = SSL_use_certificate(ssl, crt);
-        if (ssl_ret != XQC_SSL_SUCCESS) {
-            xqc_log(tls->log, XQC_LOG_ERROR,
-                    "|set certificate error|sni:%s|ret:%d", hostname, ssl_ret);
+            xqc_log(tls->log, XQC_LOG_ERROR, "|set chain error|sni:%s|ret:%d", hostname,
+                    ssl_ret);
             return XQC_SSL_FAIL;
         }
 
         ssl_ret = SSL_use_PrivateKey(ssl, key);
         if (ssl_ret != XQC_SSL_SUCCESS) {
-            xqc_log(tls->log, XQC_LOG_ERROR,
-                    "|set key error|sni:%s|ret:%d", hostname, ssl_ret);
+            xqc_log(tls->log, XQC_LOG_ERROR, "|set key error|sni:%s|ret:%d", hostname,
+                    ssl_ret);
             return XQC_SSL_FAIL;
         }
-
     }
 
 end:
@@ -1144,15 +1160,13 @@ end:
 }
 
 void
-xqc_tls_get_selected_alpn(xqc_tls_t *tls, const char **out_alpn,
-                          size_t *out_len)
+xqc_tls_get_selected_alpn(xqc_tls_t *tls, const char **out_alpn, size_t *out_len)
 {
     if (NULL == tls) {
         return;
     }
 
-    SSL_get0_alpn_selected(tls->ssl, (const uint8_t **)out_alpn,
-                           (unsigned *)out_len);
+    SSL_get0_alpn_selected(tls->ssl, (const uint8_t **)out_alpn, (unsigned *)out_len);
 }
 
 void *
@@ -1195,20 +1209,24 @@ xqc_tls_check_mp_aead_nonce_len(xqc_tls_t *tls, uint8_t multipath_enabled)
  * ============================================================================
  */
 
-int 
+int
 xqc_tls_set_read_secret(SSL *ssl, enum ssl_encryption_level_t level,
-    const SSL_CIPHER *cipher, const uint8_t *secret, size_t secret_len)
+                        const SSL_CIPHER *cipher, const uint8_t *secret,
+                        size_t secret_len)
 {
     xqc_int_t ret;
     xqc_tls_t *tls = SSL_get_app_data(ssl);
 
-    /* try to process transport parameter if ssl parsed the quic_transport_params extension */
+    /* try to process transport parameter if ssl parsed the quic_transport_params
+     * extension */
     xqc_tls_process_trans_param(tls);
 
     /* create crypto instance if not created */
     if (NULL == tls->crypto[level]) {
         tls->crypto[level] = xqc_crypto_create(
-            xqc_tls_get_cipher_id(ssl, cipher, (xqc_encrypt_level_t)level, tls->no_crypto), tls->log);
+            xqc_tls_get_cipher_id(ssl, cipher, (xqc_encrypt_level_t)level,
+                                  tls->no_crypto),
+            tls->log);
         if (NULL == tls->crypto[level]) {
             xqc_log(tls->log, XQC_LOG_ERROR, "|create crypto error");
             return XQC_SSL_FAIL;
@@ -1217,8 +1235,8 @@ xqc_tls_set_read_secret(SSL *ssl, enum ssl_encryption_level_t level,
 
     /* save application traffic secret */
     if (level == ssl_encryption_application) {
-        ret = xqc_crypto_save_application_traffic_secret_0(tls->crypto[level], secret,
-                                                           secret_len, XQC_KEY_TYPE_RX_READ);
+        ret = xqc_crypto_save_application_traffic_secret_0(
+            tls->crypto[level], secret, secret_len, XQC_KEY_TYPE_RX_READ);
         if (ret != XQC_OK) {
             xqc_log(tls->log, XQC_LOG_ERROR,
                     "|save application traffic secret error|level:%d|ret:%d", level, ret);
@@ -1230,7 +1248,8 @@ xqc_tls_set_read_secret(SSL *ssl, enum ssl_encryption_level_t level,
     xqc_crypto_t *crypto = tls->crypto[level];
     ret = xqc_crypto_derive_keys(crypto, secret, secret_len, XQC_KEY_TYPE_RX_READ);
     if (ret != XQC_OK) {
-        xqc_log(tls->log, XQC_LOG_ERROR, "|install write key error|level:%d|ret:%d", level, ret);
+        xqc_log(tls->log, XQC_LOG_ERROR, "|install write key error|level:%d|ret:%d",
+                level, ret);
         return XQC_SSL_FAIL;
     }
 
@@ -1238,20 +1257,24 @@ xqc_tls_set_read_secret(SSL *ssl, enum ssl_encryption_level_t level,
 }
 
 
-int 
+int
 xqc_tls_set_write_secret(SSL *ssl, enum ssl_encryption_level_t level,
-    const SSL_CIPHER *cipher, const uint8_t *secret, size_t secret_len)
+                         const SSL_CIPHER *cipher, const uint8_t *secret,
+                         size_t secret_len)
 {
     xqc_int_t ret;
     xqc_tls_t *tls = SSL_get_app_data(ssl);
 
-    /* try to process transport parameter if ssl parsed the quic_transport_params extension */
+    /* try to process transport parameter if ssl parsed the quic_transport_params
+     * extension */
     xqc_tls_process_trans_param(tls);
 
     /* create crypto instance if not created */
     if (NULL == tls->crypto[level]) {
         tls->crypto[level] = xqc_crypto_create(
-            xqc_tls_get_cipher_id(ssl, cipher, (xqc_encrypt_level_t)level, tls->no_crypto), tls->log);
+            xqc_tls_get_cipher_id(ssl, cipher, (xqc_encrypt_level_t)level,
+                                  tls->no_crypto),
+            tls->log);
         if (NULL == tls->crypto[level]) {
             xqc_log(tls->log, XQC_LOG_ERROR, "|create crypto error");
             return XQC_SSL_FAIL;
@@ -1260,8 +1283,8 @@ xqc_tls_set_write_secret(SSL *ssl, enum ssl_encryption_level_t level,
 
     /* save application traffic secret */
     if (level == ssl_encryption_application) {
-        ret = xqc_crypto_save_application_traffic_secret_0(tls->crypto[level], secret,
-                                                           secret_len, XQC_KEY_TYPE_TX_WRITE);
+        ret = xqc_crypto_save_application_traffic_secret_0(
+            tls->crypto[level], secret, secret_len, XQC_KEY_TYPE_TX_WRITE);
         if (ret != XQC_OK) {
             xqc_log(tls->log, XQC_LOG_ERROR,
                     "|save application traffic secret error|level:%d|ret:%d", level, ret);
@@ -1273,24 +1296,24 @@ xqc_tls_set_write_secret(SSL *ssl, enum ssl_encryption_level_t level,
     xqc_crypto_t *crypto = tls->crypto[level];
     ret = xqc_crypto_derive_keys(crypto, secret, secret_len, XQC_KEY_TYPE_TX_WRITE);
     if (ret != XQC_OK) {
-        xqc_log(tls->log, XQC_LOG_ERROR, "|install write key error|level:%d|ret:%d", level, ret);
+        xqc_log(tls->log, XQC_LOG_ERROR, "|install write key error|level:%d|ret:%d",
+                level, ret);
         return XQC_SSL_FAIL;
     }
 
     return XQC_SSL_SUCCESS;
 }
 
-int 
+int
 xqc_tls_add_handshake_data(SSL *ssl, enum ssl_encryption_level_t level,
-    const uint8_t *data, size_t len)
+                           const uint8_t *data, size_t len)
 {
     xqc_tls_t *tls = SSL_get_app_data(ssl);
 
     /* notify tls handshake data to upper layer */
     if (tls->cbs->crypto_data_cb) {
         if (tls->cbs->crypto_data_cb((xqc_encrypt_level_t)level, data, len,
-                                     tls->user_data) != XQC_OK)
-        {
+                                     tls->user_data) != XQC_OK) {
             xqc_log(tls->log, XQC_LOG_ERROR, "|crypto_data_cb error|");
             return XQC_SSL_FAIL;
         }
@@ -1299,19 +1322,19 @@ xqc_tls_add_handshake_data(SSL *ssl, enum ssl_encryption_level_t level,
     return XQC_SSL_SUCCESS;
 }
 
-int 
+int
 xqc_tls_flush_flight(SSL *ssl)
 {
     return XQC_SSL_SUCCESS;
 }
 
-int 
+int
 xqc_tls_send_alert(SSL *ssl, enum ssl_encryption_level_t level, uint8_t alert)
 {
     xqc_tls_t *tls = SSL_get_app_data(ssl);
 
-    xqc_log(tls->log, XQC_LOG_ERROR, "|ssl alert|level:%d|alert:%d|error:%s",
-            level, alert, ERR_error_string(ERR_get_error(), NULL));
+    xqc_log(tls->log, XQC_LOG_ERROR, "|ssl alert|level:%d|alert:%d|error:%s", level,
+            alert, ERR_error_string(ERR_get_error(), NULL));
 
     /* callback to upper layer. */
     if (tls->cbs->error_cb) {
@@ -1322,9 +1345,9 @@ xqc_tls_send_alert(SSL *ssl, enum ssl_encryption_level_t level, uint8_t alert)
 }
 
 SSL_QUIC_METHOD xqc_ssl_quic_method = {
-    .set_read_secret    = xqc_tls_set_read_secret,
-    .set_write_secret   = xqc_tls_set_write_secret,
+    .set_read_secret = xqc_tls_set_read_secret,
+    .set_write_secret = xqc_tls_set_write_secret,
     .add_handshake_data = xqc_tls_add_handshake_data,
-    .flush_flight       = xqc_tls_flush_flight,
-    .send_alert         = xqc_tls_send_alert,
+    .flush_flight = xqc_tls_flush_flight,
+    .send_alert = xqc_tls_send_alert,
 };

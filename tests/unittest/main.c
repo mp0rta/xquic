@@ -46,6 +46,8 @@
 #include "xqc_test_helpers.h"
 #include "xqc_test_path_hard_cap.h"
 #include "xqc_set_conn_settings_test.h"
+#include "xqc_crypto_frame_test.h"
+#include "xqc_dos_e2e_test.h"
 
 static int
 xqc_init_suite(void)
@@ -251,8 +253,7 @@ main()
                      xqc_test_h3_uncompressed_fields_size) ||
         !CU_add_test(pSuite, "xqc_test_h3_recv_header_field_section_size",
                      xqc_test_h3_recv_header_field_section_size) ||
-        !CU_add_test(pSuite, "xqc_test_tp_cid_overflow",
-                     xqc_test_tp_cid_overflow) ||
+        !CU_add_test(pSuite, "xqc_test_tp_cid_overflow", xqc_test_tp_cid_overflow) ||
         !CU_add_test(pSuite, "xqc_test_initial_salt_length",
                      xqc_test_initial_salt_length) ||
         !CU_add_test(pSuite, "xqc_test_initial_salt_v1_value",
@@ -260,7 +261,33 @@ main()
         !CU_add_test(pSuite, "xqc_test_initial_salt_null_byte_regression",
                      xqc_test_initial_salt_null_byte_regression) ||
         !CU_add_test(pSuite, "xqc_test_new_conn_id_zero_len_cid",
-                     xqc_test_new_conn_id_zero_len_cid)
+                     xqc_test_new_conn_id_zero_len_cid) ||
+        !CU_add_test(pSuite, "xqc_test_h3_message_error_code_value",
+                     xqc_test_h3_message_error_code_value) ||
+        !CU_add_test(pSuite, "xqc_test_h3_malformed_headers_uses_message_error",
+                     xqc_test_h3_malformed_headers_uses_message_error) ||
+        !CU_add_test(pSuite, "xqc_test_h3_headers_capacity_uses_internal_error",
+                     xqc_test_h3_headers_capacity_uses_internal_error) ||
+        !CU_add_test(pSuite, "xqc_test_h3_valid_headers_smoke",
+                     xqc_test_h3_valid_headers_smoke) ||
+        !CU_add_test(pSuite, "xqc_test_h3_frame_parse_error_uses_frame_error",
+                     xqc_test_h3_frame_parse_error_uses_frame_error) ||
+        !CU_add_test(pSuite, "xqc_test_h3_message_error_enum",
+                     xqc_test_h3_message_error_enum) ||
+        !CU_add_test(pSuite, "xqc_test_h3_forbidden_headers_rejected",
+                     xqc_test_h3_forbidden_headers_rejected) ||
+        !CU_add_test(pSuite, "xqc_test_h3_allowed_headers_pass",
+                     xqc_test_h3_allowed_headers_pass) ||
+        !CU_add_test(pSuite, "xqc_test_crypto_frame_flood",
+                     xqc_test_crypto_frame_flood) ||
+        !CU_add_test(pSuite, "xqc_test_crypto_frame_bytes_limit",
+                     xqc_test_crypto_frame_bytes_limit) ||
+        !CU_add_test(pSuite, "xqc_test_crypto_frame_recycle",
+                     xqc_test_crypto_frame_recycle) ||
+        !CU_add_test(pSuite, "xqc_test_dos_crypto_frame_flood_recv_path",
+                     xqc_test_dos_crypto_frame_flood_recv_path) ||
+        !CU_add_test(pSuite, "xqc_test_h3_blocked_buf_limit",
+                     xqc_test_h3_blocked_buf_limit)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();

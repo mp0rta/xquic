@@ -4,6 +4,7 @@
 
 #include <CUnit/CUnit.h>
 #include "xquic/xquic.h"
+#include "xquic/xqc_errno.h"
 #include "src/http3/frame/xqc_h3_frame.h"
 #include "src/http3/xqc_h3_conn.h"
 #include "src/http3/xqc_h3_stream.h"
@@ -14,8 +15,13 @@
 #include "xqc_common_test.h"
 
 
-ssize_t xqc_h3_stream_write_data_to_buffer(xqc_h3_stream_t *h3s, unsigned char *data, uint64_t data_size, uint8_t fin);
-xqc_int_t xqc_decoder_copy_header(xqc_http_header_t *hdr, xqc_var_buf_t *name, xqc_var_buf_t *value);
+ssize_t xqc_h3_stream_write_data_to_buffer(xqc_h3_stream_t *h3s, unsigned char *data,
+                                           uint64_t data_size, uint8_t fin);
+xqc_int_t xqc_decoder_copy_header(xqc_http_header_t *hdr, xqc_var_buf_t *name,
+                                  xqc_var_buf_t *value);
+/* not exposed in xqc_h3_stream.h, but stable file-scope entry used by tests */
+xqc_int_t xqc_h3_stream_process_in(xqc_h3_stream_t *h3s, unsigned char *data,
+                                   size_t data_len, xqc_bool_t fin_flag);
 
 
 ssize_t
@@ -91,7 +97,8 @@ xqc_test_frame()
 
     xqc_var_buf_t *buf = xqc_var_buf_create(XQC_VAR_BUF_INIT_SIZE);
     xqc_list_head_t *pos, *next;
-    xqc_list_for_each_safe(pos, next, &send_buf) {
+    xqc_list_for_each_safe(pos, next, &send_buf)
+    {
         xqc_list_buf_t *list_buf = xqc_list_entry(pos, xqc_list_buf_t, list_head);
         xqc_var_buf_t *data_buf = list_buf->buf;
         xqc_var_buf_save_data(buf, data_buf->data, data_buf->data_len);
@@ -103,53 +110,62 @@ xqc_test_frame()
 
     /* parse */
     /* parse cancel_push frame */
-    processed = xqc_test_frame_parse(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, &pctx);
+    processed = xqc_test_frame_parse(buf->data + buf->consumed_len,
+                                     buf->data_len - buf->consumed_len, &pctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(pctx.state == XQC_H3_FRM_STATE_END);
     CU_ASSERT(pctx.frame.frame_payload.cancel_push.push_id.vi == push_id);
     buf->consumed_len += processed;
     xqc_h3_frm_reset_pctx(&pctx);
     /* parse headers frame */
-    processed = xqc_test_frame_parse(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, &pctx);
+    processed = xqc_test_frame_parse(buf->data + buf->consumed_len,
+                                     buf->data_len - buf->consumed_len, &pctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(pctx.state == XQC_H3_FRM_STATE_PAYLOAD);
     buf->consumed_len += processed + pctx.frame.len;
     xqc_h3_frm_reset_pctx(&pctx);
     /* parse data frame */
-    processed = xqc_test_frame_parse(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, &pctx);
+    processed = xqc_test_frame_parse(buf->data + buf->consumed_len,
+                                     buf->data_len - buf->consumed_len, &pctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(pctx.state == XQC_H3_FRM_STATE_PAYLOAD);
     buf->consumed_len += processed + pctx.frame.len;
     xqc_h3_frm_reset_pctx(&pctx);
     /* parse push_promise frame */
-    processed = xqc_test_frame_parse(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, &pctx);
+    processed = xqc_test_frame_parse(buf->data + buf->consumed_len,
+                                     buf->data_len - buf->consumed_len, &pctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(pctx.state == XQC_H3_FRM_STATE_END);
     CU_ASSERT(pctx.frame.frame_payload.push_promise.push_id.vi == push_id);
     CU_ASSERT(pctx.frame.frame_payload.push_promise.encoded_field_section != NULL);
     if (pctx.frame.frame_payload.push_promise.encoded_field_section != NULL) {
         for (int i = 0; i < strlen(data); i++) {
-            CU_ASSERT(data[i] == pctx.frame.frame_payload.push_promise.encoded_field_section->data[i]);
+            CU_ASSERT(
+                data[i] ==
+                pctx.frame.frame_payload.push_promise.encoded_field_section->data[i]);
         }
     }
     buf->consumed_len += processed;
     xqc_h3_frm_reset_pctx(&pctx);
     /* parse goaway frame */
-    processed = xqc_test_frame_parse(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, &pctx);
+    processed = xqc_test_frame_parse(buf->data + buf->consumed_len,
+                                     buf->data_len - buf->consumed_len, &pctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(pctx.state == XQC_H3_FRM_STATE_END);
     CU_ASSERT(pctx.frame.frame_payload.goaway.stream_id.vi == push_id);
     buf->consumed_len += processed;
     xqc_h3_frm_reset_pctx(&pctx);
     /* parse max_push_id frame */
-    processed = xqc_test_frame_parse(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, &pctx);
+    processed = xqc_test_frame_parse(buf->data + buf->consumed_len,
+                                     buf->data_len - buf->consumed_len, &pctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(pctx.state == XQC_H3_FRM_STATE_END);
     CU_ASSERT(pctx.frame.frame_payload.max_push_id.push_id.vi == push_id);
     buf->consumed_len += processed;
     xqc_h3_frm_reset_pctx(&pctx);
     /* parse settings frame */
-    processed = xqc_test_frame_parse(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, &pctx);
+    processed = xqc_test_frame_parse(buf->data + buf->consumed_len,
+                                     buf->data_len - buf->consumed_len, &pctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(pctx.state == XQC_H3_FRM_STATE_END);
     buf->consumed_len += processed;
@@ -157,7 +173,8 @@ xqc_test_frame()
     xqc_h3_frm_reset_pctx(&pctx);
 
     /* reserved frame type with 10 bytes */
-    char reserved_frame[] = "\xcf\x25\x7c\x52\x89\x59\xd7\xba\x0a\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff";
+    char reserved_frame[] =
+        "\xcf\x25\x7c\x52\x89\x59\xd7\xba\x0a\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff";
     size_t reserved_frame_len = sizeof(reserved_frame) - 1;
     size_t reserved_consumed_len = 0;
     for (size_t i = 0; i < reserved_frame_len; i++) {
@@ -197,7 +214,8 @@ xqc_test_ins()
     ret = xqc_ins_write_insert_name_ref(buf, t, index, value, strlen(value));
     CU_ASSERT(ret == XQC_OK);
     /* write Insert With Literal Name */
-    ret = xqc_ins_write_insert_literal_name(buf, name, strlen(name), value, strlen(value));
+    ret =
+        xqc_ins_write_insert_literal_name(buf, name, strlen(name), value, strlen(value));
     CU_ASSERT(ret == XQC_OK);
     /* write Duplicate */
     ret = xqc_ins_write_dup(buf, index);
@@ -213,13 +231,15 @@ xqc_test_ins()
     CU_ASSERT(ret == XQC_OK);
 
     /* parse Set Dynamic Table Capacity */
-    processed = xqc_ins_parse_encoder(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, enc_ctx);
+    processed = xqc_ins_parse_encoder(buf->data + buf->consumed_len,
+                                      buf->data_len - buf->consumed_len, enc_ctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(enc_ctx->type == XQC_INS_TYPE_ENC_SET_DTABLE_CAP);
     CU_ASSERT(capacity == enc_ctx->capacity.value);
     buf->consumed_len += processed;
     /* parse Insert With Name Reference */
-    processed = xqc_ins_parse_encoder(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, enc_ctx);
+    processed = xqc_ins_parse_encoder(buf->data + buf->consumed_len,
+                                      buf->data_len - buf->consumed_len, enc_ctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(enc_ctx->type == XQC_INS_TYPE_ENC_INSERT_NAME_REF);
     CU_ASSERT(index == enc_ctx->name_index.value);
@@ -229,7 +249,8 @@ xqc_test_ins()
     }
     buf->consumed_len += processed;
     /* parse Insert With Literal Name */
-    processed = xqc_ins_parse_encoder(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, enc_ctx);
+    processed = xqc_ins_parse_encoder(buf->data + buf->consumed_len,
+                                      buf->data_len - buf->consumed_len, enc_ctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(enc_ctx->type == XQC_INS_TYPE_ENC_INSERT_LITERAL);
     CU_ASSERT(strlen(name) == enc_ctx->name->value->data_len);
@@ -242,25 +263,29 @@ xqc_test_ins()
     }
     buf->consumed_len += processed;
     /* parse Duplicate */
-    processed = xqc_ins_parse_encoder(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, enc_ctx);
+    processed = xqc_ins_parse_encoder(buf->data + buf->consumed_len,
+                                      buf->data_len - buf->consumed_len, enc_ctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(enc_ctx->type == XQC_INS_TYPE_ENC_DUP);
     CU_ASSERT(index == enc_ctx->name_index.value);
     buf->consumed_len += processed;
     /* parse Section Acknowledgement */
-    processed = xqc_ins_parse_decoder(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, dec_ctx);
+    processed = xqc_ins_parse_decoder(buf->data + buf->consumed_len,
+                                      buf->data_len - buf->consumed_len, dec_ctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(dec_ctx->type == XQC_INS_TYPE_DEC_SECTION_ACK);
     CU_ASSERT(dec_ctx->stream_id.value == stream_id);
     buf->consumed_len += processed;
     /* parse Stream Cancellation */
-    processed = xqc_ins_parse_decoder(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, dec_ctx);
+    processed = xqc_ins_parse_decoder(buf->data + buf->consumed_len,
+                                      buf->data_len - buf->consumed_len, dec_ctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(dec_ctx->type == XQC_INS_TYPE_DEC_STREAM_CANCEL);
     CU_ASSERT(dec_ctx->stream_id.value == stream_id);
     buf->consumed_len += processed;
     /* parse Insert Count Increment */
-    processed = xqc_ins_parse_decoder(buf->data + buf->consumed_len, buf->data_len - buf->consumed_len, dec_ctx);
+    processed = xqc_ins_parse_decoder(buf->data + buf->consumed_len,
+                                      buf->data_len - buf->consumed_len, dec_ctx);
     CU_ASSERT(processed > 0);
     CU_ASSERT(dec_ctx->type == XQC_INS_TYPE_DEC_INSERT_CNT_INC);
     CU_ASSERT(dec_ctx->increment.value == increment);
@@ -296,16 +321,22 @@ xqc_test_rep()
     CU_ASSERT(ret == XQC_OK);
     ret = xqc_rep_write_indexed(buf, XQC_STABLE_FLAG, index_3);
     CU_ASSERT(ret == XQC_OK);
-    ret = xqc_rep_write_literal_name_value(buf, 1, strlen(name), name, strlen(value), value);
+    ret = xqc_rep_write_literal_name_value(buf, 1, strlen(name), name, strlen(value),
+                                           value);
     CU_ASSERT(ret == XQC_OK);
-    ret = xqc_rep_write_literal_with_pb_name_ref(buf, 1, xqc_abs2pbrel(base, index_1), strlen(value), value);
+    ret = xqc_rep_write_literal_with_pb_name_ref(buf, 1, xqc_abs2pbrel(base, index_1),
+                                                 strlen(value), value);
     CU_ASSERT(ret == XQC_OK);
-    ret = xqc_rep_write_literal_with_name_ref(buf, 1, XQC_DTABLE_FLAG, xqc_abs2brel(base, index_2), strlen(value), value);
+    ret = xqc_rep_write_literal_with_name_ref(
+        buf, 1, XQC_DTABLE_FLAG, xqc_abs2brel(base, index_2), strlen(value), value);
     CU_ASSERT(ret == XQC_OK);
-    ret = xqc_rep_write_literal_with_name_ref(buf, 1, XQC_STABLE_FLAG, index_3, strlen(value), value);
+    ret = xqc_rep_write_literal_with_name_ref(buf, 1, XQC_STABLE_FLAG, index_3,
+                                              strlen(value), value);
     CU_ASSERT(ret == XQC_OK);
 
-    ssize_t processed = xqc_rep_decode_prefix(ctx, max_entries, insert_count,  buf->data + buf->consumed_len, buf->data_len - buf->consumed_len);
+    ssize_t processed = xqc_rep_decode_prefix(ctx, max_entries, insert_count,
+                                              buf->data + buf->consumed_len,
+                                              buf->data_len - buf->consumed_len);
     CU_ASSERT(processed > 0);
     CU_ASSERT(ctx->state == XQC_REP_DECODE_STATE_OPCODE);
     CU_ASSERT(ctx->sign > 0);
@@ -313,7 +344,8 @@ xqc_test_rep()
     CU_ASSERT(ctx->base.value == base);
     buf->consumed_len += processed;
 
-    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len, buf->data_len - buf->consumed_len);
+    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len,
+                                          buf->data_len - buf->consumed_len);
     CU_ASSERT(processed > 0);
     CU_ASSERT(ctx->state == XQC_REP_DECODE_STATE_FINISH);
     CU_ASSERT(ctx->type == XQC_REP_TYPE_POST_BASE_INDEXED);
@@ -322,7 +354,8 @@ xqc_test_rep()
     buf->consumed_len += processed;
     xqc_rep_ctx_clear_rep(ctx);
 
-    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len, buf->data_len - buf->consumed_len);
+    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len,
+                                          buf->data_len - buf->consumed_len);
     CU_ASSERT(processed > 0);
     CU_ASSERT(ctx->state == XQC_REP_DECODE_STATE_FINISH);
     CU_ASSERT(ctx->type == XQC_REP_TYPE_INDEXED);
@@ -331,7 +364,8 @@ xqc_test_rep()
     buf->consumed_len += processed;
     xqc_rep_ctx_clear_rep(ctx);
 
-    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len, buf->data_len - buf->consumed_len);
+    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len,
+                                          buf->data_len - buf->consumed_len);
     CU_ASSERT(processed > 0);
     CU_ASSERT(ctx->state == XQC_REP_DECODE_STATE_FINISH);
     CU_ASSERT(ctx->type == XQC_REP_TYPE_INDEXED);
@@ -340,7 +374,8 @@ xqc_test_rep()
     buf->consumed_len += processed;
     xqc_rep_ctx_clear_rep(ctx);
 
-    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len, buf->data_len - buf->consumed_len);
+    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len,
+                                          buf->data_len - buf->consumed_len);
     CU_ASSERT(processed > 0);
     CU_ASSERT(ctx->state == XQC_REP_DECODE_STATE_FINISH);
     CU_ASSERT(ctx->type == XQC_REP_TYPE_LITERAL);
@@ -362,14 +397,15 @@ xqc_test_rep()
     xqc_rep_ctx_clear_rep(ctx);
     CU_ASSERT(header.name.iov_len == strlen(name));
     for (int i = 0; i < header.name.iov_len; i++) {
-        CU_ASSERT(name[i] == ((char *) header.name.iov_base)[i]);
+        CU_ASSERT(name[i] == ((char *)header.name.iov_base)[i]);
     }
     CU_ASSERT(header.value.iov_len == strlen(value));
     for (int i = 0; i < header.value.iov_len; i++) {
-        CU_ASSERT(value[i] == ((char *) header.value.iov_base)[i]);
+        CU_ASSERT(value[i] == ((char *)header.value.iov_base)[i]);
     }
 
-    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len, buf->data_len - buf->consumed_len);
+    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len,
+                                          buf->data_len - buf->consumed_len);
     CU_ASSERT(processed > 0);
     CU_ASSERT(ctx->state == XQC_REP_DECODE_STATE_FINISH);
     CU_ASSERT(ctx->type == XQC_REP_TYPE_POST_BASE_NAME_REFERENCE);
@@ -381,7 +417,8 @@ xqc_test_rep()
     buf->consumed_len += processed;
     xqc_rep_ctx_clear_rep(ctx);
 
-    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len, buf->data_len - buf->consumed_len);
+    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len,
+                                          buf->data_len - buf->consumed_len);
     CU_ASSERT(processed > 0);
     CU_ASSERT(ctx->state == XQC_REP_DECODE_STATE_FINISH);
     CU_ASSERT(ctx->type == XQC_REP_TYPE_NAME_REFERENCE);
@@ -394,7 +431,8 @@ xqc_test_rep()
     buf->consumed_len += processed;
     xqc_rep_ctx_clear_rep(ctx);
 
-    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len, buf->data_len - buf->consumed_len);
+    processed = xqc_rep_decode_field_line(ctx, buf->data + buf->consumed_len,
+                                          buf->data_len - buf->consumed_len);
     CU_ASSERT(processed > 0);
     CU_ASSERT(ctx->state == XQC_REP_DECODE_STATE_FINISH);
     CU_ASSERT(ctx->type == XQC_REP_TYPE_NAME_REFERENCE);
@@ -412,7 +450,9 @@ xqc_test_rep()
     xqc_rep_ctx_clear(ctx);
     ret = xqc_rep_write_prefix(buf, max_entries, ric, base);
     CU_ASSERT(ret == XQC_OK);
-    processed = xqc_rep_decode_prefix(ctx, max_entries, insert_count, buf->data + buf->consumed_len, buf->data_len - buf->consumed_len);
+    processed = xqc_rep_decode_prefix(ctx, max_entries, insert_count,
+                                      buf->data + buf->consumed_len,
+                                      buf->data_len - buf->consumed_len);
     CU_ASSERT(processed > 0);
     CU_ASSERT(ctx->sign == 0);
     CU_ASSERT(ctx->ric.value == ric);
@@ -440,13 +480,15 @@ xqc_test_stream()
     conn->alpn = xqc_calloc(1, conn->alpn_len + 1);
     xqc_memcpy(conn->alpn, XQC_ALPN_H3, conn->alpn_len);
 
-    xqc_stream_t *stream = xqc_create_stream_with_conn(conn, XQC_UNDEFINE_STREAM_ID, XQC_CLI_UNI, NULL, NULL);
+    xqc_stream_t *stream = xqc_create_stream_with_conn(conn, XQC_UNDEFINE_STREAM_ID,
+                                                       XQC_CLI_UNI, NULL, NULL);
     CU_ASSERT(stream != NULL);
 
     xqc_h3_conn_t *h3c = xqc_h3_conn_create(conn, NULL);
     CU_ASSERT(h3c != NULL);
 
-    xqc_h3_stream_t *h3s = xqc_h3_stream_create(h3c, stream, XQC_H3_STREAM_TYPE_CONTROL, NULL);
+    xqc_h3_stream_t *h3s =
+        xqc_h3_stream_create(h3c, stream, XQC_H3_STREAM_TYPE_CONTROL, NULL);
     CU_ASSERT(h3s != NULL);
 
     char data[] = {"sdfjldksjf ldsjflkejwrfmmsldfpodsjcdsl;ml;fdsl;fkdlk"};
@@ -476,26 +518,26 @@ void
 xqc_test_h3_uncompressed_fields_size()
 {
     xqc_http_headers_t hdrs;
-    hdrs.headers  = NULL;
+    hdrs.headers = NULL;
     hdrs.capacity = 0;
 
     /* empty list */
-    hdrs.count     = 0;
+    hdrs.count = 0;
     hdrs.total_len = 0;
     CU_ASSERT_EQUAL(xqc_h3_uncompressed_fields_size(&hdrs), 0);
 
     /* zero-length fields still cost 32B each */
-    hdrs.count     = 3;
+    hdrs.count = 3;
     hdrs.total_len = 0;
     CU_ASSERT_EQUAL(xqc_h3_uncompressed_fields_size(&hdrs), 96);
 
     /* single field */
-    hdrs.count     = 1;
+    hdrs.count = 1;
     hdrs.total_len = 10;
     CU_ASSERT_EQUAL(xqc_h3_uncompressed_fields_size(&hdrs), 42);
 
     /* many fields */
-    hdrs.count     = 5;
+    hdrs.count = 5;
     hdrs.total_len = 100;
     CU_ASSERT_EQUAL(xqc_h3_uncompressed_fields_size(&hdrs), 260);
 
@@ -504,7 +546,7 @@ xqc_test_h3_uncompressed_fields_size()
      * overhead pushes the field-section size above the limit. The pre-fix
      * receive path compared total_len only and would have accepted this.
      */
-    hdrs.count     = 1;
+    hdrs.count = 1;
     hdrs.total_len = 80;
     CU_ASSERT(hdrs.total_len <= 100);
     CU_ASSERT(xqc_h3_uncompressed_fields_size(&hdrs) > 100);
@@ -539,58 +581,56 @@ xqc_test_h3_recv_header_field_section_size()
 
     conn->conn_flow_ctl.fc_max_streams_uni_can_send = 16;
 
-    xqc_stream_t *stream = xqc_create_stream_with_conn(conn,
-                                                       XQC_UNDEFINE_STREAM_ID,
+    xqc_stream_t *stream = xqc_create_stream_with_conn(conn, XQC_UNDEFINE_STREAM_ID,
                                                        XQC_CLI_UNI, NULL, NULL);
     CU_ASSERT_FATAL(stream != NULL);
 
     /* CONTROL stream type avoids xqc_h3_stream_destroy walking into the
        request-only h3r teardown path on cleanup. */
-    xqc_h3_stream_t *h3s = xqc_h3_stream_create(h3c, stream,
-                                                XQC_H3_STREAM_TYPE_CONTROL,
-                                                NULL);
+    xqc_h3_stream_t *h3s =
+        xqc_h3_stream_create(h3c, stream, XQC_H3_STREAM_TYPE_CONTROL, NULL);
     CU_ASSERT_FATAL(h3s != NULL);
 
     xqc_h3_request_t *h3r = xqc_calloc(1, sizeof(xqc_h3_request_t));
     CU_ASSERT_FATAL(h3r != NULL);
-    h3r->h3_stream  = h3s;
+    h3r->h3_stream = h3s;
     h3r->request_if = &h3c->h3_request_callbacks;
     xqc_init_list_head(&h3r->body_buf);
 
     xqc_http_headers_t *hdr = &h3r->h3_header[0];
-    hdr->headers  = NULL;
+    hdr->headers = NULL;
     hdr->capacity = 0;
 
     /* regression for issue 751: total_len < limit but
        total_len + count*32 > limit. Pre-fix this would have been accepted. */
-    hdr->count     = 1;
+    hdr->count = 1;
     hdr->total_len = 80;
     h3r->current_header = 0;
-    h3r->read_flag      = 0;
+    h3r->read_flag = 0;
     ret = xqc_h3_request_on_recv_header(h3r);
     CU_ASSERT_EQUAL(ret, -XQC_H3_INVALID_HEADER);
 
     /* exact-equal-to-limit must be accepted (check is strictly greater) */
-    hdr->count     = 2;
+    hdr->count = 2;
     hdr->total_len = 36;
     h3r->current_header = 0;
-    h3r->read_flag      = 0;
+    h3r->read_flag = 0;
     ret = xqc_h3_request_on_recv_header(h3r);
     CU_ASSERT_EQUAL(ret, XQC_OK);
 
     /* one byte over the limit must be rejected */
-    hdr->count     = 2;
+    hdr->count = 2;
     hdr->total_len = 37;
     h3r->current_header = 0;
-    h3r->read_flag      = 0;
+    h3r->read_flag = 0;
     ret = xqc_h3_request_on_recv_header(h3r);
     CU_ASSERT_EQUAL(ret, -XQC_H3_INVALID_HEADER);
 
     /* zero-field headers under the limit are accepted */
-    hdr->count     = 0;
+    hdr->count = 0;
     hdr->total_len = 50;
     h3r->current_header = 0;
-    h3r->read_flag      = 0;
+    h3r->read_flag = 0;
     ret = xqc_h3_request_on_recv_header(h3r);
     CU_ASSERT_EQUAL(ret, XQC_OK);
 
@@ -610,4 +650,379 @@ xqc_test_h3_recv_header_field_section_size()
     if (conn->alpn) {
         xqc_free(conn->alpn);
     }
+}
+
+
+/*
+ * Tests for issue #744: RFC 9114 §4.1.2 / §8.1
+ *
+ * The fix changes two H3 error-code mappings in xqc_h3_stream.c:
+ *   1. xqc_h3_stream_process_in: when the bidi pipeline surfaces
+ *      -XQC_H3_INVALID_HEADER (header section too large, third HEADERS
+ *      frame, ...), the wire-level code must be H3_MESSAGE_ERROR
+ *      (0x10E), not the generic H3_GENERAL_PROTOCOL_ERROR (0x101).
+ *      RFC 9114 §4.1.2 requires "malformed request or response"
+ *      to be treated as H3_MESSAGE_ERROR.
+ *   2. xqc_h3_stream_process_request: when our request-side header
+ *      buffer slot count (XQC_H3_REQUEST_MAX_HEADERS_CNT = 2) is
+ *      exhausted, that's an implementation limit, not malformed
+ *      peer input, so the wire-level code must be H3_INTERNAL_ERROR
+ *      (0x102) per RFC 9114 §8.1.
+ *
+ * Helpers below build a request-bidi h3 stream with no transport I/O
+ * so the tests can call xqc_h3_stream_process_in directly.
+ */
+
+/* Minimal valid QPACK encoded field section wrapped in a HEADERS frame:
+ *   01     HEADERS frame type        (varint)
+ *   03     payload length 3          (varint)
+ *   00     Required Insert Count 0   (QPACK prefix, 8-bit)
+ *   00     S=0, Delta Base 0         (QPACK prefix, 7-bit)
+ *   c0     Indexed Field Line, static table idx 0 (":authority","")
+ *           decoded section length = 10 (name) + 0 (value) = 10 bytes
+ */
+static const unsigned char xqc_h3_msgerr_valid_headers[] = {0x01, 0x03, 0x00, 0x00, 0xC0};
+
+
+static xqc_h3_stream_t *
+xqc_h3_msgerr_setup(xqc_connection_t **out_conn, xqc_h3_conn_t **out_h3c)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    if (conn == NULL) {
+        return NULL;
+    }
+
+    if (conn->alpn) {
+        xqc_free(conn->alpn);
+    }
+    conn->alpn_len = strlen(XQC_ALPN_H3);
+    conn->alpn = xqc_calloc(1, conn->alpn_len + 1);
+    xqc_memcpy(conn->alpn, XQC_ALPN_H3, conn->alpn_len);
+
+    /* allow stream creation without negotiated peer limits */
+    conn->conn_flow_ctl.fc_max_streams_bidi_can_send = 1024;
+    conn->conn_state = XQC_CONN_STATE_ESTABED;
+
+    xqc_h3_conn_t *h3c = xqc_h3_conn_create(conn, NULL);
+    if (h3c == NULL) {
+        return NULL;
+    }
+
+    xqc_stream_t *stream = xqc_create_stream_with_conn(conn, XQC_UNDEFINE_STREAM_ID,
+                                                       XQC_CLI_BID, NULL, NULL);
+    if (stream == NULL) {
+        return NULL;
+    }
+
+    xqc_h3_stream_t *h3s =
+        xqc_h3_stream_create(h3c, stream, XQC_H3_STREAM_TYPE_REQUEST, NULL);
+    if (h3s == NULL) {
+        return NULL;
+    }
+
+    /* eagerly create the request so tests can manipulate current_header
+     * before feeding bytes through process_in. */
+    h3s->h3r = xqc_h3_request_create_inner(h3c, h3s, NULL);
+    if (h3s->h3r == NULL) {
+        return NULL;
+    }
+
+    *out_conn = conn;
+    *out_h3c = h3c;
+    return h3s;
+}
+
+static void
+xqc_h3_msgerr_teardown(xqc_h3_stream_t *h3s, xqc_h3_conn_t *h3c, xqc_connection_t *conn)
+{
+    xqc_stream_t *stream = h3s->stream;
+    /* h3 stream owns h3r lifetime; mark stream DISCARDED so destroy
+     * does not redrive close_notify on the soon-to-be-freed h3s. */
+    stream->stream_flag |= XQC_STREAM_FLAG_DISCARDED;
+    xqc_h3_stream_destroy(h3s);
+    xqc_destroy_stream(stream);
+    xqc_h3_conn_destroy(h3c);
+    if (conn->alpn) {
+        xqc_free(conn->alpn);
+    }
+}
+
+
+void
+xqc_test_h3_message_error_code_value()
+{
+    /*
+     * IANA-registered HTTP/3 error code points (RFC 9114 §8.1 Table 2).
+     * The wire format is frozen by these literal values; any drift
+     * breaks interoperability. Lock the relevant entries plus the
+     * two adjacent code points so an accidental table reorder fails.
+     */
+    CU_ASSERT(H3_GENERAL_PROTOCOL_ERROR == 0x101);
+    CU_ASSERT(H3_INTERNAL_ERROR == 0x102);
+    CU_ASSERT(H3_REQUEST_INCOMPLETE == 0x10D);
+    CU_ASSERT(H3_MESSAGE_ERROR == 0x10E);
+    CU_ASSERT(H3_CONNECT_ERROR == 0x10F);
+}
+
+
+void
+xqc_test_h3_malformed_headers_uses_message_error()
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+
+    /*
+     * Shrink the locally advertised SETTINGS_MAX_FIELD_SECTION_SIZE so
+     * the decoded :authority header section (10 bytes) trips the
+     * "header section too large" path in xqc_h3_request_on_recv_header
+     * (xqc_h3_request.c:821). That returns -XQC_H3_INVALID_HEADER up
+     * to process_in, which must map it to H3_MESSAGE_ERROR per
+     * RFC 9114 §4.1.2. Pre-fix this raised H3_GENERAL_PROTOCOL_ERROR.
+     */
+    h3c->local_h3_conn_settings.max_field_section_size = 1;
+
+    CU_ASSERT(conn->conn_err == 0);
+
+    unsigned char buf[sizeof(xqc_h3_msgerr_valid_headers)];
+    xqc_memcpy(buf, xqc_h3_msgerr_valid_headers, sizeof(buf));
+
+    xqc_int_t ret = xqc_h3_stream_process_in(h3s, buf, sizeof(buf), XQC_TRUE);
+
+    /* process_in collapses sub-errors to -XQC_H3_EPROC_REQUEST */
+    CU_ASSERT(ret == -XQC_H3_EPROC_REQUEST);
+    CU_ASSERT(conn->conn_err == H3_MESSAGE_ERROR);
+    CU_ASSERT(conn->conn_err == 0x10E);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
+}
+
+
+void
+xqc_test_h3_headers_capacity_uses_internal_error()
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+
+    /*
+     * Simulate two prior HEADERS sections (request + trailer) by
+     * jumping current_header to the cap. A third HEADERS frame then
+     * makes xqc_h3_request_get_writing_headers return NULL inside
+     * xqc_h3_stream_process_request (xqc_h3_stream.c:920), which is
+     * an implementation-side capacity exhaustion. Post-fix this must
+     * be H3_INTERNAL_ERROR (0x102), not the previous
+     * H3_GENERAL_PROTOCOL_ERROR (0x101). XQC_H3_CONN_ERR is
+     * first-write-wins so the outer process_in mapping at line 1521
+     * does not overwrite it.
+     */
+    h3s->h3r->current_header = XQC_H3_REQUEST_MAX_HEADERS_CNT;
+
+    CU_ASSERT(conn->conn_err == 0);
+
+    unsigned char buf[sizeof(xqc_h3_msgerr_valid_headers)];
+    xqc_memcpy(buf, xqc_h3_msgerr_valid_headers, sizeof(buf));
+
+    xqc_int_t ret = xqc_h3_stream_process_in(h3s, buf, sizeof(buf), XQC_TRUE);
+
+    CU_ASSERT(ret == -XQC_H3_EPROC_REQUEST);
+    CU_ASSERT(conn->conn_err == H3_INTERNAL_ERROR);
+    CU_ASSERT(conn->conn_err == 0x102);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
+}
+
+
+void
+xqc_test_h3_valid_headers_smoke()
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+
+    /* Default max_field_section_size leaves a 10-byte section well
+     * under cap; no error code must be set. Guards against the fix
+     * accidentally tagging the happy path. */
+    CU_ASSERT(conn->conn_err == 0);
+
+    unsigned char buf[sizeof(xqc_h3_msgerr_valid_headers)];
+    xqc_memcpy(buf, xqc_h3_msgerr_valid_headers, sizeof(buf));
+
+    xqc_int_t ret = xqc_h3_stream_process_in(h3s, buf, sizeof(buf), XQC_TRUE);
+
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) == 0);
+    /* the HEADERS frame should have advanced the request to 1 section */
+    CU_ASSERT(h3s->h3r->current_header == 1);
+
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
+}
+
+
+void
+xqc_test_h3_frame_parse_error_uses_frame_error()
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+
+    /*
+     * Feed a HEADERS frame whose QPACK payload references static
+     * table index 99 (out of range, valid is 0..98). The QPACK
+     * decoder fails with -XQC_QPACK_SAVE_HEADERS_ERROR (not
+     * -XQC_H3_INVALID_HEADER), so process_in must keep the wire
+     * code as H3_FRAME_ERROR. This is the line 1524 "else" branch
+     * the PR does NOT change - regression guard against the fix
+     * accidentally widening H3_MESSAGE_ERROR to non-header errors.
+     *
+     *   01           HEADERS frame type
+     *   04           payload length 4
+     *   00           Required Insert Count 0       (QPACK prefix, 8-bit)
+     *   00           S=0, Delta Base 0             (QPACK prefix, 7-bit)
+     *   ff 24        Indexed Field Line, T=1 (static), 6-bit prefix
+     *                with continuation: idx = 63 + 36 = 99 (out of range)
+     */
+    const unsigned char malformed[] = {0x01, 0x04, 0x00, 0x00, 0xFF, 0x24};
+    unsigned char buf[sizeof(malformed)];
+    xqc_memcpy(buf, malformed, sizeof(buf));
+
+    CU_ASSERT(conn->conn_err == 0);
+
+    xqc_int_t ret = xqc_h3_stream_process_in(h3s, buf, sizeof(buf), XQC_TRUE);
+
+    CU_ASSERT(ret < 0);
+    CU_ASSERT(conn->conn_err == H3_FRAME_ERROR);
+    CU_ASSERT(conn->conn_err != H3_MESSAGE_ERROR);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
+}
+
+void
+xqc_test_h3_message_error_enum()
+{
+    CU_ASSERT(H3_MESSAGE_ERROR == 0x10E);
+}
+
+
+void
+xqc_test_h3_forbidden_headers_rejected()
+{
+    /* transfer-encoding: always forbidden */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"transfer-encoding", 17,
+                                      (const unsigned char *)"chunked", 7) == XQC_TRUE);
+
+    /* keep-alive: always forbidden */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"keep-alive", 10,
+                                      (const unsigned char *)"timeout=5", 9) == XQC_TRUE);
+
+    /* proxy-connection: always forbidden */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"proxy-connection", 16,
+                                      (const unsigned char *)"keep-alive",
+                                      10) == XQC_TRUE);
+
+    /* te with non-trailers value: forbidden */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"te", 2,
+                                      (const unsigned char *)"chunked", 7) == XQC_TRUE);
+
+    /* te with non-trailers value in mixed case: still forbidden */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"te", 2,
+                                      (const unsigned char *)"Chunked", 7) == XQC_TRUE);
+}
+
+
+void
+xqc_test_h3_allowed_headers_pass()
+{
+    /* content-type: normal header, never forbidden */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"content-type", 12,
+                                      (const unsigned char *)"text/html",
+                                      9) == XQC_FALSE);
+
+    /* te with value "trailers": RFC exception, allowed */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"te", 2,
+                                      (const unsigned char *)"trailers", 8) == XQC_FALSE);
+
+    /* te with value "Trailers" (mixed case): QPACK sends lowercase, reject non-exact */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"te", 2,
+                                      (const unsigned char *)"Trailers", 8) == XQC_TRUE);
+
+    /* te with value "TRAILERS" (all caps): same reasoning */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"te", 2,
+                                      (const unsigned char *)"TRAILERS", 8) == XQC_TRUE);
+
+    /* connection: allowed for WebSocket-over-HTTP/3 (Connection: Upgrade) */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"connection", 10,
+                                      (const unsigned char *)"Upgrade", 7) == XQC_FALSE);
+
+    /* upgrade: allowed for WebSocket-over-HTTP/3 (Upgrade: websocket) */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"upgrade", 7,
+                                      (const unsigned char *)"websocket",
+                                      9) == XQC_FALSE);
+
+    /* host: normal header */
+    CU_ASSERT(xqc_h3_hdr_is_forbidden((const unsigned char *)"host", 4,
+                                      (const unsigned char *)"example.com",
+                                      11) == XQC_FALSE);
+}
+
+
+/*
+ * #811 QPACK DDoS (CWE-770): a peer sends HEADERS that reference dynamic-table
+ * entries which never arrive, forcing the decoder to block and buffer the
+ * field section indefinitely. Drive that through the real H3 receive path
+ * (xqc_h3_stream_process_in) with a tiny per-stream cap and assert the
+ * connection enforces the blocked-buffer limit (H3_EXCESSIVE_LOAD) instead of
+ * buffering without bound.
+ */
+void
+xqc_test_h3_blocked_buf_limit(void)
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+
+    /* shrink the per-stream blocked-buffer cap so a small blocked remainder
+     * trips it (real default is 1 MB). */
+    h3c->max_blocked_buf_per_stream = 4;
+
+    /* HEADERS whose QPACK field section needs dynamic entries that have NOT
+     * been inserted (Required Insert Count > 0) -> decoder must block. */
+    uint64_t max_entries = 512; /* default 16KB decoder dtable -> 512 entries */
+    uint64_t ric = 1;
+    uint64_t base = 1;
+
+    xqc_var_buf_t *fs = xqc_var_buf_create(256);
+    CU_ASSERT_FATAL(fs != NULL);
+    CU_ASSERT(xqc_rep_write_prefix(fs, max_entries, ric, base) == XQC_OK);
+    /* padding dynamic-indexed fields so the blocked remainder exceeds the cap */
+    for (int i = 0; i < 16; i++) {
+        CU_ASSERT(xqc_rep_write_indexed(fs, XQC_DTABLE_FLAG, xqc_abs2brel(base, 0)) ==
+                  XQC_OK);
+    }
+
+    /* wrap field section in an HTTP/3 HEADERS frame: type(0x01)+len+section */
+    unsigned char frame[300];
+    size_t fl = 0;
+    frame[fl++] = 0x01;                        /* HEADERS frame type */
+    frame[fl++] = (unsigned char)fs->data_len; /* length (1-byte varint, < 64) */
+    memcpy(frame + fl, fs->data, fs->data_len);
+    fl += fs->data_len;
+
+    xqc_int_t ret = xqc_h3_stream_process_in(h3s, frame, fl, XQC_TRUE);
+
+    /* blocked-buffer cap must have fired */
+    CU_ASSERT(conn->conn_err == H3_EXCESSIVE_LOAD);
+    CU_ASSERT(ret == -XQC_H3_EPROC_REQUEST);
+
+    xqc_var_buf_free(fs);
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
 }
