@@ -106,6 +106,12 @@ typedef struct {
     int                  force_refresh_paths; /* refresh WRR cache on recovery */
     uint64_t             recovery_unpin_until_us; /* temporarily disable TCP pinning after recovery */
     uint64_t             recovery_prefer_path_id; /* newly recovered path to prefer for first re-pin */
+    /* Set once a previously-healthy path has been observed as unhealthy. Gates
+     * the "newly appeared path = recovery" heuristic so the heuristic does not
+     * fire during initial multi-path setup (e.g. secondary path coming up
+     * after handshake), which otherwise wipes the freshly-established pin and
+     * re-pins all TCP flows to the just-added — possibly narrow — path. */
+    xqc_bool_t           ever_lost_path;
     xqc_log_t           *log;
 } xqc_wlb_scheduler_t;
 
@@ -239,12 +245,42 @@ wlb_flow_expire(xqc_wlb_scheduler_t *s, uint64_t now_us, xqc_connection_t *conn)
         }
     }
 
-    xqc_bool_t has_new_path = XQC_FALSE;
-    if (s->last_healthy_paths > 0 && active_healthy_paths > s->last_healthy_paths) {
-        has_new_path = XQC_TRUE; /* recovery/addition relative to previous sweep */
+    /* Detect path loss: a previously-healthy path is missing from the current
+     * active set. This latches ever_lost_path so the "newly appeared path =
+     * recovery" heuristic below is enabled only after a real failover. Without
+     * this gate the heuristic also fires for initial setup (e.g. secondary
+     * path comes up some hundreds of ms after handshake) and wipes the
+     * just-established pin onto the freshly-added — possibly narrow — path. */
+    if (!s->ever_lost_path) {
+        if (s->last_healthy_paths > 0
+            && active_healthy_paths < s->last_healthy_paths)
+        {
+            s->ever_lost_path = XQC_TRUE;
+        } else {
+            for (int j = 0; j < s->last_healthy_path_ids_n; j++) {
+                xqc_bool_t still = XQC_FALSE;
+                for (int i = 0; i < active_healthy_ids_n; i++) {
+                    if (s->last_healthy_path_ids[j] == active_healthy_ids[i]) {
+                        still = XQC_TRUE;
+                        break;
+                    }
+                }
+                if (!still) {
+                    s->ever_lost_path = XQC_TRUE;
+                    break;
+                }
+            }
+        }
     }
-    if (!has_new_path && newly_seen_path_id != WLB_NO_PATH_ID) {
-        has_new_path = XQC_TRUE; /* path-id replacement with constant count */
+
+    xqc_bool_t has_new_path = XQC_FALSE;
+    if (s->ever_lost_path) {
+        if (s->last_healthy_paths > 0 && active_healthy_paths > s->last_healthy_paths) {
+            has_new_path = XQC_TRUE; /* recovery/addition relative to previous sweep */
+        }
+        if (!has_new_path && newly_seen_path_id != WLB_NO_PATH_ID) {
+            has_new_path = XQC_TRUE; /* path-id replacement with constant count */
+        }
     }
 
     if (has_new_path) {
@@ -645,6 +681,37 @@ wlb_start_round(xqc_wlb_scheduler_t *s)
 }
 
 /**
+ * Choose a PIN TARGET for a fresh TCP flow based on raw deficit, IGNORING
+ * current cwnd state.
+ *
+ * Pinning is a long-lived routing decision; the actual packet that triggers
+ * the pin is sent via wlb_wrr_select() which honours cwnd. Separating the two
+ * avoids the failure mode where the wide path is momentarily cwnd-blocked at
+ * pin time — wrr_select would otherwise skip it, return the narrow path, and
+ * freeze the TCP flow there for the next 60s of idle expiry.
+ *
+ * Does not decrement deficit: wrr_select still consumes a quantum for the
+ * packet that's about to be sent; the pin assignment is metadata only.
+ */
+static uint64_t
+wlb_pick_pin_path(xqc_wlb_scheduler_t *s, xqc_connection_t *conn)
+{
+    int best = -1;
+    int64_t best_deficit = INT64_MIN;
+    for (int i = 0; i < s->n_paths; i++) {
+        xqc_path_ctx_t *path = wlb_find_path_ctx(conn, s->paths[i].path_id);
+        if (path == NULL) {
+            continue;
+        }
+        if (s->paths[i].deficit > best_deficit) {
+            best_deficit = s->paths[i].deficit;
+            best = i;
+        }
+    }
+    return (best >= 0) ? s->paths[best].path_id : WLB_NO_PATH_ID;
+}
+
+/**
  * WRR: select the path with the highest deficit that can send.
  */
 static uint64_t
@@ -919,10 +986,19 @@ xqc_wlb_scheduler_get_path(void *scheduler,
 
     if (sel_path_id != UINT64_MAX) {
         if (pin_flow) {
-            wlb_flow_insert(s, packet_out->po_flow_hash, sel_path_id, now_us);
+            /* Pin to the highest-deficit (≈ highest LATE-weight) path even if
+             * it is currently cwnd-blocked. The wrr_select above already chose
+             * a sendable path for this exact packet (sel_path_id); the pin is
+             * what subsequent packets of this flow will key off, and it must
+             * reflect the long-term best path, not transient cwnd state. */
+            uint64_t pin_path_id = wlb_pick_pin_path(s, conn);
+            if (pin_path_id == WLB_NO_PATH_ID) {
+                pin_path_id = sel_path_id;
+            }
+            wlb_flow_insert(s, packet_out->po_flow_hash, pin_path_id, now_us);
             xqc_log(conn->log, XQC_LOG_INFO,
-                    "|wlb|flow_pin|flow:%ui|path:%ui|",
-                    packet_out->po_flow_hash, sel_path_id);
+                    "|wlb|flow_pin|flow:%ui|pin:%ui|send:%ui|",
+                    packet_out->po_flow_hash, pin_path_id, sel_path_id);
         }
         xqc_path_ctx_t *path = wlb_find_path_ctx(conn, sel_path_id);
         xqc_log(conn->log, XQC_LOG_INFO,

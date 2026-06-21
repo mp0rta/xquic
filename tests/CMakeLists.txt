@@ -125,6 +125,7 @@ if(HAVE_CUNIT)
         ${UNIT_TEST_DIR}/xqc_test_helpers.c
         ${UNIT_TEST_DIR}/xqc_test_path_hard_cap.c
         ${UNIT_TEST_DIR}/xqc_set_conn_settings_test.c
+        ${UNIT_TEST_DIR}/xqc_wlb_test.c
     )
 
     if(XQC_ENABLE_FEC)
@@ -140,6 +141,12 @@ if(HAVE_CUNIT)
     add_executable(run_tests
         ${test_SOURCES}
     )
+
+    # Some pre-existing tests (xqc_masque_test) trigger -Wmaybe-uninitialized
+    # under -O2 on recent GCC; the upstream -Werror would otherwise block the
+    # WLB suite from building. Relax only this target — the library proper
+    # still builds with full warnings-as-errors.
+    target_compile_options(run_tests PRIVATE -Wno-maybe-uninitialized)
 
     target_include_directories(run_tests
         PRIVATE
