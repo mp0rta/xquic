@@ -420,3 +420,110 @@ xqc_test_wlb_recovery_prefer_fires_after_real_failover(void)
 
     wlb_test_teardown(&f);
 }
+
+/* rev6: the n_paths==1 fast path must NOT pin the flow — otherwise when a
+ * secondary path appears later, the flow is stuck on paths[0] forever
+ * (Fix A prevents the wipe that would otherwise rescue it).
+ *
+ * Strategy: drive one flow through the scheduler while only path 0 exists,
+ * then attach path 1, advance the clock past the 1/sec flow_expire throttle
+ * so wlb_flow_expire's path-count-increase detector fires (Edit B:
+ * force_refresh_paths is now decoupled from ever_lost_path), then issue
+ * new flows and confirm pin distribution — proving that pick_pin's
+ * max-deficit alternation is engaging and nothing got permanently
+ * anchored to paths[0]. */
+void
+xqc_test_wlb_single_path_does_not_pin(void)
+{
+    wlb_test_fixture_t f;
+    wlb_test_setup(&f);
+
+    /* Only ONE path — n_paths==1 fast path will fire. */
+    wlb_test_add_path(&f, 0, 25000, 64 * 1024, 0);
+
+    /* First call: fast path returns paths[0]. With Edit A, NO pin is
+     * inserted. */
+    uint32_t early_flow = 0xABCDEF01;
+    uint64_t early_pick = wlb_test_invoke(&f, early_flow);
+    CU_ASSERT_EQUAL(early_pick, 0);
+
+    /* Add the secondary path. Advance the clock past the 1/sec
+     * flow_expire throttle so the next invoke triggers the expire
+     * sweep, which (per Edit B) detects path_count_increased and
+     * sets force_refresh_paths = 1 → wlb_refresh_paths runs →
+     * s->n_paths becomes 2 → the n_paths==1 fast path no longer
+     * fires; subsequent flows go through pick_pin's max-deficit
+     * branch. With two equal-weight paths the wrr_select decrement
+     * + pick_pin pairing naturally alternates flows across paths. */
+    wlb_test_add_path(&f, 1, 25000, 64 * 1024, 0);
+    wlb_test_clock_advance(1100000);
+
+    /* Issue a batch of NEW flows. With two equal paths, wrr_select
+     * decrements one deficit per packet → pick_pin sees the other path
+     * as max → flows alternate. We assert both paths receive flows —
+     * proving (a) the n_paths==1 anchor was not set on early_flow (it
+     * wasn't — but we can't distinguish that from here); (b) more
+     * importantly, that max-deficit alternation is firing after the
+     * secondary path becomes visible. */
+    int seen_p0 = 0, seen_p1 = 0;
+    for (int i = 0; i < 8; i++) {
+        uint32_t flow = 0x30000000u + (uint32_t)i;
+        (void)wlb_test_invoke(&f, flow);             /* establish pin */
+        uint64_t pinned = wlb_test_invoke(&f, flow); /* read pin */
+        if (pinned == 0)      seen_p0++;
+        else if (pinned == 1) seen_p1++;
+    }
+    CU_ASSERT_TRUE(seen_p1 > 0);  /* alternation active after path 1 visible */
+    CU_ASSERT_TRUE(seen_p0 > 0);  /* not all on path 1 either */
+
+    wlb_test_teardown(&f);
+}
+
+/* Root cause (WLB_INSTR-confirmed): the scheduler detects a newly-active
+ * secondary path ONLY inside wlb_flow_expire(), which is throttled to run at
+ * most once per second. If the path appears just after an expire() run, its
+ * entry into s->paths is delayed up to ~1s — long enough for the primary to
+ * warm its cwnd and capture every flow pin (sym P=16 collapse: 17/0 split).
+ *
+ * This test pins down the fix contract: after the secondary becomes active,
+ * new flows must distribute across BOTH paths WITHOUT first advancing the
+ * clock past the 1/sec throttle. It differs from single_path_does_not_pin
+ * precisely in that it does NOT call wlb_test_clock_advance(1.1s) — so the
+ * old code (which only notices the new path via the throttled expire) leaves
+ * n_paths==1, the single-path fast path returns paths[0] for every flow, and
+ * nothing distributes. */
+void
+xqc_test_wlb_new_path_detected_without_expire_throttle(void)
+{
+    wlb_test_fixture_t f;
+    wlb_test_setup(&f);
+
+    /* Only path 0 up at handshake. Drive one flow so the scheduler settles
+     * into its n_paths==1 state (first expire records a single healthy
+     * path and latches last_expire_ts). */
+    wlb_test_add_path(&f, 0, 25000, 64 * 1024, 0);
+    uint32_t warmup = 0x0BADF00D;
+    CU_ASSERT_EQUAL(wlb_test_invoke(&f, warmup), 0);
+
+    /* Secondary path becomes active ~100ms later — still WELL within the
+     * 1/sec expire throttle window (last_expire_ts was just set). The old
+     * code cannot see it until the throttle elapses. */
+    wlb_test_add_path(&f, 1, 25000, 64 * 1024, 0);
+    wlb_test_clock_advance(100000);  /* 100ms — deliberately < 1s throttle */
+
+    /* New flows must reach the WRR/pick_pin path and distribute across both
+     * paths. Pre-fix: n_paths stays 1, all flows return paths[0]. */
+    int seen_p0 = 0, seen_p1 = 0;
+    for (int i = 0; i < 8; i++) {
+        uint32_t flow = 0x40000000u + (uint32_t)i;
+        (void)wlb_test_invoke(&f, flow);             /* establish pin */
+        uint64_t pinned = wlb_test_invoke(&f, flow); /* read pin */
+        if (pinned == 0)      seen_p0++;
+        else if (pinned == 1) seen_p1++;
+    }
+
+    CU_ASSERT_TRUE(seen_p1 > 0);  /* secondary detected promptly, gets flows */
+    CU_ASSERT_TRUE(seen_p0 > 0);  /* primary still used too */
+
+    wlb_test_teardown(&f);
+}

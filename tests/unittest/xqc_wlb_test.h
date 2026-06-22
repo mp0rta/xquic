@@ -36,4 +36,21 @@ void xqc_test_wlb_recovery_prefer_skips_initial_path_addition(void);
  * recovered path is preferred for the first re-pin of an active flow. */
 void xqc_test_wlb_recovery_prefer_fires_after_real_failover(void);
 
+/* rev6: the n_paths==1 single-path fast path must NOT pin the flow.
+ * Otherwise when a secondary path appears later, early flows stay
+ * locked on paths[0] forever (Fix A prevents the wipe that would
+ * otherwise rescue them). After the secondary path joins, NEW flows
+ * must reach wlb_pick_pin_path and distribute via max-deficit
+ * alternation. */
+void xqc_test_wlb_single_path_does_not_pin(void);
+
+/* A secondary path that becomes active must be picked up by the scheduler
+ * PROMPTLY — without waiting for the 1/sec wlb_flow_expire throttle window
+ * to elapse. Otherwise the secondary's inclusion in s->paths is delayed up
+ * to ~1s, during which the primary warms its cwnd and then captures ALL
+ * flow pins (the sym P=16 aggregation collapse confirmed via WLB_INSTR).
+ * After the path appears, new flows must distribute across both paths even
+ * though the expire throttle has NOT yet unblocked. */
+void xqc_test_wlb_new_path_detected_without_expire_throttle(void);
+
 #endif /* XQC_WLB_TEST_H_INCLUDED */

@@ -273,9 +273,16 @@ wlb_flow_expire(xqc_wlb_scheduler_t *s, uint64_t now_us, xqc_connection_t *conn)
         }
     }
 
+    /* Detect path-count increase independently of ever_lost_path. We always
+     * want s->paths to reflect the current active set so wlb_pick_pin_path's
+     * RR distribution can include newly-added paths. The wipe/grace behavior
+     * (below) remains gated on ever_lost_path to preserve Fix A's intent. */
+    xqc_bool_t path_count_increased =
+        (s->last_healthy_paths > 0 && active_healthy_paths > s->last_healthy_paths);
+
     xqc_bool_t has_new_path = XQC_FALSE;
     if (s->ever_lost_path) {
-        if (s->last_healthy_paths > 0 && active_healthy_paths > s->last_healthy_paths) {
+        if (path_count_increased) {
             has_new_path = XQC_TRUE; /* recovery/addition relative to previous sweep */
         }
         if (!has_new_path && newly_seen_path_id != WLB_NO_PATH_ID) {
@@ -283,8 +290,15 @@ wlb_flow_expire(xqc_wlb_scheduler_t *s, uint64_t now_us, xqc_connection_t *conn)
         }
     }
 
-    if (has_new_path) {
+    if (path_count_increased) {
+        /* Always refresh s->paths on new-path detection — required so
+         * wlb_pick_pin_path's max-deficit branch sees the new path
+         * (otherwise s->n_paths stays stale and the single-path fast
+         * path keeps firing). NOT gated on ever_lost_path. */
         s->force_refresh_paths = 1;
+    }
+    if (has_new_path) {
+        /* Wipe + grace behavior unchanged: only on real recovery (Fix A). */
         s->recovery_unpin_until_us = now_us + WLB_RECOVERY_UNPIN_GRACE_US;
     }
 
@@ -561,6 +575,32 @@ wlb_compute_weight(xqc_path_ctx_t *path, uint64_t max_rtt_us)
  * ================================================================ */
 
 /**
+ * Count active, healthy paths using the SAME predicate as wlb_refresh_paths
+ * (ACTIVE && !FROZEN && !SOCKET_ERROR). Cheap O(paths) scan used to detect a
+ * newly-active path promptly, decoupled from the 1/sec wlb_flow_expire
+ * throttle. Must match refresh's predicate exactly so the count is directly
+ * comparable to s->n_paths (otherwise it would force-refresh every call).
+ */
+static int
+wlb_count_active_paths(xqc_connection_t *conn)
+{
+    int n = 0;
+    xqc_list_head_t *pos, *next;
+    xqc_path_ctx_t  *path;
+    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
+        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+        if (path->path_state != XQC_PATH_STATE_ACTIVE
+            || path->app_path_status == XQC_APP_PATH_STATUS_FROZEN
+            || (path->path_flag & XQC_PATH_FLAG_SOCKET_ERROR))
+        {
+            continue;
+        }
+        n++;
+    }
+    return n;
+}
+
+/**
  * Refresh path list and LATE weights from real-time metrics.
  * Deficit counters are preserved for paths that already existed (by path_id).
  */
@@ -696,6 +736,18 @@ wlb_start_round(xqc_wlb_scheduler_t *s)
 static uint64_t
 wlb_pick_pin_path(xqc_wlb_scheduler_t *s, xqc_connection_t *conn)
 {
+    /* Pick the path with the highest deficit (≈ highest LATE weight) for
+     * pin assignment, even if it is currently cwnd-blocked. wrr_select
+     * (just before) already chose a sendable path for the current packet;
+     * the pin is what subsequent packets of this flow will key off, and
+     * it must reflect the long-term best path, not transient cwnd state.
+     *
+     * Under sym fabric (equal weights → equal quanta), wrr_select
+     * decrements one path's deficit by 1 → pick_pin sees the OTHER path
+     * as max → flows alternate naturally. Under asym (3:1+ quantum), the
+     * wide path stays max-deficit through several decrements before
+     * narrow gets its turn, giving weighted alternation.
+     */
     int best = -1;
     int64_t best_deficit = INT64_MIN;
     for (int i = 0; i < s->n_paths; i++) {
@@ -932,6 +984,22 @@ xqc_wlb_scheduler_get_path(void *scheduler,
         }
     }
 
+    /* Prompt new-path detection (decoupled from the 1/sec wlb_flow_expire
+     * throttle). wlb_flow_expire is the only place that flags path-count
+     * increases, but it runs at most once per second; a secondary path that
+     * becomes active just after an expire() run is therefore invisible to the
+     * scheduler for up to ~1s. During that blind window the primary path
+     * keeps warming its cwnd, and when the secondary finally enters s->paths
+     * the weight skew makes wlb_pick_pin_path assign EVERY flow to the warm
+     * primary (sym P=16 aggregation collapse: 17/0 pin split, confirmed via
+     * WLB_INSTR). Counting active paths here is O(paths) and only runs for
+     * flows that miss the pinned fast path, so steady-state pinned traffic
+     * pays nothing. We force a refresh only on an INCREASE — path losses are
+     * already handled by wlb_flow_expire's failover logic. */
+    if (wlb_count_active_paths(conn) > s->n_paths) {
+        s->force_refresh_paths = 1;
+    }
+
     /* Start new WRR round if current round is exhausted.
      * Recompute LATE weights from real-time metrics at round boundary. */
     if (s->force_refresh_paths || wlb_needs_new_round(s)) {
@@ -960,9 +1028,12 @@ xqc_wlb_scheduler_get_path(void *scheduler,
     if (s->n_paths == 1) {
         xqc_path_ctx_t *path = wlb_find_path_ctx(conn, s->paths[0].path_id);
         if (path && xqc_scheduler_check_path_can_send(path, packet_out, check_cwnd)) {
-            if (pin_flow) {
-                wlb_flow_insert(s, packet_out->po_flow_hash, path->path_id, now_us);
-            }
+            /* Single-path period: do NOT pin. Once the secondary path appears
+             * in s->paths, the next packet of this flow misses the flow-table
+             * lookup and goes through wlb_pick_pin_path's max-deficit branch
+             * for proper distribution. Pinning here would lock all early
+             * flows to paths[0] permanently (Fix A prevents the wipe that
+             * would otherwise rescue them). */
             return path;
         }
         if (cc_blocked) {

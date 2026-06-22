@@ -40,7 +40,11 @@ main(void)
         || NULL == CU_add_test(s, "recovery_prefer_skips_initial_path_addition",
                                xqc_test_wlb_recovery_prefer_skips_initial_path_addition)
         || NULL == CU_add_test(s, "recovery_prefer_fires_after_real_failover",
-                               xqc_test_wlb_recovery_prefer_fires_after_real_failover))
+                               xqc_test_wlb_recovery_prefer_fires_after_real_failover)
+        || NULL == CU_add_test(s, "single_path_does_not_pin",
+                               xqc_test_wlb_single_path_does_not_pin)
+        || NULL == CU_add_test(s, "new_path_detected_without_expire_throttle",
+                               xqc_test_wlb_new_path_detected_without_expire_throttle))
     {
         CU_cleanup_registry();
         return (int)CU_get_error();
