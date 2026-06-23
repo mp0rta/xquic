@@ -1025,6 +1025,7 @@ xqc_test_h3_blocked_buf_limit(void)
 
     xqc_var_buf_free(fs);
     xqc_h3_msgerr_teardown(h3s, h3c, conn);
+}
 
 /*
  * Issue #612: RFC 9114 §7.2.1/§7.2.5 — DATA, HEADERS, PUSH_PROMISE on
