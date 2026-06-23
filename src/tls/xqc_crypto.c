@@ -10,12 +10,27 @@
 #include <xquic/xqc_errno.h>
 
 
-#define XQC_NONCE_LEN        16
-#define XQC_HP_SAMPLELEN     16
-#define XQC_HP_MASKLEN       5
+#define XQC_NONCE_LEN    16
+#define XQC_HP_SAMPLELEN 16
+#define XQC_HP_MASKLEN   5
 
-#define XQC_FAKE_HP_MASK        "\x00\x00\x00\x00\x00"
-#define XQC_FAKE_AEAD_OVERHEAD  XQC_TLS_AEAD_OVERHEAD_MAX_LEN
+#define XQC_FAKE_HP_MASK       "\x00\x00\x00\x00\x00"
+#define XQC_FAKE_AEAD_OVERHEAD XQC_TLS_AEAD_OVERHEAD_MAX_LEN
+
+static inline xqc_int_t
+xqc_crypto_check_hp_sample(xqc_crypto_t *crypto, uint8_t *pktno, uint8_t *end)
+{
+    const size_t need = 4 + XQC_HP_SAMPLELEN;
+
+    if (pktno > end || (size_t)(end - pktno) < need) {
+        xqc_log(crypto->log, XQC_LOG_ERROR,
+                "|illegal pkt, hp sample exceed buffer|left:%uz|need:%uz|",
+                pktno > end ? 0 : (size_t)(end - pktno), need);
+        return -XQC_EILLPKT;
+    }
+
+    return XQC_OK;
+}
 
 static inline void
 xqc_vec_init(xqc_vec_t *vec)
@@ -36,7 +51,7 @@ xqc_vec_free(xqc_vec_t *vec)
 }
 
 static inline xqc_int_t
-xqc_vec_assign(xqc_vec_t * vec, const uint8_t * data, size_t data_len)
+xqc_vec_assign(xqc_vec_t *vec, const uint8_t *data, size_t data_len)
 {
     /* Try to reuse memory and we don't need to free memory before xqc_vec_assign */
     if (!vec->base) {
@@ -171,7 +186,8 @@ xqc_crypto_destroy(xqc_crypto_t *crypto)
 }
 
 void
-xqc_crypto_create_nonce(uint8_t *dest, const uint8_t *iv, size_t ivlen, uint64_t pktno, uint32_t path_id)
+xqc_crypto_create_nonce(uint8_t *dest, const uint8_t *iv, size_t ivlen, uint64_t pktno,
+                        uint32_t path_id)
 {
     size_t i;
 
@@ -181,7 +197,7 @@ xqc_crypto_create_nonce(uint8_t *dest, const uint8_t *iv, size_t ivlen, uint64_t
      * 32 bit Connection ID Sequence Number in byte order, two zero bits, and the
      * 62 bits of the reconstructed QUIC packet number in network byte order.
      * If the IV is larger than 96 bits, the path-and-packet-number is left-padded
-     * with zeros to the size of the IV. 
+     * with zeros to the size of the IV.
      * The exclusive OR of the padded packet number and the IV forms the AEAD nonce.
      */
 
@@ -199,37 +215,44 @@ xqc_crypto_create_nonce(uint8_t *dest, const uint8_t *iv, size_t ivlen, uint64_t
 
 xqc_int_t
 xqc_crypto_encrypt_header(xqc_crypto_t *crypto, xqc_pkt_type_t pkt_type, uint8_t *header,
-    uint8_t *pktno, uint8_t *end)
+                          uint8_t *pktno, uint8_t *end)
 {
-    xqc_int_t       ret;
+    xqc_int_t ret;
 
-    uint8_t         mask[XQC_HP_MASKLEN];
-    size_t          nwrite;
+    uint8_t mask[XQC_HP_MASKLEN];
+    size_t nwrite;
 
     /* packet number position and sample position */
-    size_t   pktno_len  = XQC_PACKET_SHORT_HEADER_PKTNO_LEN(header);
-    uint8_t *sample     = pktno + 4;
+    size_t pktno_len = XQC_PACKET_SHORT_HEADER_PKTNO_LEN(header);
+    uint8_t *sample;
 
     /* hp cipher and key */
     xqc_hdr_protect_cipher_t *hp_cipher = &crypto->hp_cipher;
-    xqc_vec_t *hp  = &crypto->keys.tx_hp;
+    xqc_vec_t *hp = &crypto->keys.tx_hp;
     if (hp_cipher == NULL || hp->base == NULL || hp->len == 0) {
         xqc_log(crypto->log, XQC_LOG_ERROR, "|hp encrypt key NULL|");
         return -XQC_EENCRYPT;
     }
 
     /* get length of packet number */
-    if (pktno + pktno_len > end) {
+    if (pktno > end || (size_t)(end - pktno) < pktno_len) {
         xqc_log(crypto->log, XQC_LOG_ERROR, "|illegal pkt, pkt num exceed buffer");
         return -XQC_EILLPKT;
     }
 
+    /* RFC 9001 §5.4.2: discard packets too short for a complete HP sample */
+    ret = xqc_crypto_check_hp_sample(crypto, pktno, end);
+    if (ret != XQC_OK) {
+        return ret;
+    }
+    sample = pktno + 4;
+
     /* generate header protection mask */
-    ret = hp_cipher->hp_mask(hp_cipher, crypto->keys.tx_hp_ctx,
-                             mask, XQC_HP_MASKLEN, &nwrite,                  /* mask */
-                             XQC_FAKE_HP_MASK, sizeof(XQC_FAKE_HP_MASK) - 1, /* plaintext */
-                             hp->base, hp->len,                              /* key */
-                             sample, XQC_HP_SAMPLELEN);                      /* sample */
+    ret = hp_cipher->hp_mask(
+        hp_cipher, crypto->keys.tx_hp_ctx, mask, XQC_HP_MASKLEN, &nwrite, /* mask */
+        XQC_FAKE_HP_MASK, sizeof(XQC_FAKE_HP_MASK) - 1,                   /* plaintext */
+        hp->base, hp->len,                                                /* key */
+        sample, XQC_HP_SAMPLELEN);                                        /* sample */
     if (ret != XQC_OK || nwrite < XQC_HP_MASKLEN) {
         xqc_log(crypto->log, XQC_LOG_ERROR,
                 "|calculate header protection mask error|ret:%d|nwrite:%z|", ret, nwrite);
@@ -255,7 +278,7 @@ xqc_crypto_encrypt_header(xqc_crypto_t *crypto, xqc_pkt_type_t pkt_type, uint8_t
 
 xqc_int_t
 xqc_crypto_decrypt_header(xqc_crypto_t *crypto, xqc_pkt_type_t pkt_type, uint8_t *header,
-    uint8_t *pktno, uint8_t *end)
+                          uint8_t *pktno, uint8_t *end)
 {
     xqc_int_t ret;
     size_t nwrite;
@@ -270,15 +293,25 @@ xqc_crypto_decrypt_header(xqc_crypto_t *crypto, xqc_pkt_type_t pkt_type, uint8_t
 
     /* generate hp mask */
     uint8_t mask[XQC_HP_MASKLEN];
-    uint8_t *sample = pktno + 4;
-    ret = hp_cipher->hp_mask(hp_cipher, crypto->keys.rx_hp_ctx,
-                             mask, XQC_HP_MASKLEN, &nwrite,                     /* mask */
-                             XQC_FAKE_HP_MASK, sizeof(XQC_FAKE_HP_MASK) - 1,    /* ciphertext */
-                             hp->base, hp->len,                                 /* key */
-                             sample, XQC_HP_SAMPLELEN);                         /* sample */
+    uint8_t *sample;
+
+    /* RFC 9001 §5.4.2: discard packets too short for a complete HP sample */
+    ret = xqc_crypto_check_hp_sample(crypto, pktno, end);
+    if (ret != XQC_OK) {
+        return ret;
+    }
+    sample = pktno + 4;
+
+    ret = hp_cipher->hp_mask(
+        hp_cipher, crypto->keys.rx_hp_ctx, mask, XQC_HP_MASKLEN, &nwrite, /* mask */
+        XQC_FAKE_HP_MASK, sizeof(XQC_FAKE_HP_MASK) - 1,                   /* ciphertext */
+        hp->base, hp->len,                                                /* key */
+        sample, XQC_HP_SAMPLELEN);                                        /* sample */
     if (ret != XQC_OK || nwrite < XQC_HP_MASKLEN) {
-        xqc_log(crypto->log, XQC_LOG_ERROR, "|calculate header protection mask error|ret:%d|"
-                "nwrite:%z|", ret, nwrite);
+        xqc_log(crypto->log, XQC_LOG_ERROR,
+                "|calculate header protection mask error|ret:%d|"
+                "nwrite:%z|",
+                ret, nwrite);
         return -XQC_TLS_DECRYPT_DATA_ERROR;
     }
 
@@ -292,7 +325,7 @@ xqc_crypto_decrypt_header(xqc_crypto_t *crypto, xqc_pkt_type_t pkt_type, uint8_t
 
     /* get length of packet number */
     size_t pktno_len = XQC_PACKET_SHORT_HEADER_PKTNO_LEN(header);
-    if (pktno + pktno_len > end) {
+    if (pktno > end || (size_t)(end - pktno) < pktno_len) {
         xqc_log(crypto->log, XQC_LOG_ERROR, "|illegal pkt, pkt num exceed buffer");
         return -XQC_EILLPKT;
     }
@@ -307,21 +340,21 @@ xqc_crypto_decrypt_header(xqc_crypto_t *crypto, xqc_pkt_type_t pkt_type, uint8_t
 
 
 xqc_int_t
-xqc_crypto_encrypt_payload(xqc_crypto_t *crypto,
-    uint64_t pktno, xqc_uint_t key_phase, uint32_t path_id,
-    uint8_t *header, size_t header_len, uint8_t *payload, size_t payload_len,
-    uint8_t *dst, size_t dst_cap, size_t *dst_len)
+xqc_crypto_encrypt_payload(xqc_crypto_t *crypto, uint64_t pktno, xqc_uint_t key_phase,
+                           uint32_t path_id, uint8_t *header, size_t header_len,
+                           uint8_t *payload, size_t payload_len, uint8_t *dst,
+                           size_t dst_cap, size_t *dst_len)
 {
     xqc_int_t ret;
     uint8_t nonce[XQC_NONCE_LEN];
 
     /* aead function and tx key */
     xqc_pkt_protect_aead_t *pp_aead = &crypto->pp_aead;
-    xqc_crypto_km_t        *ckm     = &crypto->keys.tx_ckm[key_phase];
-    if (ckm->key.base == NULL || ckm->key.len == 0
-        || ckm->iv.base == NULL || ckm->iv.len == 0)
-    {
-        xqc_log(crypto->log, XQC_LOG_ERROR, "|pp encrypt key NULL|key_phase:%ui|", key_phase);
+    xqc_crypto_km_t *ckm = &crypto->keys.tx_ckm[key_phase];
+    if (ckm->key.base == NULL || ckm->key.len == 0 || ckm->iv.base == NULL ||
+        ckm->iv.len == 0) {
+        xqc_log(crypto->log, XQC_LOG_ERROR, "|pp encrypt key NULL|key_phase:%ui|",
+                key_phase);
         return -XQC_TLS_ENCRYPT_DATA_ERROR;
     }
 
@@ -329,17 +362,15 @@ xqc_crypto_encrypt_payload(xqc_crypto_t *crypto,
     xqc_crypto_create_nonce(nonce, ckm->iv.base, ckm->iv.len, pktno, path_id);
 
     /* do aead encryption */
-    ret = pp_aead->encrypt(pp_aead, ckm->aead_ctx,
-                           dst, dst_cap, dst_len,         /* dest */
-                           payload, payload_len,          /* plaintext */
-                           ckm->key.base, ckm->key.len,   /* tx key */
-                           nonce, ckm->iv.len,            /* nonce and iv */
-                           header, header_len);           /* ad */
-    if (ret != XQC_OK
-        || *dst_len != (payload_len + xqc_aead_overhead(pp_aead, payload_len)))
-    {
-        xqc_log(crypto->log, XQC_LOG_ERROR,
-                "|encrypt packet error|ret:%d|nwrite:%z|", ret, *dst_len);
+    ret = pp_aead->encrypt(pp_aead, ckm->aead_ctx, dst, dst_cap, dst_len, /* dest */
+                           payload, payload_len,                          /* plaintext */
+                           ckm->key.base, ckm->key.len,                   /* tx key */
+                           nonce, ckm->iv.len,  /* nonce and iv */
+                           header, header_len); /* ad */
+    if (ret != XQC_OK ||
+        *dst_len != (payload_len + xqc_aead_overhead(pp_aead, payload_len))) {
+        xqc_log(crypto->log, XQC_LOG_ERROR, "|encrypt packet error|ret:%d|nwrite:%z|",
+                ret, *dst_len);
         return -XQC_TLS_ENCRYPT_DATA_ERROR;
     }
 
@@ -348,21 +379,21 @@ xqc_crypto_encrypt_payload(xqc_crypto_t *crypto,
 
 
 xqc_int_t
-xqc_crypto_decrypt_payload(xqc_crypto_t *crypto,
-    uint64_t pktno, xqc_uint_t key_phase, uint32_t path_id,
-    uint8_t *header, size_t header_len, uint8_t *payload, size_t payload_len,
-    uint8_t *dst, size_t dst_cap, size_t *dst_len)
+xqc_crypto_decrypt_payload(xqc_crypto_t *crypto, uint64_t pktno, xqc_uint_t key_phase,
+                           uint32_t path_id, uint8_t *header, size_t header_len,
+                           uint8_t *payload, size_t payload_len, uint8_t *dst,
+                           size_t dst_cap, size_t *dst_len)
 {
     xqc_int_t ret;
     uint8_t nonce[XQC_NONCE_LEN];
 
     /* keys for decryption */
     xqc_pkt_protect_aead_t *pp_aead = &crypto->pp_aead;
-    xqc_crypto_km_t        *ckm     = &crypto->keys.rx_ckm[key_phase];
-    if (ckm->key.base == NULL || ckm->key.len == 0
-        || ckm->iv.base == NULL || ckm->iv.len == 0)
-    {
-        xqc_log(crypto->log, XQC_LOG_ERROR, "|decrypt key NULL|key_phase:%ui|", key_phase);
+    xqc_crypto_km_t *ckm = &crypto->keys.rx_ckm[key_phase];
+    if (ckm->key.base == NULL || ckm->key.len == 0 || ckm->iv.base == NULL ||
+        ckm->iv.len == 0) {
+        xqc_log(crypto->log, XQC_LOG_ERROR, "|decrypt key NULL|key_phase:%ui|",
+                key_phase);
         return -XQC_TLS_DECRYPT_DATA_ERROR;
     }
 
@@ -370,18 +401,16 @@ xqc_crypto_decrypt_payload(xqc_crypto_t *crypto,
     xqc_crypto_create_nonce(nonce, ckm->iv.base, ckm->iv.len, pktno, path_id);
 
     /* do aead decryption */
-    ret = pp_aead->decrypt(pp_aead, ckm->aead_ctx,
-                           dst, dst_cap, dst_len,       /* dest */
-                           payload, payload_len,        /* ciphertext */
-                           ckm->key.base, ckm->key.len, /* rx key */
-                           nonce, ckm->iv.len,          /* nonce and iv */
-                           header, header_len);         /* ad */
-    if (ret != XQC_OK
-        || *dst_len != (payload_len - xqc_aead_overhead(pp_aead, payload_len)))
-    {
+    ret = pp_aead->decrypt(pp_aead, ckm->aead_ctx, dst, dst_cap, dst_len, /* dest */
+                           payload, payload_len,                          /* ciphertext */
+                           ckm->key.base, ckm->key.len,                   /* rx key */
+                           nonce, ckm->iv.len,  /* nonce and iv */
+                           header, header_len); /* ad */
+    if (ret != XQC_OK ||
+        *dst_len != (payload_len - xqc_aead_overhead(pp_aead, payload_len))) {
         /* decrypt error might be common */
-        xqc_log(crypto->log, XQC_LOG_INFO,
-                "|decrypt payload error|ret:%d|write:%z|", ret, *dst_len);
+        xqc_log(crypto->log, XQC_LOG_INFO, "|decrypt payload error|ret:%d|write:%z|", ret,
+                *dst_len);
         return -XQC_TLS_DECRYPT_DATA_ERROR;
     }
 
@@ -392,8 +421,9 @@ xqc_crypto_decrypt_payload(xqc_crypto_t *crypto,
 /* derive packet protection keys and store them in xqc_crypto_t */
 
 xqc_int_t
-xqc_crypto_derive_packet_protection_key(xqc_crypto_t *crypto, uint8_t *dest, size_t destcap,
-    size_t *destlen, const uint8_t *secret, size_t secretlen)
+xqc_crypto_derive_packet_protection_key(xqc_crypto_t *crypto, uint8_t *dest,
+                                        size_t destcap, size_t *destlen,
+                                        const uint8_t *secret, size_t secretlen)
 {
     static uint8_t LABEL[] = "quic key";
 
@@ -402,8 +432,8 @@ xqc_crypto_derive_packet_protection_key(xqc_crypto_t *crypto, uint8_t *dest, siz
         return -XQC_TLS_DERIVE_KEY_ERROR;
     }
 
-    xqc_int_t ret = xqc_hkdf_expand_label(dest, keylen, secret, secretlen,
-                                          LABEL, xqc_lengthof(LABEL), &crypto->md);
+    xqc_int_t ret = xqc_hkdf_expand_label(dest, keylen, secret, secretlen, LABEL,
+                                          xqc_lengthof(LABEL), &crypto->md);
     if (ret != XQC_OK) {
         return -XQC_TLS_DERIVE_KEY_ERROR;
     }
@@ -413,22 +443,23 @@ xqc_crypto_derive_packet_protection_key(xqc_crypto_t *crypto, uint8_t *dest, siz
 }
 
 xqc_int_t
-xqc_crypto_derive_packet_protection_iv(xqc_crypto_t *crypto, uint8_t *dest, size_t destcap,
-    size_t *destlen, const uint8_t *secret, size_t secretlen)
+xqc_crypto_derive_packet_protection_iv(xqc_crypto_t *crypto, uint8_t *dest,
+                                       size_t destcap, size_t *destlen,
+                                       const uint8_t *secret, size_t secretlen)
 {
     static uint8_t LABEL[] = "quic iv";
 
-    /* 
+    /*
      * he Length provided with "quic iv" is the minimum length of the AEAD nonce
-     * or 8 bytes if that is larger 
+     * or 8 bytes if that is larger
      */
     size_t ivlen = xqc_max(8, crypto->pp_aead.noncelen);
     if (ivlen > destcap) {
         return -XQC_TLS_DERIVE_KEY_ERROR;
     }
 
-    xqc_int_t ret = xqc_hkdf_expand_label(dest, ivlen, secret, secretlen,
-                                          LABEL, xqc_lengthof(LABEL), &crypto->md);
+    xqc_int_t ret = xqc_hkdf_expand_label(dest, ivlen, secret, secretlen, LABEL,
+                                          xqc_lengthof(LABEL), &crypto->md);
     if (ret != XQC_OK) {
         return -XQC_TLS_DERIVE_KEY_ERROR;
     }
@@ -438,8 +469,9 @@ xqc_crypto_derive_packet_protection_iv(xqc_crypto_t *crypto, uint8_t *dest, size
 }
 
 xqc_int_t
-xqc_crypto_derive_header_protection_key(xqc_crypto_t *crypto, uint8_t *dest, size_t destcap,
-    size_t *destlen, const uint8_t *secret, size_t secretlen)
+xqc_crypto_derive_header_protection_key(xqc_crypto_t *crypto, uint8_t *dest,
+                                        size_t destcap, size_t *destlen,
+                                        const uint8_t *secret, size_t secretlen)
 {
     static uint8_t LABEL[] = "quic hp";
 
@@ -448,8 +480,8 @@ xqc_crypto_derive_header_protection_key(xqc_crypto_t *crypto, uint8_t *dest, siz
         return -XQC_TLS_DERIVE_KEY_ERROR;
     }
 
-    xqc_int_t ret = xqc_hkdf_expand_label(dest, keylen, secret, secretlen,
-                                          LABEL, xqc_lengthof(LABEL), &crypto->md);
+    xqc_int_t ret = xqc_hkdf_expand_label(dest, keylen, secret, secretlen, LABEL,
+                                          xqc_lengthof(LABEL), &crypto->md);
     if (ret != XQC_OK) {
         return -XQC_TLS_DERIVE_KEY_ERROR;
     }
@@ -462,16 +494,18 @@ xqc_crypto_derive_header_protection_key(xqc_crypto_t *crypto, uint8_t *dest, siz
 
 xqc_int_t
 xqc_crypto_derive_keys(xqc_crypto_t *crypto, const uint8_t *secret, size_t secretlen,
-    xqc_key_type_t type)
+                       xqc_key_type_t type)
 {
     /* derive packet protection keys (includes key & iv & hp) */
-    uint8_t key[XQC_MAX_KNP_LEN] = {0}, iv[XQC_MAX_KNP_LEN] = {0}, hp[XQC_MAX_KNP_LEN] = {0}; 
-    size_t  keycap = XQC_MAX_KNP_LEN,   ivcap = XQC_MAX_KNP_LEN,   hpcap = XQC_MAX_KNP_LEN;
-    size_t  keylen = 0,                 ivlen = 0,                 hplen = 0;
+    uint8_t key[XQC_MAX_KNP_LEN] = {0}, iv[XQC_MAX_KNP_LEN] = {0},
+            hp[XQC_MAX_KNP_LEN] = {0};
+    size_t keycap = XQC_MAX_KNP_LEN, ivcap = XQC_MAX_KNP_LEN, hpcap = XQC_MAX_KNP_LEN;
+    size_t keylen = 0, ivlen = 0, hplen = 0;
 
     xqc_int_t ret;
 
-    ret = xqc_crypto_derive_packet_protection_key(crypto, key, keycap, &keylen, secret, secretlen);
+    ret = xqc_crypto_derive_packet_protection_key(crypto, key, keycap, &keylen, secret,
+                                                  secretlen);
     if (ret != XQC_OK || keylen <= 0) {
         xqc_log(crypto->log, XQC_LOG_ERROR,
                 "|xqc_crypto_derive_packet_protection_key failed|ret:%d|", ret);
@@ -479,14 +513,16 @@ xqc_crypto_derive_keys(xqc_crypto_t *crypto, const uint8_t *secret, size_t secre
     }
 
 
-    ret = xqc_crypto_derive_packet_protection_iv(crypto, iv, ivcap, &ivlen, secret, secretlen);
+    ret = xqc_crypto_derive_packet_protection_iv(crypto, iv, ivcap, &ivlen, secret,
+                                                 secretlen);
     if (ret != XQC_OK || ivlen <= 0) {
         xqc_log(crypto->log, XQC_LOG_ERROR,
                 "|xqc_crypto_derive_packet_protection_iv failed|ret:%d|", ret);
         return ret;
     }
 
-    ret = xqc_crypto_derive_header_protection_key(crypto, hp, hpcap, &hplen, secret, secretlen);
+    ret = xqc_crypto_derive_header_protection_key(crypto, hp, hpcap, &hplen, secret,
+                                                  secretlen);
     if (ret != XQC_OK || hplen <= 0) {
         xqc_log(crypto->log, XQC_LOG_ERROR,
                 "|xqc_crypto_derive_header_protection_key failed|ret:%d|", ret);
@@ -548,19 +584,15 @@ xqc_crypto_derive_keys(xqc_crypto_t *crypto, const uint8_t *secret, size_t secre
 }
 
 xqc_int_t
-xqc_crypto_save_application_traffic_secret_0(xqc_crypto_t *crypto,
-    const uint8_t *secret, size_t secretlen, xqc_key_type_t type)
+xqc_crypto_save_application_traffic_secret_0(xqc_crypto_t *crypto, const uint8_t *secret,
+                                             size_t secretlen, xqc_key_type_t type)
 {
     xqc_crypto_km_t *ckm;
     switch (type) {
-    case XQC_KEY_TYPE_RX_READ:
-        ckm = &crypto->keys.rx_ckm[crypto->key_phase];
-        break;
+    case XQC_KEY_TYPE_RX_READ: ckm = &crypto->keys.rx_ckm[crypto->key_phase]; break;
 
-    case XQC_KEY_TYPE_TX_WRITE:
-        ckm = &crypto->keys.tx_ckm[crypto->key_phase];
-        break;
-    
+    case XQC_KEY_TYPE_TX_WRITE: ckm = &crypto->keys.tx_ckm[crypto->key_phase]; break;
+
     default:
         xqc_log(crypto->log, XQC_LOG_ERROR, "|illegal crypto secret type|type:%d|", type);
         return -XQC_TLS_INVALID_ARGUMENT;
@@ -585,9 +617,7 @@ xqc_crypto_is_key_ready(xqc_crypto_t *crypto, xqc_key_type_t type)
         hp = &crypto->keys.tx_hp;
     }
 
-    if (!km->key.base || km->key.len == 0
-        || !km->iv.base || km->iv.len == 0)
-    {
+    if (!km->key.base || km->key.len == 0 || !km->iv.base || km->iv.len == 0) {
         return XQC_FALSE;
     }
 
@@ -602,13 +632,15 @@ xqc_crypto_is_key_ready(xqc_crypto_t *crypto, xqc_key_type_t type)
 /* derive initial secret (for initial encryption level) */
 
 xqc_int_t
-xqc_crypto_derive_initial_secret(uint8_t *cli_initial_secret, size_t cli_initial_secret_len,
-    uint8_t *svr_initial_secret, size_t svr_initial_secret_len, const xqc_cid_t *cid,
-    const uint8_t *salt, size_t saltlen)
+xqc_crypto_derive_initial_secret(uint8_t *cli_initial_secret,
+                                 size_t cli_initial_secret_len,
+                                 uint8_t *svr_initial_secret,
+                                 size_t svr_initial_secret_len, const xqc_cid_t *cid,
+                                 const uint8_t *salt, size_t saltlen)
 {
     static uint8_t LABEL_SVR_IN[] = "server in";
     static uint8_t LABEL_CLI_IN[] = "client in";
-    uint8_t initial_secret[INITIAL_SECRET_MAX_LEN] = {0};   /* the common initial secret */
+    uint8_t initial_secret[INITIAL_SECRET_MAX_LEN] = {0}; /* the common initial secret */
 
     xqc_digest_t md;
     xqc_digest_init_to_sha256(&md);
@@ -622,16 +654,16 @@ xqc_crypto_derive_initial_secret(uint8_t *cli_initial_secret, size_t cli_initial
 
     /* derive client initial secret for packet protection */
     ret = xqc_hkdf_expand_label(cli_initial_secret, cli_initial_secret_len,
-                                initial_secret, INITIAL_SECRET_MAX_LEN,
-                                LABEL_CLI_IN, xqc_lengthof(LABEL_CLI_IN), &md);
+                                initial_secret, INITIAL_SECRET_MAX_LEN, LABEL_CLI_IN,
+                                xqc_lengthof(LABEL_CLI_IN), &md);
     if (ret != XQC_OK) {
         return ret;
     }
 
     /* derive server initial secret for packet protection */
     ret = xqc_hkdf_expand_label(svr_initial_secret, svr_initial_secret_len,
-                                initial_secret, INITIAL_SECRET_MAX_LEN,
-                                LABEL_SVR_IN, xqc_lengthof(LABEL_SVR_IN), &md);
+                                initial_secret, INITIAL_SECRET_MAX_LEN, LABEL_SVR_IN,
+                                xqc_lengthof(LABEL_SVR_IN), &md);
     if (ret != XQC_OK) {
         return ret;
     }
@@ -681,8 +713,8 @@ xqc_crypto_derive_updated_keys(xqc_crypto_t *crypto, xqc_key_type_t type)
     }
 
     ret = xqc_hkdf_expand_label(dest_buf, current_ckm->secret.len,
-                                current_ckm->secret.base, current_ckm->secret.len,
-                                LABEL, xqc_lengthof(LABEL), &crypto->md);
+                                current_ckm->secret.base, current_ckm->secret.len, LABEL,
+                                xqc_lengthof(LABEL), &crypto->md);
     if (ret != XQC_OK) {
         return -XQC_TLS_UPDATE_KEY_ERROR;
     }
@@ -690,22 +722,20 @@ xqc_crypto_derive_updated_keys(xqc_crypto_t *crypto, xqc_key_type_t type)
 
 
     /* derive packet protection key with new secret */
-    uint8_t key[XQC_MAX_KNP_LEN] = {0}, iv[XQC_MAX_KNP_LEN] = {0}; 
-    size_t  keycap = XQC_MAX_KNP_LEN,   ivcap = XQC_MAX_KNP_LEN;
-    size_t  keylen = 0,                 ivlen = 0;
+    uint8_t key[XQC_MAX_KNP_LEN] = {0}, iv[XQC_MAX_KNP_LEN] = {0};
+    size_t keycap = XQC_MAX_KNP_LEN, ivcap = XQC_MAX_KNP_LEN;
+    size_t keylen = 0, ivlen = 0;
 
-    ret = xqc_crypto_derive_packet_protection_key(crypto, key, keycap, &keylen,
-                                                  updated_ckm->secret.base,
-                                                  updated_ckm->secret.len);
+    ret = xqc_crypto_derive_packet_protection_key(
+        crypto, key, keycap, &keylen, updated_ckm->secret.base, updated_ckm->secret.len);
     if (ret != XQC_OK || keylen <= 0) {
         xqc_log(crypto->log, XQC_LOG_ERROR,
                 "|xqc_crypto_derive_packet_protection_key failed|ret:%d|", ret);
         return -XQC_TLS_UPDATE_KEY_ERROR;
     }
 
-    ret = xqc_crypto_derive_packet_protection_iv(crypto, iv, ivcap, &ivlen,
-                                                 updated_ckm->secret.base,
-                                                 updated_ckm->secret.len);
+    ret = xqc_crypto_derive_packet_protection_iv(
+        crypto, iv, ivcap, &ivlen, updated_ckm->secret.base, updated_ckm->secret.len);
     if (ret != XQC_OK || ivlen <= 0) {
         xqc_log(crypto->log, XQC_LOG_ERROR,
                 "|xqc_crypto_derive_packet_protection_iv failed|ret:%d|", ret);
@@ -740,31 +770,27 @@ xqc_crypto_discard_old_keys(xqc_crypto_t *crypto)
 }
 
 xqc_int_t
-xqc_crypto_aead_encrypt(xqc_crypto_t *crypto,
-    const uint8_t *plaintext, size_t plaintextlen,
-    const uint8_t *key, size_t keylen,
-    const uint8_t *nonce, size_t noncelen,
-    const uint8_t *ad, size_t adlen,
-    uint8_t *dst, size_t dst_cap, size_t *dst_len)
+xqc_crypto_aead_encrypt(xqc_crypto_t *crypto, const uint8_t *plaintext,
+                        size_t plaintextlen, const uint8_t *key, size_t keylen,
+                        const uint8_t *nonce, size_t noncelen, const uint8_t *ad,
+                        size_t adlen, uint8_t *dst, size_t dst_cap, size_t *dst_len)
 {
     xqc_int_t ret;
     xqc_pkt_protect_aead_t *pp_aead = &crypto->pp_aead;
 
-    void *aead_ctx = xqc_aead_ctx_new(&crypto->pp_aead, XQC_KEY_TYPE_TX_WRITE, key, noncelen);
+    void *aead_ctx =
+        xqc_aead_ctx_new(&crypto->pp_aead, XQC_KEY_TYPE_TX_WRITE, key, noncelen);
     if (!aead_ctx) {
         return -XQC_TLS_INVALID_ARGUMENT;
     }
 
     /* do aead encryption */
-    ret = pp_aead->encrypt(pp_aead, aead_ctx, dst, dst_cap, dst_len,
-                           plaintext, plaintextlen,
-                           key, keylen,
-                           nonce, noncelen,
-                           ad, adlen);
+    ret = pp_aead->encrypt(pp_aead, aead_ctx, dst, dst_cap, dst_len, plaintext,
+                           plaintextlen, key, keylen, nonce, noncelen, ad, adlen);
 
     if (ret != XQC_OK) {
-        xqc_log(crypto->log, XQC_LOG_ERROR,
-                "|encrypt packet error|ret:%d|nwrite:%z|", ret, *dst_len);
+        xqc_log(crypto->log, XQC_LOG_ERROR, "|encrypt packet error|ret:%d|nwrite:%z|",
+                ret, *dst_len);
         goto end;
     }
 

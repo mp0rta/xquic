@@ -151,8 +151,13 @@ xqc_test_mp21_drive_path_new_cid_parser(uint8_t len_byte)
     xqc_cid_t new_cid;
     memset(&new_cid, 0, sizeof(new_cid));
     uint64_t retire_prior_to = 0, path_id = 0;
-    return (int)xqc_parse_mp_new_conn_id_frame(&packet_in, &new_cid, &retire_prior_to,
-                                               &path_id, NULL);
+    /* Parser logs via conn->log on the accept path; pass a real conn (not NULL)
+     * so the success cases don't NULL-deref. */
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(NULL);
+    int ret = (int)xqc_parse_mp_new_conn_id_frame(&packet_in, &new_cid, &retire_prior_to,
+                                                   &path_id, conn);
+    xqc_test_mp21_free_conn(conn);
+    return ret;
 }
 
 void

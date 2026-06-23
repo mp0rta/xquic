@@ -125,6 +125,8 @@ if(HAVE_CUNIT)
         ${UNIT_TEST_DIR}/xqc_test_helpers.c
         ${UNIT_TEST_DIR}/xqc_test_path_hard_cap.c
         ${UNIT_TEST_DIR}/xqc_set_conn_settings_test.c
+        ${UNIT_TEST_DIR}/xqc_crypto_frame_test.c
+        ${UNIT_TEST_DIR}/xqc_dos_e2e_test.c
         ${UNIT_TEST_DIR}/xqc_wlb_test.c
     )
 
@@ -176,7 +178,8 @@ if(HAVE_CUNIT)
         ${CUTEST_DEPEND_LIBS}
     )
 
-    add_test(run_tests run_tests)
+    add_test(NAME run_tests COMMAND run_tests)
+    set_tests_properties(run_tests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
     add_dependencies(check run_tests)
 endif()
-
