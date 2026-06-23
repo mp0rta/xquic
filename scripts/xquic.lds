@@ -72,6 +72,7 @@ XQUIC_VERS_1.0 {
         xqc_backup_scheduler_cb;
         xqc_backup_fec_scheduler_cb;
         xqc_rap_scheduler_cb;
+        xqc_wlb_scheduler_cb;
         xqc_conn_is_ready_to_send_early_data;
         xqc_h3_conn_send_ping;
         xqc_conn_send_ping;
@@ -90,6 +91,7 @@ XQUIC_VERS_1.0 {
         xqc_engine_unregister_alpn;
         xqc_engine_get_alpn_ctx;
         xqc_conn_set_alp_user_data;
+        xqc_get_conn_alp_user_data_by_stream;
         xqc_h3_request_finish;
         xqc_conn_close_with_error;
         xqc_h3_engine_set_qpack_compat_duplicate;
