@@ -391,15 +391,14 @@ xqc_server_datagram_read_callback(xqc_connection_t *conn, void *user_data,
             if (user_conn->dgram_blk->data_recv + data_len >
                 user_conn->dgram_blk->data_len) {
                 // expand buffer size
+                size_t old_len = user_conn->dgram_blk->data_len;
                 size_t new_len = (user_conn->dgram_blk->data_recv + data_len) << 1;
-                unsigned char *new_data = calloc(1, new_len);
+                unsigned char *new_data = realloc(user_conn->dgram_blk->data, new_len);
                 if (new_data == NULL) {
                     return;
                 }
-                memcpy(new_data, user_conn->dgram_blk->data,
-                       user_conn->dgram_blk->data_recv);
-                if (user_conn->dgram_blk->data) {
-                    free(user_conn->dgram_blk->data);
+                if (new_len > old_len) {
+                    memset(new_data + old_len, 0, new_len - old_len);
                 }
                 user_conn->dgram_blk->data = new_data;
                 user_conn->dgram_blk->data_len = new_len;
