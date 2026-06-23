@@ -48,6 +48,7 @@
 #include "xqc_set_conn_settings_test.h"
 #include "xqc_crypto_frame_test.h"
 #include "xqc_dos_e2e_test.h"
+#include "xqc_wlb_test.h"
 
 static int
 xqc_init_suite(void)
@@ -288,6 +289,18 @@ main()
                      xqc_test_dos_crypto_frame_flood_recv_path) ||
         !CU_add_test(pSuite, "xqc_test_h3_blocked_buf_limit",
                      xqc_test_h3_blocked_buf_limit)
+        || !CU_add_test(pSuite, "xqc_test_wlb_asym_p1_pin_to_wide",
+                        xqc_test_wlb_asym_p1_pin_to_wide)
+        || !CU_add_test(pSuite, "xqc_test_wlb_asym_p1_pin_to_wide_when_wide_blocked",
+                        xqc_test_wlb_asym_p1_pin_to_wide_when_wide_blocked)
+        || !CU_add_test(pSuite, "xqc_test_wlb_soft_pin_no_repin_on_block",
+                        xqc_test_wlb_soft_pin_no_repin_on_block)
+        || !CU_add_test(pSuite, "xqc_test_wlb_sym_multiflow_distributes",
+                        xqc_test_wlb_sym_multiflow_distributes)
+        || !CU_add_test(pSuite, "xqc_test_wlb_recovery_prefer_skips_initial_path_addition",
+                        xqc_test_wlb_recovery_prefer_skips_initial_path_addition)
+        || !CU_add_test(pSuite, "xqc_test_wlb_recovery_prefer_fires_after_real_failover",
+                        xqc_test_wlb_recovery_prefer_fires_after_real_failover)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();
