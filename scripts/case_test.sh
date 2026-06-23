@@ -441,6 +441,20 @@ fi
 
 
 clear_log
+echo -e "forbidden_header_e2e ...\c"
+${CLIENT_BIN} -s 5120 -l d -t 1 -E -x 55 >> clog
+forbidden_ok=`grep "forbidden_header_rejected:1" clog`
+echo_ok=`grep ">>>>>>>> pass:1" clog`
+if [ -n "$forbidden_ok" ] && [ -n "$echo_ok" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "forbidden_header_e2e" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "forbidden_header_e2e" "fail"
+fi
+
+
+clear_log
 echo -e "user close connection ...\c"
 ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -x 2 >> clog
 if grep "<==.*CONNECTION_CLOSE" clog >/dev/null && grep "==>.*CONNECTION_CLOSE" clog >/dev/null; then
@@ -1266,12 +1280,14 @@ killall test_server
 echo -e "client Initial scid corruption ...\c"
 ${SERVER_BIN} -l d -e > /dev/null &
 sleep 1
-client_print_res=`${CLIENT_BIN} -s 1024000 -l d -t 1 -x 23 -E | grep ">>>>>>>> pass"`
+client_print_res=`${CLIENT_BIN} -s 1024000 -l d -t 1 -x 23 -E | grep ">>>>>>>> pass:1"`
 errlog=`grep_err_log`
-server_log_res=`grep "decrypt data error" slog`
-server_dcid_res=`grep "dcid change" slog`
+server_iscid_res=`grep "iscid mismatch" slog`
 echo "$client_print_res"
-if [ "$client_print_res" != "" ] && [ "$server_log_res" != NULL ] && [ "$server_dcid_res" != NULL ]; then
+# After ISCID validation, server detects the corrupted SCID does not match
+# the client's transport-parameter ISCID and closes the connection, so client
+# fails the transfer (no pass:1) and server logs iscid mismatch.
+if [ "$client_print_res" == "" ] && [ "$server_iscid_res" != "" ]; then
     case_print_result "client_initial_scid_corruption" "pass"
 else
     case_print_result "client_initial_scid_corruption" "fail"
@@ -1522,11 +1538,29 @@ fi
 
 
 killall test_server
-${SERVER_BIN} -l d -x 13 > /dev/null &
+# Start the server without -x 13. The previous "idle_time_out = 1000"
+# trick relied on a small max_idle_timeout transport parameter to force
+# the server to discard its connection state quickly; after RFC 9000
+# Section 10.1 negotiation (PR #758) the client now takes the minimum
+# of both advertised values, so a 1 s server-side TP would also kill
+# the client well before the wake-up packet that the test relies on.
+# Restart the server mid-test instead: it cleans up its connection
+# state silently, then the new instance generates the stateless reset
+# from the same default reset_token_key.
+${SERVER_BIN} -l d > /dev/null &
 sleep 1
 clear_log
 echo -e "stateless reset...\c"
-${CLIENT_BIN} -l d -x 41 -1 -t 5 > stdlog
+${CLIENT_BIN} -l d -x 41 -1 -t 8 > stdlog &
+CLIENT_PID=$!
+# Allow the handshake to finish, the two tracked short-header packets
+# to be sent, and the 3 s outbound black-hole inside the client to
+# begin before the server is recycled.
+sleep 2
+killall test_server
+sleep 0.2
+${SERVER_BIN} -l d > /dev/null &
+wait $CLIENT_PID
 result=`grep "|====>|receive stateless reset" clog`
 cloing_notify=`grep "conn closing: 641" stdlog`
 if [ -n "$result" ] && [ -n "$cloing_notify" ]; then
@@ -1540,7 +1574,17 @@ fi
 
 clear_log
 echo -e "stateless reset during hsk...\c"
-${CLIENT_BIN} -l d  -t 5 -x 45 -1 -s 100 -G > stdlog
+${CLIENT_BIN} -l d  -t 12 -x 45 -1 -s 100 -G > stdlog &
+CLIENT_PID=$!
+# Same pattern as above. The client opens the black-hole on the first
+# Handshake-level or short-header outbound packet, so 2 s gives Initial
+# exchange plus the start of the 10 s drop window before we recycle
+# the server.
+sleep 2
+killall test_server
+sleep 0.2
+${SERVER_BIN} -l d > /dev/null &
+wait $CLIENT_PID
 result=`grep "|====>|receive stateless reset" clog`
 cloing_notify=`grep "conn closing: 641" stdlog`
 svr_hsk=`grep "handshake_time:0" slog`
@@ -4979,6 +5023,28 @@ if [ "$cli_res1" -gt 0 ] && [ "$svr_res1" -gt 0 ]; then
 else
     echo ">>>>>>>> pass:0"
     case_print_result "ack_timestamp_frame_case_6" "fail"
+fi
+
+killall test_server 2> /dev/null
+> svr_stdlog
+stdbuf -oL ${SERVER_BIN} -l d -e -x 48 > svr_stdlog &
+sleep 1
+
+rm -f test_session tp_localhost xqc_token
+
+clear_log
+echo -e "initial salt v1 key derivation ...\c"
+${CLIENT_BIN} -s 1024 -l d -t 1 -E -x 48 > stdlog
+result=`grep ">>>>>>>> pass" stdlog`
+salt_cli=`grep "\[initial-salt-test\] handshake ok, conn_err:0" stdlog`
+salt_svr=`grep -a "\[initial-salt-test\] server handshake ok, conn_err:0" svr_stdlog`
+errlog=`grep "derive initial secret error" clog slog`
+if [ "$result" == ">>>>>>>> pass:1" ] && [ -n "$salt_cli" ] && [ -n "$salt_svr" ] && [ -z "$errlog" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "initial_salt_v1_key_derivation" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "initial_salt_v1_key_derivation" "fail"
 fi
 
 cd -

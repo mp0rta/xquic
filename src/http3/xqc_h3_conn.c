@@ -12,29 +12,29 @@
 
 
 const xqc_h3_conn_settings_t default_local_h3_conn_settings = {
-    .max_pushes                     = 0,
-    .max_field_section_size         = XQC_H3_MAX_FIELD_SECTION_SIZE,
-    .qpack_blocked_streams          = XQC_QPACK_MAX_BLOCK_STREAM,
-    .qpack_enc_max_table_capacity   = XQC_QPACK_MAX_TABLE_CAPACITY,
-    .qpack_dec_max_table_capacity   = XQC_QPACK_MAX_TABLE_CAPACITY,
+    .max_pushes = 0,
+    .max_field_section_size = XQC_H3_MAX_FIELD_SECTION_SIZE,
+    .qpack_blocked_streams = XQC_QPACK_MAX_BLOCK_STREAM,
+    .qpack_enc_max_table_capacity = XQC_QPACK_MAX_TABLE_CAPACITY,
+    .qpack_dec_max_table_capacity = XQC_QPACK_MAX_TABLE_CAPACITY,
 #ifdef XQC_COMPAT_DUPLICATE
-    .qpack_compat_duplicate         = XQC_FALSE,
+    .qpack_compat_duplicate = XQC_FALSE,
 #endif
-    .enable_connect_protocol        = 0,
-    .h3_datagram                    = 1,
+    .enable_connect_protocol = 0,
+    .h3_datagram = 1,
 };
 
 const xqc_h3_conn_settings_t default_peer_h3_conn_settings = {
-    .max_pushes                     = XQC_H3_SETTINGS_UNSET,
-    .max_field_section_size         = XQC_H3_SETTINGS_UNSET,
-    .qpack_blocked_streams          = XQC_H3_SETTINGS_UNSET,
-    .qpack_enc_max_table_capacity   = XQC_H3_SETTINGS_UNSET,
-    .qpack_dec_max_table_capacity   = XQC_H3_SETTINGS_UNSET,
+    .max_pushes = XQC_H3_SETTINGS_UNSET,
+    .max_field_section_size = XQC_H3_SETTINGS_UNSET,
+    .qpack_blocked_streams = XQC_H3_SETTINGS_UNSET,
+    .qpack_enc_max_table_capacity = XQC_H3_SETTINGS_UNSET,
+    .qpack_dec_max_table_capacity = XQC_H3_SETTINGS_UNSET,
 #ifdef XQC_COMPAT_DUPLICATE
-    .qpack_compat_duplicate         = XQC_FALSE,
+    .qpack_compat_duplicate = XQC_FALSE,
 #endif
-    .enable_connect_protocol        = 0,
-    .h3_datagram                    = 0,
+    .enable_connect_protocol = 0,
+    .h3_datagram = 0,
 };
 
 
@@ -42,9 +42,9 @@ const xqc_h3_conn_settings_t default_peer_h3_conn_settings = {
  * @brief structure and functions for blocked stream
  */
 typedef struct xqc_h3_blocked_stream_s {
-    xqc_list_head_t          head;
-    xqc_h3_stream_t         *h3s;
-    uint64_t                 ricnt;
+    xqc_list_head_t head;
+    xqc_h3_stream_t *h3s;
+    uint64_t ricnt;
 } xqc_h3_blocked_stream_t;
 
 xqc_h3_blocked_stream_t *
@@ -68,8 +68,7 @@ xqc_h3_blocked_stream_free(xqc_h3_blocked_stream_t *blocked_stream)
 }
 
 /* destroy blocked streams and related h3 stream */
-void
-xqc_h3_conn_destroy_blocked_stream_list(xqc_h3_conn_t *h3c);
+void xqc_h3_conn_destroy_blocked_stream_list(xqc_h3_conn_t *h3c);
 
 
 /**
@@ -80,18 +79,21 @@ xqc_h3_engine_set_dec_max_dtable_capacity(xqc_engine_t *engine, size_t value)
 {
     xqc_h3_conn_settings_t *settings;
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3),
+                                             &settings) == XQC_OK) {
         settings->qpack_dec_max_table_capacity = value;
     }
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(
+            engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
         settings->qpack_dec_max_table_capacity = value;
     }
 
     if (engine->config->enable_h3_ext) {
-        if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
+        if (xqc_h3_ctx_get_default_conn_settings(
+                engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
             settings->qpack_dec_max_table_capacity = value;
-        } 
+        }
     }
 }
 
@@ -100,18 +102,21 @@ xqc_h3_engine_set_enc_max_dtable_capacity(xqc_engine_t *engine, size_t value)
 {
     xqc_h3_conn_settings_t *settings;
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3),
+                                             &settings) == XQC_OK) {
         settings->qpack_enc_max_table_capacity = value;
     }
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(
+            engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
         settings->qpack_enc_max_table_capacity = value;
     }
 
     if (engine->config->enable_h3_ext) {
-        if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
+        if (xqc_h3_ctx_get_default_conn_settings(
+                engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
             settings->qpack_enc_max_table_capacity = value;
-        } 
+        }
     }
 }
 
@@ -120,21 +125,24 @@ xqc_h3_engine_set_max_dtable_capacity(xqc_engine_t *engine, size_t capacity)
 {
     xqc_h3_conn_settings_t *settings;
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3),
+                                             &settings) == XQC_OK) {
         settings->qpack_enc_max_table_capacity = capacity;
         settings->qpack_dec_max_table_capacity = capacity;
     }
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(
+            engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
         settings->qpack_enc_max_table_capacity = capacity;
         settings->qpack_dec_max_table_capacity = capacity;
     }
 
     if (engine->config->enable_h3_ext) {
-        if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
+        if (xqc_h3_ctx_get_default_conn_settings(
+                engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
             settings->qpack_enc_max_table_capacity = capacity;
             settings->qpack_dec_max_table_capacity = capacity;
-        } 
+        }
     }
 }
 
@@ -143,38 +151,44 @@ xqc_h3_engine_set_max_field_section_size(xqc_engine_t *engine, size_t size)
 {
     xqc_h3_conn_settings_t *settings;
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3),
+                                             &settings) == XQC_OK) {
         settings->max_field_section_size = size;
     }
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(
+            engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
         settings->max_field_section_size = size;
     }
 
     if (engine->config->enable_h3_ext) {
-        if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
+        if (xqc_h3_ctx_get_default_conn_settings(
+                engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
             settings->max_field_section_size = size;
-        } 
+        }
     }
 }
 
-void 
+void
 xqc_h3_engine_set_qpack_blocked_streams(xqc_engine_t *engine, size_t value)
 {
     xqc_h3_conn_settings_t *settings;
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3),
+                                             &settings) == XQC_OK) {
         settings->qpack_blocked_streams = value;
     }
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(
+            engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
         settings->qpack_blocked_streams = value;
     }
 
     if (engine->config->enable_h3_ext) {
-        if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
+        if (xqc_h3_ctx_get_default_conn_settings(
+                engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
             settings->qpack_blocked_streams = value;
-        } 
+        }
     }
 }
 
@@ -184,18 +198,21 @@ xqc_h3_engine_set_qpack_compat_duplicate(xqc_engine_t *engine, xqc_bool_t cmpt)
 {
     xqc_h3_conn_settings_t *settings;
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3),
+                                             &settings) == XQC_OK) {
         settings->qpack_compat_duplicate = cmpt;
     }
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(
+            engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
         settings->qpack_compat_duplicate = cmpt;
     }
 
     if (engine->config->enable_h3_ext) {
-        if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
+        if (xqc_h3_ctx_get_default_conn_settings(
+                engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
             settings->qpack_compat_duplicate = cmpt;
-        } 
+        }
     }
 }
 #endif
@@ -203,13 +220,14 @@ xqc_h3_engine_set_qpack_compat_duplicate(xqc_engine_t *engine, xqc_bool_t cmpt)
 
 const xqc_cid_t *
 xqc_h3_connect(xqc_engine_t *engine, const xqc_conn_settings_t *conn_settings,
-    const unsigned char *token, unsigned token_len, const char *server_host, int no_crypto_flag,
-    const xqc_conn_ssl_config_t *conn_ssl_config, const struct sockaddr *peer_addr,
-    socklen_t peer_addrlen, void *user_data)
+               const unsigned char *token, unsigned token_len, const char *server_host,
+               int no_crypto_flag, const xqc_conn_ssl_config_t *conn_ssl_config,
+               const struct sockaddr *peer_addr, socklen_t peer_addrlen, void *user_data)
 {
     xqc_connection_t *conn;
-    conn = xqc_client_connect(engine, conn_settings, token, token_len, server_host, no_crypto_flag, 
-                              conn_ssl_config, xqc_h3_alpn[conn_settings->proto_version], peer_addr,
+    conn = xqc_client_connect(engine, conn_settings, token, token_len, server_host,
+                              no_crypto_flag, conn_ssl_config,
+                              xqc_h3_alpn[conn_settings->proto_version], peer_addr,
                               peer_addrlen, user_data);
     if (!conn) {
         xqc_log(engine->log, XQC_LOG_ERROR, "|xqc_client_connect error|");
@@ -230,7 +248,7 @@ xqc_h3_conn_close(xqc_engine_t *engine, const xqc_cid_t *cid)
 xqc_connection_t *
 xqc_h3_conn_get_xqc_conn(xqc_h3_conn_t *h3_conn)
 {
-    return  XQC_LIKELY(h3_conn) ? h3_conn->conn : NULL;
+    return XQC_LIKELY(h3_conn) ? h3_conn->conn : NULL;
 }
 
 
@@ -249,44 +267,46 @@ xqc_h3_conn_get_ssl(xqc_h3_conn_t *h3_conn)
         return xqc_conn_get_ssl(h3_conn->conn);
     }
 
-   return NULL;
+    return NULL;
 }
 
 
 void
-xqc_h3_conn_set_user_data(xqc_h3_conn_t *h3_conn,
-                          void *user_data)
+xqc_h3_conn_set_user_data(xqc_h3_conn_t *h3_conn, void *user_data)
 {
     h3_conn->user_data = user_data;
     xqc_conn_set_transport_user_data(h3_conn->conn, user_data);
 }
 
 
-void 
-xqc_h3_engine_set_local_settings(xqc_engine_t *engine, 
-    const xqc_h3_conn_settings_t *h3_conn_settings)
+void
+xqc_h3_engine_set_local_settings(xqc_engine_t *engine,
+                                 const xqc_h3_conn_settings_t *h3_conn_settings)
 {
     xqc_h3_conn_settings_t *settings;
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3, strlen(XQC_ALPN_H3),
+                                             &settings) == XQC_OK) {
         *settings = *h3_conn_settings;
     }
 
-    if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
+    if (xqc_h3_ctx_get_default_conn_settings(
+            engine, XQC_ALPN_H3_29, strlen(XQC_ALPN_H3_29), &settings) == XQC_OK) {
         *settings = *h3_conn_settings;
     }
 
     if (engine->config->enable_h3_ext) {
-        if (xqc_h3_ctx_get_default_conn_settings(engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
+        if (xqc_h3_ctx_get_default_conn_settings(
+                engine, XQC_ALPN_H3_EXT, strlen(XQC_ALPN_H3_EXT), &settings) == XQC_OK) {
             *settings = *h3_conn_settings;
-        } 
+        }
     }
 }
 
 
 xqc_int_t
 xqc_h3_conn_get_peer_addr(xqc_h3_conn_t *h3c, struct sockaddr *addr, socklen_t addr_cap,
-    socklen_t *peer_addr_len)
+                          socklen_t *peer_addr_len)
 {
     return xqc_conn_get_peer_addr(h3c->conn, addr, addr_cap, peer_addr_len);
 }
@@ -294,13 +314,13 @@ xqc_h3_conn_get_peer_addr(xqc_h3_conn_t *h3c, struct sockaddr *addr, socklen_t a
 
 xqc_int_t
 xqc_h3_conn_get_local_addr(xqc_h3_conn_t *h3c, struct sockaddr *addr, socklen_t addr_cap,
-    socklen_t *local_addr_len)
+                           socklen_t *local_addr_len)
 {
     return xqc_conn_get_local_addr(h3c->conn, addr, addr_cap, local_addr_len);
 }
 
 
-xqc_int_t 
+xqc_int_t
 xqc_h3_conn_send_ping(xqc_engine_t *engine, const xqc_cid_t *cid, void *ping_user_data)
 {
     return xqc_conn_send_ping(engine, cid, ping_user_data);
@@ -376,12 +396,9 @@ xqc_h3_conn_get_ins_buf(xqc_qpack_ins_type_t type, void *user_data)
 }
 
 
-
 /* callback for processing instruction buffer */
-const xqc_qpack_ins_cb_t xqc_h3_qpack_ins_cb = {
-    .get_buf_cb     = xqc_h3_conn_get_ins_buf,
-    .write_ins_cb   = xqc_h3_conn_send_ins
-};
+const xqc_qpack_ins_cb_t xqc_h3_qpack_ins_cb = {.get_buf_cb = xqc_h3_conn_get_ins_buf,
+                                                .write_ins_cb = xqc_h3_conn_send_ins};
 
 
 xqc_int_t
@@ -393,7 +410,8 @@ xqc_h3_conn_init_callbacks(xqc_h3_conn_t *h3c)
     }
 
     xqc_h3_callbacks_t *h3_cbs = NULL;
-    xqc_int_t ret = xqc_h3_ctx_get_app_callbacks(h3c->conn->engine, h3c->conn->alpn, h3c->conn->alpn_len, &h3_cbs);
+    xqc_int_t ret = xqc_h3_ctx_get_app_callbacks(h3c->conn->engine, h3c->conn->alpn,
+                                                 h3c->conn->alpn_len, &h3_cbs);
     if (XQC_OK != ret || h3_cbs == NULL) {
         xqc_log(h3c->log, XQC_LOG_ERROR, "|can't get app callbacks, not initialized?");
         return -XQC_EFATAL;
@@ -401,7 +419,7 @@ xqc_h3_conn_init_callbacks(xqc_h3_conn_t *h3c)
 
     h3c->h3_conn_callbacks = h3_cbs->h3c_cbs;
     h3c->h3_request_callbacks = h3_cbs->h3r_cbs;
-    
+
     if (h3c->flags & XQC_H3_CONN_FLAG_EXT_ENABLED) {
         h3c->h3_ext_bs_callbacks = h3_cbs->h3_ext_bs_cbs;
     }
@@ -422,9 +440,11 @@ xqc_h3_conn_init_settings(xqc_h3_conn_t *h3c)
     }
 
     xqc_h3_conn_settings_t *local_settings = NULL;
-    xqc_int_t ret = xqc_h3_ctx_get_default_conn_settings(h3c->conn->engine, h3c->conn->alpn, h3c->conn->alpn_len, &local_settings);
+    xqc_int_t ret = xqc_h3_ctx_get_default_conn_settings(
+        h3c->conn->engine, h3c->conn->alpn, h3c->conn->alpn_len, &local_settings);
     if (XQC_OK != ret) {
-        xqc_log(h3c->log, XQC_LOG_ERROR, "|can't get the default local h3 conn settings|");
+        xqc_log(h3c->log, XQC_LOG_ERROR,
+                "|can't get the default local h3 conn settings|");
         return -XQC_EFATAL;
     }
 
@@ -475,10 +495,11 @@ xqc_h3_conn_create(xqc_connection_t *conn, void *user_data)
     }
 
     if (h3c->h3_conn_callbacks.h3_conn_init_settings) {
-        h3c->h3_conn_callbacks.h3_conn_init_settings(h3c, 
-            &h3c->local_h3_conn_settings, user_data);
+        h3c->h3_conn_callbacks.h3_conn_init_settings(h3c, &h3c->local_h3_conn_settings,
+                                                     user_data);
 #ifdef XQC_COMPAT_DUPLICATE
-        xqc_log(h3c->log, XQC_LOG_DEBUG, "|new_h3_local_settings|"
+        xqc_log(h3c->log, XQC_LOG_DEBUG,
+                "|new_h3_local_settings|"
                 "max_field_section_size:%ui|max_pushes:%ui|"
                 "qpack_enc_max_table_capacity:%ui|"
                 "qpack_dec_max_table_capacity:%ui|"
@@ -491,7 +512,8 @@ xqc_h3_conn_create(xqc_connection_t *conn, void *user_data)
                 h3c->local_h3_conn_settings.qpack_blocked_streams,
                 h3c->local_h3_conn_settings.qpack_compat_duplicate);
 #else
-        xqc_log(h3c->log, XQC_LOG_DEBUG, "|new_h3_local_settings|"
+        xqc_log(h3c->log, XQC_LOG_DEBUG,
+                "|new_h3_local_settings|"
                 "max_field_section_size:%ui|max_pushes:%ui|"
                 "qpack_enc_max_table_capacity:%ui|"
                 "qpack_dec_max_table_capacity:%ui|"
@@ -504,24 +526,34 @@ xqc_h3_conn_create(xqc_connection_t *conn, void *user_data)
 #endif
     }
 
+    /* read effective blocked buffer limits (already computed in
+     * xqc_server_set_conn_settings) */
+    h3c->max_blocked_buf_per_stream = conn->conn_settings.max_blocked_buf_per_stream;
+    h3c->max_blocked_buf_per_conn = conn->conn_settings.max_blocked_buf_per_conn;
+    xqc_log(h3c->log, XQC_LOG_DEBUG, "|blocked_buf_limits|per_stream:%uz|per_conn:%uz|",
+            h3c->max_blocked_buf_per_stream, h3c->max_blocked_buf_per_conn);
+
     /* create qpack */
-    h3c->qpack = xqc_qpack_create(h3c->local_h3_conn_settings.qpack_enc_max_table_capacity,
-                                  h3c->local_h3_conn_settings.qpack_dec_max_table_capacity,
-                                  h3c->log, &xqc_h3_qpack_ins_cb, h3c);
+    h3c->qpack =
+        xqc_qpack_create(h3c->local_h3_conn_settings.qpack_enc_max_table_capacity,
+                         h3c->local_h3_conn_settings.qpack_dec_max_table_capacity,
+                         h3c->log, &xqc_h3_qpack_ins_cb, h3c);
     if (NULL == h3c->qpack) {
         xqc_log(h3c->log, XQC_LOG_ERROR, "|create qpack failed");
         goto fail;
     }
 
 #ifdef XQC_COMPAT_DUPLICATE
-    xqc_qpack_set_compat_dup(h3c->qpack, h3c->local_h3_conn_settings.qpack_compat_duplicate);
+    xqc_qpack_set_compat_dup(h3c->qpack,
+                             h3c->local_h3_conn_settings.qpack_compat_duplicate);
 #endif
 
     xqc_log_event(h3c->log, HTTP_PARAMETERS_SET, h3c, XQC_LOG_LOCAL_EVENT);
 
     /* creation callback */
     if (h3c->h3_conn_callbacks.h3_conn_create_notify) {
-        if (h3c->h3_conn_callbacks.h3_conn_create_notify(h3c, &h3c->conn->scid_set.user_scid, user_data)) {
+        if (h3c->h3_conn_callbacks.h3_conn_create_notify(
+                h3c, &h3c->conn->scid_set.user_scid, user_data)) {
             xqc_log(conn->log, XQC_LOG_ERROR, "|h3_conn_create_notify failed|");
             goto fail;
         }
@@ -542,11 +574,10 @@ fail:
 void
 xqc_h3_conn_destroy(xqc_h3_conn_t *h3_conn)
 {
-    if (h3_conn->h3_conn_callbacks.h3_conn_close_notify
-        && (h3_conn->flags & XQC_H3_CONN_FLAG_UPPER_CONN_EXIST))
-    {
-        h3_conn->h3_conn_callbacks.h3_conn_close_notify(h3_conn, &h3_conn->conn->scid_set.user_scid,
-                                                        h3_conn->user_data);
+    if (h3_conn->h3_conn_callbacks.h3_conn_close_notify &&
+        (h3_conn->flags & XQC_H3_CONN_FLAG_UPPER_CONN_EXIST)) {
+        h3_conn->h3_conn_callbacks.h3_conn_close_notify(
+            h3_conn, &h3_conn->conn->scid_set.user_scid, h3_conn->user_data);
         h3_conn->flags &= ~XQC_H3_CONN_FLAG_UPPER_CONN_EXIST;
     }
 
@@ -563,10 +594,10 @@ xqc_h3_conn_on_uni_stream_created(xqc_h3_conn_t *h3c, uint64_t stype)
 {
     uint64_t cflag;
     static const uint64_t stype_2_flag_map[] = {
-        [XQC_H3_STREAM_TYPE_CONTROL]        = XQC_H3_CONN_FLAG_CONTROL_OPENED,
-        [XQC_H3_STREAM_TYPE_PUSH]           = XQC_H3_CONN_FLAG_PUSH_OPENED,
-        [XQC_H3_STREAM_TYPE_QPACK_ENCODER]  = XQC_H3_CONN_FLAG_QPACK_ENCODER_OPENED,
-        [XQC_H3_STREAM_TYPE_QPACK_DECODER]  = XQC_H3_CONN_FLAG_QPACK_DECODER_OPENED,
+        [XQC_H3_STREAM_TYPE_CONTROL] = XQC_H3_CONN_FLAG_CONTROL_OPENED,
+        [XQC_H3_STREAM_TYPE_PUSH] = XQC_H3_CONN_FLAG_PUSH_OPENED,
+        [XQC_H3_STREAM_TYPE_QPACK_ENCODER] = XQC_H3_CONN_FLAG_QPACK_ENCODER_OPENED,
+        [XQC_H3_STREAM_TYPE_QPACK_DECODER] = XQC_H3_CONN_FLAG_QPACK_DECODER_OPENED,
     };
 
     /* check if control and qpack streams are already created */
@@ -575,11 +606,11 @@ xqc_h3_conn_on_uni_stream_created(xqc_h3_conn_t *h3c, uint64_t stype)
     case XQC_H3_STREAM_TYPE_PUSH:
     case XQC_H3_STREAM_TYPE_QPACK_ENCODER:
     case XQC_H3_STREAM_TYPE_QPACK_DECODER:
-        cflag = stype_2_flag_map[stype];   /* stream creation flag */
+        cflag = stype_2_flag_map[stype]; /* stream creation flag */
         /* if control/encoder/decoder stream has been created, close connection */
         if (h3c->flags & cflag) {
-            xqc_log(h3c->log, XQC_LOG_ERROR,
-                    "|h3 uni-stream has been created|type:%ui|", stype);
+            xqc_log(h3c->log, XQC_LOG_ERROR, "|h3 uni-stream has been created|type:%ui|",
+                    stype);
 
             XQC_H3_CONN_ERR(h3c, H3_FRAME_ERROR, -XQC_H3_INVALID_STREAM);
             return -XQC_H3_INVALID_STREAM;
@@ -612,7 +643,8 @@ xqc_h3_conn_send_settings(xqc_h3_conn_t *h3c)
         return ret;
     }
 
-    xqc_log(h3c->log, XQC_LOG_DEBUG, "|write settings success|qpack_blocked_streams:%ui|"
+    xqc_log(h3c->log, XQC_LOG_DEBUG,
+            "|write settings success|qpack_blocked_streams:%ui|"
             "qpack_max_table_capacity:%ui|max_field_section_size:%ui|max_pushes:%ui|",
             settings->qpack_blocked_streams, settings->qpack_dec_max_table_capacity,
             settings->max_field_section_size, settings->max_pushes);
@@ -635,24 +667,26 @@ xqc_h3_conn_create_uni_stream(xqc_h3_conn_t *h3c, xqc_h3_stream_type_t h3s_type)
     }
 
     /* create transport stream */
-    xqc_stream_t *stream = xqc_create_stream_with_conn(
-        h3c->conn, XQC_UNDEFINE_STREAM_ID, stream_type, NULL, NULL);
+    xqc_stream_t *stream = xqc_create_stream_with_conn(h3c->conn, XQC_UNDEFINE_STREAM_ID,
+                                                       stream_type, NULL, NULL);
     if (!stream) {
-        xqc_log(h3c->log, XQC_LOG_ERROR, "|xqc_create_stream_with_conn error|type:%d|", h3s_type);
+        xqc_log(h3c->log, XQC_LOG_ERROR, "|xqc_create_stream_with_conn error|type:%d|",
+                h3s_type);
         goto error;
     }
 
     /* create h3 stream */
     h3s = xqc_h3_stream_create(h3c, stream, h3s_type, NULL);
     if (NULL == h3s) {
-        xqc_log(h3c->log, XQC_LOG_ERROR, "|xqc_h3_stream_create error|type:%d|", h3s_type);
+        xqc_log(h3c->log, XQC_LOG_ERROR, "|xqc_h3_stream_create error|type:%d|",
+                h3s_type);
         goto error;
     }
 
     /* send h3 stream type */
     if (xqc_h3_stream_send_uni_stream_hdr(h3s) != XQC_OK) {
-        xqc_log(h3c->log, XQC_LOG_ERROR, 
-                "|write h3 uni-stream type error|type:%d|", h3s_type);
+        xqc_log(h3c->log, XQC_LOG_ERROR, "|write h3 uni-stream type error|type:%d|",
+                h3s_type);
         goto error;
     }
 
@@ -677,7 +711,8 @@ error:
 xqc_bool_t
 xqc_h3_conn_is_goaway_recved(xqc_h3_conn_t *h3c, uint64_t stream_id)
 {
-    if (h3c->flags & XQC_H3_CONN_FLAG_GOAWAY_RECVD && stream_id >= h3c->goaway_stream_id) {
+    if (h3c->flags & XQC_H3_CONN_FLAG_GOAWAY_RECVD &&
+        stream_id >= h3c->goaway_stream_id) {
         return XQC_TRUE;
     }
 
@@ -685,10 +720,11 @@ xqc_h3_conn_is_goaway_recved(xqc_h3_conn_t *h3c, uint64_t stream_id)
 }
 
 xqc_int_t
-xqc_h3_conn_on_settings_entry_received(uint64_t identifier, uint64_t value, void *user_data)
+xqc_h3_conn_on_settings_entry_received(uint64_t identifier, uint64_t value,
+                                       void *user_data)
 {
     xqc_int_t ret;
-    xqc_h3_conn_t *h3c = (xqc_h3_conn_t *) user_data;
+    xqc_h3_conn_t *h3c = (xqc_h3_conn_t *)user_data;
 
     xqc_log(h3c->log, XQC_LOG_DEBUG, "|id:%ui|value:%ui|", identifier, value);
 
@@ -700,19 +736,21 @@ xqc_h3_conn_on_settings_entry_received(uint64_t identifier, uint64_t value, void
     case XQC_H3_SETTINGS_QPACK_MAX_TABLE_CAPACITY:
         h3c->peer_h3_conn_settings.qpack_dec_max_table_capacity = value;
 
-        /* 
-         * set peer's max dtable cap of decoder to qpack's encoder, 
-         * which is essential when encoding Required Insert Count 
+        /*
+         * set peer's max dtable cap of decoder to qpack's encoder,
+         * which is essential when encoding Required Insert Count
          */
         ret = xqc_qpack_set_enc_max_dtable_cap(h3c->qpack, value);
         if (ret != XQC_OK) {
-            xqc_log(h3c->log, XQC_LOG_ERROR, "|set max dtable capacity error|ret:%d", ret);
+            xqc_log(h3c->log, XQC_LOG_ERROR, "|set max dtable capacity error|ret:%d",
+                    ret);
             return ret;
         }
 
         /* dtable cap is the actual size set on local */
-        ret = xqc_qpack_set_dtable_cap(h3c->qpack, xqc_min(
-            value, h3c->local_h3_conn_settings.qpack_enc_max_table_capacity));
+        ret = xqc_qpack_set_dtable_cap(
+            h3c->qpack,
+            xqc_min(value, h3c->local_h3_conn_settings.qpack_enc_max_table_capacity));
         if (ret != XQC_OK) {
             xqc_log(h3c->log, XQC_LOG_ERROR, "|set dtable capacity error|ret:%d", ret);
             return ret;
@@ -724,7 +762,8 @@ xqc_h3_conn_on_settings_entry_received(uint64_t identifier, uint64_t value, void
         h3c->peer_h3_conn_settings.qpack_blocked_streams = value;
         ret = xqc_qpack_set_max_blocked_stream(h3c->qpack, value);
         if (ret != XQC_OK) {
-            xqc_log(h3c->log, XQC_LOG_ERROR, "|set qpack blocked stream error|ret:%d", ret);
+            xqc_log(h3c->log, XQC_LOG_ERROR, "|set qpack blocked stream error|ret:%d",
+                    ret);
             return ret;
         }
         break;
@@ -736,8 +775,8 @@ xqc_h3_conn_on_settings_entry_received(uint64_t identifier, uint64_t value, void
 
     case XQC_H3_SETTINGS_H3_DATAGRAM:
         if (value > 1) {
-            xqc_log(h3c->log, XQC_LOG_ERROR,
-                    "|SETTINGS_H3_DATAGRAM invalid value:%ui|", value);
+            xqc_log(h3c->log, XQC_LOG_ERROR, "|SETTINGS_H3_DATAGRAM invalid value:%ui|",
+                    value);
             XQC_H3_CONN_ERR(h3c, H3_SETTINGS_ERROR, -XQC_H3_SETTING_ERROR);
             return -XQC_H3_SETTING_ERROR;
         }
@@ -775,7 +814,8 @@ xqc_h3_conn_add_blocked_stream(xqc_h3_conn_t *h3c, xqc_h3_stream_t *h3s, uint64_
     /* insert into list order by required insert count asc */
     xqc_list_head_t *pos, *next;
     xqc_h3_blocked_stream_t *bs;
-    xqc_list_for_each_safe(pos, next, &h3c->block_stream_head) {
+    xqc_list_for_each_safe(pos, next, &h3c->block_stream_head)
+    {
         bs = xqc_list_entry(pos, xqc_h3_blocked_stream_t, head);
         if (bs->ricnt > ric) {
             break;
@@ -789,7 +829,8 @@ xqc_h3_conn_add_blocked_stream(xqc_h3_conn_t *h3c, xqc_h3_stream_t *h3s, uint64_
 }
 
 void
-xqc_h3_conn_remove_blocked_stream(xqc_h3_conn_t *h3c, xqc_h3_blocked_stream_t *blocked_stream)
+xqc_h3_conn_remove_blocked_stream(xqc_h3_conn_t *h3c,
+                                  xqc_h3_blocked_stream_t *blocked_stream)
 {
     xqc_h3_blocked_stream_free(blocked_stream);
     h3c->block_stream_count--;
@@ -800,14 +841,15 @@ xqc_h3_conn_destroy_blocked_stream_list(xqc_h3_conn_t *h3c)
 {
     xqc_list_head_t *pos, *next;
 
-    xqc_list_for_each_safe(pos, next, &h3c->block_stream_head) {
+    xqc_list_for_each_safe(pos, next, &h3c->block_stream_head)
+    {
         xqc_h3_blocked_stream_t *blocked_stream =
-                xqc_list_entry(pos, xqc_h3_blocked_stream_t, head);
+            xqc_list_entry(pos, xqc_h3_blocked_stream_t, head);
 
         /**
-         * when destroying h3 connection, and a h3 stream is still blocked, it means that Transport
-         * stream was destroyed while h3 stream is still waiting for encoder instructions, but
-         * connection was closed actively or some reason else.
+         * when destroying h3 connection, and a h3 stream is still blocked, it means that
+         * Transport stream was destroyed while h3 stream is still waiting for encoder
+         * instructions, but connection was closed actively or some reason else.
          */
         xqc_h3_stream_t *h3s = blocked_stream->h3s;
         xqc_h3_stream_destroy(h3s);
@@ -819,8 +861,9 @@ xqc_h3_conn_process_blocked_stream(xqc_h3_conn_t *h3c)
 {
     uint64_t known_received_count = xqc_qpack_get_dec_insert_count(h3c->qpack);
     xqc_list_head_t *pos, *next;
-    xqc_list_for_each_safe(pos, next, &h3c->block_stream_head) {
-        xqc_h3_blocked_stream_t *blocked_stream = 
+    xqc_list_for_each_safe(pos, next, &h3c->block_stream_head)
+    {
+        xqc_h3_blocked_stream_t *blocked_stream =
             xqc_list_entry(pos, xqc_h3_blocked_stream_t, head);
         if (blocked_stream->ricnt <= known_received_count) {
             xqc_int_t ret = xqc_h3_stream_process_blocked_stream(blocked_stream->h3s);
@@ -844,7 +887,7 @@ xqc_h3_conn_get_user_data(xqc_h3_conn_t *h3_conn)
 
 xqc_int_t
 xqc_h3_conn_create_notify(xqc_connection_t *conn, const xqc_cid_t *cid,
-    void *conn_user_data, void *conn_proto_data)
+                          void *conn_user_data, void *conn_proto_data)
 {
     xqc_int_t ret;
     xqc_h3_conn_t *h3c;
@@ -855,21 +898,24 @@ xqc_h3_conn_create_notify(xqc_connection_t *conn, const xqc_cid_t *cid,
     }
 
     /* control local stream */
-    h3c->control_stream_out = xqc_h3_conn_create_uni_stream(h3c, XQC_H3_STREAM_TYPE_CONTROL);
+    h3c->control_stream_out =
+        xqc_h3_conn_create_uni_stream(h3c, XQC_H3_STREAM_TYPE_CONTROL);
     if (NULL == h3c->control_stream_out) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|create control stream error|");
         return XQC_ERROR;
     }
 
     /* qpack encoder stream */
-    h3c->qenc_stream = xqc_h3_conn_create_uni_stream(h3c, XQC_H3_STREAM_TYPE_QPACK_ENCODER);
+    h3c->qenc_stream =
+        xqc_h3_conn_create_uni_stream(h3c, XQC_H3_STREAM_TYPE_QPACK_ENCODER);
     if (NULL == h3c->qenc_stream) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|create qpack encoder stream error|");
         return XQC_ERROR;
     }
 
     /* qpack decoder stream */
-    h3c->qdec_stream = xqc_h3_conn_create_uni_stream(h3c, XQC_H3_STREAM_TYPE_QPACK_DECODER);
+    h3c->qdec_stream =
+        xqc_h3_conn_create_uni_stream(h3c, XQC_H3_STREAM_TYPE_QPACK_DECODER);
     if (NULL == h3c->qdec_stream) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|create qpack decoder stream error|");
         return XQC_ERROR;
@@ -889,9 +935,9 @@ xqc_h3_conn_create_notify(xqc_connection_t *conn, const xqc_cid_t *cid,
 
 xqc_int_t
 xqc_h3_conn_close_notify(xqc_connection_t *conn, const xqc_cid_t *cid,
-    void *conn_user_data, void *conn_proto_data)
+                         void *conn_user_data, void *conn_proto_data)
 {
-    xqc_h3_conn_t *h3c = (xqc_h3_conn_t*)conn_proto_data;
+    xqc_h3_conn_t *h3c = (xqc_h3_conn_t *)conn_proto_data;
     xqc_h3_conn_destroy(h3c);
     xqc_log(conn->log, XQC_LOG_DEBUG, "|destroy h3 conn success|");
     return XQC_OK;
@@ -899,8 +945,8 @@ xqc_h3_conn_close_notify(xqc_connection_t *conn, const xqc_cid_t *cid,
 
 
 void
-xqc_h3_conn_handshake_finished(xqc_connection_t *conn,
-    void *conn_user_data, void *conn_proto_data)
+xqc_h3_conn_handshake_finished(xqc_connection_t *conn, void *conn_user_data,
+                               void *conn_proto_data)
 {
     xqc_h3_conn_t *h3c = (xqc_h3_conn_t *)conn_proto_data;
     if (h3c->h3_conn_callbacks.h3_conn_handshake_finished) {
@@ -911,10 +957,11 @@ xqc_h3_conn_handshake_finished(xqc_connection_t *conn,
 }
 
 void
-xqc_h3_conn_ping_acked_notify(xqc_connection_t *conn, const xqc_cid_t *cid, void *ping_user_data,
-    void *conn_user_data, void *conn_proto_data)
+xqc_h3_conn_ping_acked_notify(xqc_connection_t *conn, const xqc_cid_t *cid,
+                              void *ping_user_data, void *conn_user_data,
+                              void *conn_proto_data)
 {
-    xqc_h3_conn_t *h3c = (xqc_h3_conn_t*)conn_proto_data;
+    xqc_h3_conn_t *h3c = (xqc_h3_conn_t *)conn_proto_data;
 
     if (h3c->h3_conn_callbacks.h3_conn_ping_acked) {
         xqc_log(conn->log, XQC_LOG_DEBUG, "|Ping acked notify|");
@@ -927,9 +974,8 @@ xqc_h3_conn_ping_acked_notify(xqc_connection_t *conn, const xqc_cid_t *cid, void
 
 /* HTTP/3 layer connection and streams callback over Transport-Layer */
 const xqc_conn_callbacks_t h3_conn_callbacks = {
-    .conn_create_notify         = xqc_h3_conn_create_notify,
-    .conn_close_notify          = xqc_h3_conn_close_notify,
-    .conn_handshake_finished    = xqc_h3_conn_handshake_finished,
-    .conn_ping_acked            = xqc_h3_conn_ping_acked_notify,
+    .conn_create_notify = xqc_h3_conn_create_notify,
+    .conn_close_notify = xqc_h3_conn_close_notify,
+    .conn_handshake_finished = xqc_h3_conn_handshake_finished,
+    .conn_ping_acked = xqc_h3_conn_ping_acked_notify,
 };
-

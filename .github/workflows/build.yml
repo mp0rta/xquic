@@ -76,7 +76,20 @@ jobs:
         certfile=server.crt
         openssl req -newkey rsa:2048 -x509 -nodes -keyout "$keyfile" -new -out "$certfile" -subj /CN=test.xquic.com
         ./tests/run_tests | tee -a ../xquic_test.log
+        # A SEGV/ABRT in run_tests prints no "FAILED" line, so the grep-based
+        # "Check Test Result" step below would not catch it. Fail explicitly on
+        # signal death (rc >= 128) regardless of pipefail.
+        run_tests_rc=${PIPESTATUS[0]}
+        if [ "$run_tests_rc" -ge 128 ]; then
+          echo "::error::run_tests killed by signal $((run_tests_rc - 128)) (crash); see log above"
+          exit 1
+        fi
         ../scripts/case_test.sh | tee -a ../xquic_test.log
+        case_test_rc=${PIPESTATUS[0]}
+        if [ "$case_test_rc" -ge 128 ]; then
+          echo "::error::case_test.sh killed by signal $((case_test_rc - 128)) (crash); see log above"
+          exit 1
+        fi
         gcovr -r .. --xml --gcov-ignore-parse-errors -o ../coverage.xml
     
     - name: Check Test Result
