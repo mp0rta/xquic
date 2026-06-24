@@ -49,6 +49,7 @@
 #include "xqc_crypto_frame_test.h"
 #include "xqc_dos_e2e_test.h"
 #include "xqc_wlb_test.h"
+#include "xqc_send_ctl_test.h"
 
 static int
 xqc_init_suite(void)
@@ -79,6 +80,7 @@ main()
     }
 
     if (!CU_add_test(pSuite, "xqc_test_get_random", xqc_test_get_random) ||
+        !CU_add_test(pSuite, "xqc_test_reno_init_cwnd", xqc_test_reno_init_cwnd) ||
         !CU_add_test(pSuite, "xqc_test_engine_create", xqc_test_engine_create) ||
         !CU_add_test(pSuite, "xqc_test_conn_create", xqc_test_conn_create) ||
         !CU_add_test(pSuite, "xqc_test_pq", xqc_test_pq) ||
@@ -87,6 +89,7 @@ main()
         !CU_add_test(pSuite, "xqc_test_recv_record", xqc_test_recv_record) ||
         !CU_add_test(pSuite, "xqc_test_reno", xqc_test_reno) ||
         !CU_add_test(pSuite, "xqc_test_cubic", xqc_test_cubic) ||
+        !CU_add_test(pSuite, "xqc_test_cubic_init_cwnd", xqc_test_cubic_init_cwnd) ||
         !CU_add_test(pSuite, "xqc_test_short_header_parse_cid",
                      xqc_test_short_header_packet_parse_cid) ||
         !CU_add_test(pSuite, "xqc_test_long_header_parse_cid",
@@ -301,6 +304,27 @@ main()
                         xqc_test_wlb_recovery_prefer_skips_initial_path_addition)
         || !CU_add_test(pSuite, "xqc_test_wlb_recovery_prefer_fires_after_real_failover",
                         xqc_test_wlb_recovery_prefer_fires_after_real_failover)
+        || !CU_add_test(pSuite, "xqc_test_pto_uses_remote_max_ack_delay",
+                        xqc_test_pto_uses_remote_max_ack_delay)
+        || !CU_add_test(pSuite, "xqc_test_pto_remote_default_when_unset",
+                        xqc_test_pto_remote_default_when_unset)
+        || !CU_add_test(pSuite, "xqc_test_conn_idle_timeout", xqc_test_conn_idle_timeout)
+        || !CU_add_test(pSuite, "xqc_test_conn_early_data_reject", xqc_test_conn_early_data_reject)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_update_rtt_ack_delay_cap",
+                        xqc_test_send_ctl_update_rtt_ack_delay_cap)
+        /* issue #739: persistent-congestion RTT reset (RFC 9002 §5.2) */
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_persistent_congestion_resets_rtt",
+                        xqc_test_send_ctl_persistent_congestion_resets_rtt)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_persistent_congestion_rtt_reseeds_from_new_sample",
+                        xqc_test_send_ctl_persistent_congestion_rtt_reseeds_from_new_sample)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_single_loss_does_not_reset_rtt",
+                        xqc_test_send_ctl_single_loss_does_not_reset_rtt)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_persistent_congestion_no_rtt_sample_early_return",
+                        xqc_test_send_ctl_persistent_congestion_no_rtt_sample_early_return)
+        || !CU_add_test(pSuite, "xqc_test_reno_init_cwnd_override", xqc_test_reno_init_cwnd_override)
+        || !CU_add_test(pSuite, "xqc_test_h3_control_frame_unexpected", xqc_test_h3_control_frame_unexpected)
+        || !CU_add_test(pSuite, "xqc_test_h3_request_frame_unexpected", xqc_test_h3_request_frame_unexpected)
+        || !CU_add_test(pSuite, "xqc_test_stateless_reset_parse_boundary", xqc_test_stateless_reset_parse_boundary)
         /* ADD TESTS HERE */) {
         CU_cleanup_registry();
         return (int)CU_get_error();

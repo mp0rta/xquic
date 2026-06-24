@@ -4330,11 +4330,19 @@ xqc_conn_early_data_reject(xqc_connection_t *conn)
         if (stream->stream_flag & XQC_STREAM_FLAG_HAS_0RTT) {
             stream->stream_send_offset = 0;
             stream->stream_unacked_pkt = 0;
-            if (stream->stream_state_send >= XQC_SEND_STREAM_ST_RESET_SENT ||
-                stream->stream_state_recv >= XQC_RECV_STREAM_ST_RESET_RECVD) {
-                xqc_destroy_write_buff_list(
-                    &stream->stream_write_buff_list.write_buff_list);
-                return XQC_OK;
+            if (stream->stream_state_send >= XQC_SEND_STREAM_ST_RESET_SENT
+                || stream->stream_state_recv >= XQC_RECV_STREAM_ST_RESET_RECVD)
+            {
+                /*
+                 * RFC 9001 Section 4.6.2: when 0-RTT is rejected, the
+                 * client MUST reset the state of all streams that were
+                 * sent in 0-RTT. A stream already in RESET_SENT /
+                 * RESET_RECVD cannot be re-initialized, so just discard
+                 * its buffered 0-RTT writes and continue iterating so the
+                 * remaining 0-RTT streams are still processed.
+                 */
+                xqc_destroy_write_buff_list(&stream->stream_write_buff_list.write_buff_list);
+                continue;
             }
             xqc_stream_send_state_update(stream, XQC_SEND_STREAM_ST_READY);
             xqc_stream_recv_state_update(stream, XQC_RECV_STREAM_ST_RECV);
@@ -6734,19 +6742,46 @@ xqc_conn_set_init_idle_timeout(xqc_connection_t *conn, xqc_msec_t init_idle_time
 xqc_msec_t
 xqc_conn_get_idle_timeout(xqc_connection_t *conn)
 {
-    if (conn->conn_type == XQC_CONN_TYPE_SERVER &&
-        !(conn->conn_flag & XQC_CONN_FLAG_HANDSHAKE_COMPLETED)) {
-        /* only server will limit idle timeout to init_idle_time_out before handshake
-         * completed */
+    xqc_msec_t local_to, remote_to, idle_timeout;
+
+    if (conn->conn_type == XQC_CONN_TYPE_SERVER
+        && !(conn->conn_flag & XQC_CONN_FLAG_HANDSHAKE_COMPLETED))
+    {
+        /* only server will limit idle timeout to init_idle_time_out before handshake completed */
         return conn->conn_settings.init_idle_time_out == 0
-                   ? XQC_CONN_INITIAL_IDLE_TIMEOUT
-                   : conn->conn_settings.init_idle_time_out;
+            ? XQC_CONN_INITIAL_IDLE_TIMEOUT : conn->conn_settings.init_idle_time_out;
+    }
+
+    local_to = conn->local_settings.max_idle_timeout;
+
+    /*
+     * RFC 9000 10.1: the effective idle timeout is the minimum of the
+     * max_idle_timeout values advertised by both endpoints, where a value
+     * of 0 means the endpoint imposes no limit. Remote transport
+     * parameters are only authoritative after handshake completion, so
+     * fall back to the local value before then.
+     */
+    if (conn->conn_flag & XQC_CONN_FLAG_HANDSHAKE_COMPLETED) {
+        remote_to = conn->remote_settings.max_idle_timeout;
+
+        if (local_to == 0) {
+            idle_timeout = remote_to;
+
+        } else if (remote_to == 0) {
+            idle_timeout = local_to;
+
+        } else {
+            idle_timeout = xqc_min(local_to, remote_to);
+        }
 
     } else {
-        return conn->local_settings.max_idle_timeout == 0
-                   ? XQC_CONN_DEFAULT_IDLE_TIMEOUT
-                   : conn->local_settings.max_idle_timeout;
+        idle_timeout = local_to;
     }
+
+    /* both peers disabled the timeout; fall back to xquic's safe default
+     * rather than returning 0 to avoid disabling the idle timer entirely.
+     */
+    return idle_timeout == 0 ? XQC_CONN_DEFAULT_IDLE_TIMEOUT : idle_timeout;
 }
 
 xqc_msec_t
