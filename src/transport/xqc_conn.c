@@ -5572,9 +5572,9 @@ xqc_conn_try_add_new_conn_id(xqc_connection_t *conn, uint64_t retire_prior_to)
                 if (inner_set->path_id > conn->curr_max_path_id) {
                     continue;
                 }
-                while ((inner_set->unused_cnt + inner_set->used_cnt) <
-                           conn->remote_settings.active_connection_id_limit &&
-                       inner_set->unused_cnt < unused_limit) {
+                while (xqc_cid_set_countable_cnt(inner_set)
+                           < conn->remote_settings.active_connection_id_limit
+                       && inner_set->unused_cnt < unused_limit) {
                     ret = xqc_write_mp_new_conn_id_frame_to_packet(conn, retire_prior_to,
                                                                    inner_set->path_id);
                     if (ret != XQC_OK) {
