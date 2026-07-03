@@ -156,77 +156,49 @@ typedef enum {
  * underlying storage is guaranteed 64-bit on every compiler. */
 typedef uint64_t xqc_conn_flag_t;
 
-#define XQC_CONN_FLAG_WAIT_WAKEUP \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_WAIT_WAKEUP_SHIFT)
-#define XQC_CONN_FLAG_HANDSHAKE_COMPLETED \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HANDSHAKE_COMPLETED_SHIFT)
-#define XQC_CONN_FLAG_CAN_SEND_1RTT \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_CAN_SEND_1RTT_SHIFT)
-#define XQC_CONN_FLAG_TICKING ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_TICKING_SHIFT)
-#define XQC_CONN_FLAG_ACK_HAS_GAP \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_ACK_HAS_GAP_SHIFT)
-#define XQC_CONN_FLAG_TIME_OUT ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_TIME_OUT_SHIFT)
-#define XQC_CONN_FLAG_ERROR    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_ERROR_SHIFT)
-#define XQC_CONN_FLAG_DATA_BLOCKED \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_DATA_BLOCKED_SHIFT)
-#define XQC_CONN_FLAG_DCID_OK  ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_DCID_OK_SHIFT)
-#define XQC_CONN_FLAG_TOKEN_OK ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_TOKEN_OK_SHIFT)
-#define XQC_CONN_FLAG_HAS_0RTT ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HAS_0RTT_SHIFT)
-#define XQC_CONN_FLAG_0RTT_OK  ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_0RTT_OK_SHIFT)
-#define XQC_CONN_FLAG_0RTT_REJ ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_0RTT_REJ_SHIFT)
-#define XQC_CONN_FLAG_UPPER_CONN_EXIST \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_UPPER_CONN_EXIST_SHIFT)
-#define XQC_CONN_FLAG_INIT_RECVD ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_INIT_RECVD_SHIFT)
-#define XQC_CONN_FLAG_NEED_RUN   ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_NEED_RUN_SHIFT)
-#define XQC_CONN_FLAG_PING       ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_PING_SHIFT)
-#define XQC_CONN_FLAG_HSK_ACKED  ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HSK_ACKED_SHIFT)
-#define XQC_CONN_FLAG_RESERVE    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_RESERVE_SHIFT)
-#define XQC_CONN_FLAG_HANDSHAKE_DONE_RECVD \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HANDSHAKE_DONE_RECVD_SHIFT)
-#define XQC_CONN_FLAG_UPDATE_NEW_TOKEN \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_UPDATE_NEW_TOKEN_SHIFT)
-#define XQC_CONN_FLAG_VERSION_NEGOTIATION \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_VERSION_NEGOTIATION_SHIFT)
-#define XQC_CONN_FLAG_HANDSHAKE_CONFIRMED \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HANDSHAKE_CONFIRMED_SHIFT)
-#define XQC_CONN_FLAG_HANDSHAKE_DONE_ACKED \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HANDSHAKE_DONE_ACKED_SHIFT)
-#define XQC_CONN_FLAG_ADDR_VALIDATED \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_ADDR_VALIDATED_SHIFT)
-#define XQC_CONN_FLAG_LINGER_CLOSING \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_LINGER_CLOSING_SHIFT)
-#define XQC_CONN_FLAG_RETRY_RECVD \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_RETRY_RECVD_SHIFT)
-#define XQC_CONN_FLAG_TLS_CH_RECVD ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_TLS_CH_SHIFT)
-#define XQC_CONN_FLAG_TLS_HSK_COMPLETED \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_TLS_HSK_COMPLETED_SHIFT)
-#define XQC_CONN_FLAG_RECV_NEW_PATH \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_RECV_NEW_PATH_SHIFT)
-#define XQC_CONN_FLAG_VALIDATE_REBINDING \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_VALIDATE_REBINDING_SHIFT)
-#define XQC_CONN_FLAG_CLOSING_NOTIFY \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_CONN_CLOSING_NOTIFY_SHIFT)
-#define XQC_CONN_FLAG_CLOSING_NOTIFIED \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_CONN_CLOSING_NOTIFIED_SHIFT)
-#define XQC_CONN_FLAG_DGRAM_WAIT_FOR_1RTT \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_DGRAM_WAIT_FOR_1RTT_SHIFT)
-#define XQC_CONN_FLAG_LOCAL_TP_UPDATED \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_LOCAL_TP_UPDATED_SHIFT)
-#define XQC_CONN_FLAG_PMTUD_PROBING \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_PMTUD_PROBING_SHIFT)
-#define XQC_CONN_FLAG_NO_DGRAM_NOTIFIED \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_NO_DGRAM_NOTIFIED_SHIFT)
-#define XQC_CONN_FLAG_DGRAM_MSS_NOTIFY \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_DGRAM_MSS_NOTIFY_SHIFT)
-#define XQC_CONN_FLAG_MP_WAIT_MP_READY \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_MP_WAIT_MP_READY_SHIFT)
-#define XQC_CONN_FLAG_MP_READY_NOTIFY \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_MP_READY_NOTIFY_SHIFT)
-#define XQC_CONN_FLAG_HANDSHAKE_DONE_SENT \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HANDSHAKE_DONE_SENT_SHIFT)
-#define XQC_CONN_FLAG_SERVER_ACCEPT \
-    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_SERVER_ACCEPT_SHIFT)
-#define XQC_CONN_FLAG_RETRY_SENT ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_RETRY_SENT_SHIFT)
+#define XQC_CONN_FLAG_WAIT_WAKEUP           ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_WAIT_WAKEUP_SHIFT)
+#define XQC_CONN_FLAG_HANDSHAKE_COMPLETED   ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HANDSHAKE_COMPLETED_SHIFT)
+#define XQC_CONN_FLAG_CAN_SEND_1RTT         ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_CAN_SEND_1RTT_SHIFT)
+#define XQC_CONN_FLAG_TICKING               ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_TICKING_SHIFT)
+#define XQC_CONN_FLAG_ACK_HAS_GAP           ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_ACK_HAS_GAP_SHIFT)
+#define XQC_CONN_FLAG_TIME_OUT              ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_TIME_OUT_SHIFT)
+#define XQC_CONN_FLAG_ERROR                 ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_ERROR_SHIFT)
+#define XQC_CONN_FLAG_DATA_BLOCKED          ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_DATA_BLOCKED_SHIFT)
+#define XQC_CONN_FLAG_DCID_OK               ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_DCID_OK_SHIFT)
+#define XQC_CONN_FLAG_TOKEN_OK              ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_TOKEN_OK_SHIFT)
+#define XQC_CONN_FLAG_HAS_0RTT              ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HAS_0RTT_SHIFT)
+#define XQC_CONN_FLAG_0RTT_OK               ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_0RTT_OK_SHIFT)
+#define XQC_CONN_FLAG_0RTT_REJ              ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_0RTT_REJ_SHIFT)
+#define XQC_CONN_FLAG_UPPER_CONN_EXIST      ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_UPPER_CONN_EXIST_SHIFT)
+#define XQC_CONN_FLAG_INIT_RECVD            ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_INIT_RECVD_SHIFT)
+#define XQC_CONN_FLAG_NEED_RUN              ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_NEED_RUN_SHIFT)
+#define XQC_CONN_FLAG_PING                  ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_PING_SHIFT)
+#define XQC_CONN_FLAG_HSK_ACKED             ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HSK_ACKED_SHIFT)
+#define XQC_CONN_FLAG_RESERVE               ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_RESERVE_SHIFT)
+#define XQC_CONN_FLAG_HANDSHAKE_DONE_RECVD  ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HANDSHAKE_DONE_RECVD_SHIFT)
+#define XQC_CONN_FLAG_UPDATE_NEW_TOKEN      ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_UPDATE_NEW_TOKEN_SHIFT)
+#define XQC_CONN_FLAG_VERSION_NEGOTIATION   ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_VERSION_NEGOTIATION_SHIFT)
+#define XQC_CONN_FLAG_HANDSHAKE_CONFIRMED   ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HANDSHAKE_CONFIRMED_SHIFT)
+#define XQC_CONN_FLAG_HANDSHAKE_DONE_ACKED  ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HANDSHAKE_DONE_ACKED_SHIFT)
+#define XQC_CONN_FLAG_ADDR_VALIDATED        ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_ADDR_VALIDATED_SHIFT)
+#define XQC_CONN_FLAG_LINGER_CLOSING        ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_LINGER_CLOSING_SHIFT)
+#define XQC_CONN_FLAG_RETRY_RECVD           ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_RETRY_RECVD_SHIFT)
+#define XQC_CONN_FLAG_TLS_CH_RECVD          ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_TLS_CH_SHIFT)
+#define XQC_CONN_FLAG_TLS_HSK_COMPLETED     ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_TLS_HSK_COMPLETED_SHIFT)
+#define XQC_CONN_FLAG_RECV_NEW_PATH         ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_RECV_NEW_PATH_SHIFT)
+#define XQC_CONN_FLAG_VALIDATE_REBINDING    ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_VALIDATE_REBINDING_SHIFT)
+#define XQC_CONN_FLAG_CLOSING_NOTIFY        ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_CONN_CLOSING_NOTIFY_SHIFT)
+#define XQC_CONN_FLAG_CLOSING_NOTIFIED      ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_CONN_CLOSING_NOTIFIED_SHIFT)
+#define XQC_CONN_FLAG_DGRAM_WAIT_FOR_1RTT   ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_DGRAM_WAIT_FOR_1RTT_SHIFT)
+#define XQC_CONN_FLAG_LOCAL_TP_UPDATED      ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_LOCAL_TP_UPDATED_SHIFT)
+#define XQC_CONN_FLAG_PMTUD_PROBING         ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_PMTUD_PROBING_SHIFT)
+#define XQC_CONN_FLAG_NO_DGRAM_NOTIFIED     ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_NO_DGRAM_NOTIFIED_SHIFT)
+#define XQC_CONN_FLAG_DGRAM_MSS_NOTIFY      ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_DGRAM_MSS_NOTIFY_SHIFT)
+#define XQC_CONN_FLAG_MP_WAIT_MP_READY      ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_MP_WAIT_MP_READY_SHIFT)
+#define XQC_CONN_FLAG_MP_READY_NOTIFY       ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_MP_READY_NOTIFY_SHIFT)
+#define XQC_CONN_FLAG_HANDSHAKE_DONE_SENT   ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_HANDSHAKE_DONE_SENT_SHIFT)
+#define XQC_CONN_FLAG_SERVER_ACCEPT         ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_SERVER_ACCEPT_SHIFT)
+#define XQC_CONN_FLAG_RETRY_SENT            ((xqc_conn_flag_t)1ULL << XQC_CONN_FLAG_RETRY_SENT_SHIFT)
 
 /* Compile-time guards: regression here would silently break Windows multipath. */
 _Static_assert(sizeof(xqc_conn_flag_t) == 8,
@@ -235,9 +207,8 @@ _Static_assert(XQC_CONN_FLAG_MP_WAIT_MP_READY == ((xqc_conn_flag_t)1ULL << 38),
                "XQC_CONN_FLAG_MP_WAIT_MP_READY must be bit 38");
 _Static_assert(XQC_CONN_FLAG_MP_READY_NOTIFY == ((xqc_conn_flag_t)1ULL << 39),
                "XQC_CONN_FLAG_MP_READY_NOTIFY must be bit 39");
-_Static_assert(
-    XQC_CONN_FLAG_RETRY_SENT == ((xqc_conn_flag_t)1ULL << 42),
-    "XQC_CONN_FLAG_RETRY_SENT must be bit 42 (highest currently-defined flag)");
+_Static_assert(XQC_CONN_FLAG_RETRY_SENT == ((xqc_conn_flag_t)1ULL << 42),
+               "XQC_CONN_FLAG_RETRY_SENT must be bit 42 (highest currently-defined flag)");
 
 
 typedef struct {
@@ -329,13 +300,10 @@ typedef struct xqc_ping_record_s {
 } xqc_ping_record_t;
 
 struct xqc_connection_s {
-    xqc_conn_settings_t conn_settings;
-    xqc_engine_t *engine;
+    xqc_conn_settings_t             conn_settings;
+    xqc_engine_t                   *engine;
 
-    xqc_proto_version_t version;
-    /* set when client receives a non-VN package from server or receives a VN package and
-     * processes it */
-    uint32_t discard_vn_flag;
+    xqc_proto_version_t             version;
 
     /* original destination connection id, RFC 9000, Section 7.3. */
     xqc_cid_t original_dcid;
@@ -716,7 +684,7 @@ xqc_int_t xqc_conn_on_recv_retry(xqc_connection_t *conn, xqc_cid_t *retry_scid);
 
 /* exposed for unit tests; validates the peer's transport parameters per RFC 9000 7.3 */
 xqc_int_t xqc_conn_check_transport_params(xqc_connection_t *conn,
-                                          const xqc_transport_params_t *params);
+    const xqc_transport_params_t *params);
 
 /* get idle timeout in milliseconds */
 xqc_msec_t xqc_conn_get_idle_timeout(xqc_connection_t *conn);

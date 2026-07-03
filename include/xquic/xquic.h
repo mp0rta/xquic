@@ -1587,10 +1587,19 @@ typedef struct xqc_conn_settings_s {
     uint8_t disable_pn_skipping;
 
     /* The client can specify its own scid or dcid. Default: 0 */
-    uint8_t specify_client_scid;
-    uint8_t client_scid[XQC_MAX_CID_LEN];
-    uint8_t specify_client_dcid;
-    uint8_t client_dcid[XQC_MAX_CID_LEN];
+    uint8_t                     specify_client_scid;
+    uint8_t                     client_scid[XQC_MAX_CID_LEN];
+    uint8_t                     specify_client_dcid;
+    uint8_t                     client_dcid[XQC_MAX_CID_LEN];
+    
+    uint64_t                    max_streams_bidi;
+    uint64_t                    max_streams_uni;
+
+    /*
+     * testing only: when non-zero, xqc_gen_ack_frame writes ACK_ECN
+     * (type 0x03) with dummy ECN counts instead of plain ACK (0x02).
+     */
+    uint8_t                     simulate_ecn;
 
     /* draft-21 §3.2.1 / §4.6 MAX_PATH_ID credit grant policy (mp21 L2).
      *
@@ -1603,21 +1612,21 @@ typedef struct xqc_conn_settings_s {
      * (default 8) and rate-limited to one grant per PTO. Append-only
      * field — zero-initialized for ABI-compat with pre-L2 consumers.
      */
-    uint64_t max_path_id_grant_max_value;
+    uint64_t                    max_path_id_grant_max_value;
 
     /**
      * Maximum blocked buffer size per stream (bytes) for QPACK decode blocking.
      * This limits memory usage when QPACK decoding is blocked waiting for
      * dynamic table updates. Default: 0 (use internal default: 1MB)
      */
-    size_t max_blocked_buf_per_stream;
+    size_t                      max_blocked_buf_per_stream;
 
     /**
      * Maximum total blocked buffer size per connection (bytes) for QPACK decode blocking.
      * This limits total memory usage across all blocked streams on a connection.
      * Default: 0 (use internal default: 8MB)
      */
-    size_t max_blocked_buf_per_conn;
+    size_t                      max_blocked_buf_per_conn;
 } xqc_conn_settings_t;
 
 

@@ -637,10 +637,14 @@ xqc_h3_request_send_headers(xqc_h3_request_t *h3_request, xqc_http_headers_t *he
      */
     for (i = 0; i < headers_in->count; i++) {
         xqc_http_header_t *hdr = &headers_in->headers[i];
-        if (xqc_h3_hdr_is_forbidden(hdr->name.iov_base, hdr->name.iov_len,
-                                    hdr->value.iov_base, hdr->value.iov_len)) {
+        if (xqc_h3_hdr_is_forbidden(hdr->name.iov_base,
+                                     hdr->name.iov_len,
+                                     hdr->value.iov_base,
+                                     hdr->value.iov_len))
+        {
             xqc_log(h3_request->h3_stream->log, XQC_LOG_ERROR,
-                    "|forbidden header in h3 send|name:%*s|", (int)hdr->name.iov_len,
+                    "|forbidden header in h3 send|name:%*s|",
+                    (int)hdr->name.iov_len,
                     (char *)hdr->name.iov_base);
             sent = -XQC_H3_INVALID_HEADER;
             goto end;
@@ -850,12 +854,12 @@ xqc_h3_request_on_recv_header(xqc_h3_request_t *h3r)
 
     /* header is too large */
     fields_size = xqc_h3_uncompressed_fields_size(headers);
-    if (fields_size >
-        h3r->h3_stream->h3c->local_h3_conn_settings.max_field_section_size) {
-        xqc_log(h3r->h3_stream->log, XQC_LOG_ERROR,
-                "|large nv|conn:%p|fields_size:%ui|exceed|"
-                "SETTINGS_MAX_FIELD_SECTION_SIZE:%ui|",
-                h3r->h3_stream->h3c->conn, fields_size,
+    if (fields_size
+        > h3r->h3_stream->h3c->local_h3_conn_settings.max_field_section_size)
+    {
+        xqc_log(h3r->h3_stream->log, XQC_LOG_ERROR, "|large nv|conn:%p|fields_size:%ui|exceed|"
+                "SETTINGS_MAX_FIELD_SECTION_SIZE:%ui|", h3r->h3_stream->h3c->conn,
+                fields_size,
                 h3r->h3_stream->h3c->local_h3_conn_settings.max_field_section_size);
         return -XQC_H3_INVALID_HEADER;
     }
@@ -868,13 +872,18 @@ xqc_h3_request_on_recv_header(xqc_h3_request_t *h3r)
     if (headers->headers != NULL) {
         for (size_t fi = 0; fi < headers->count; fi++) {
             xqc_http_header_t *hdr = &headers->headers[fi];
-            if (xqc_h3_hdr_is_forbidden(hdr->name.iov_base, hdr->name.iov_len,
-                                        hdr->value.iov_base, hdr->value.iov_len)) {
+            if (xqc_h3_hdr_is_forbidden(hdr->name.iov_base,
+                                         hdr->name.iov_len,
+                                         hdr->value.iov_base,
+                                         hdr->value.iov_len))
+            {
                 xqc_log(h3r->h3_stream->log, XQC_LOG_ERROR,
                         "|forbidden header in h3|conn:%p|stream_id:%ui|"
                         "name:%*s|",
-                        h3r->h3_stream->h3c->conn, h3r->h3_stream->stream_id,
-                        (int)hdr->name.iov_len, (char *)hdr->name.iov_base);
+                        h3r->h3_stream->h3c->conn,
+                        h3r->h3_stream->stream_id,
+                        (int)hdr->name.iov_len,
+                        (char *)hdr->name.iov_base);
                 return -XQC_H3_INVALID_HEADER;
             }
         }

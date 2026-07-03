@@ -106,7 +106,7 @@ typedef uint64_t xqc_frame_type_bit_t;
 #define XQC_FRAME_BIT_MAX_PATH_ID ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_MAX_PATH_ID)
 #define XQC_FRAME_BIT_PATH_FROZEN ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_PATH_FROZEN)
 #define XQC_FRAME_BIT_DATAGRAM    ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_DATAGRAM)
-#define XQC_FRAME_BIT_Extension   ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_Extension)
+#define XQC_FRAME_BIT_EXTENSION ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_Extension)
 #define XQC_FRAME_BIT_SID         ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_SID)
 #define XQC_FRAME_BIT_REPAIR_SYMBOL \
     ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_REPAIR_SYMBOL)
@@ -235,8 +235,7 @@ xqc_int_t xqc_process_padding_frame(xqc_connection_t *conn, xqc_packet_in_t *pac
 
 xqc_int_t xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in);
 
-xqc_int_t xqc_insert_crypto_frame(xqc_connection_t *conn, xqc_stream_t *stream,
-                                  xqc_stream_frame_t *stream_frame);
+xqc_int_t xqc_insert_crypto_frame(xqc_connection_t *conn, xqc_stream_t *stream, xqc_stream_frame_t *stream_frame);
 
 xqc_int_t xqc_process_crypto_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in);
 

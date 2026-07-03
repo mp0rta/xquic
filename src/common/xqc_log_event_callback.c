@@ -65,19 +65,12 @@ xqc_log_CON_CONNECTION_CLOSED_callback(xqc_log_t *log, const char *func,
         {
             path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
             uint8_t idx = path->path_send_ctl->ctl_cwndlim_update_idx;
-            p = xqc_sprintf(
-                p, last, "<path:%ui, (%ui,%ui,%ui)>", path->path_id,
-                xqc_calc_delay(path->path_send_ctl->ctl_recent_cwnd_limitation_time[idx],
-                               conn->conn_create_time) /
-                    1000,
-                xqc_calc_delay(
-                    path->path_send_ctl->ctl_recent_cwnd_limitation_time[(idx + 1) % 3],
-                    conn->conn_create_time) /
-                    1000,
-                xqc_calc_delay(
-                    path->path_send_ctl->ctl_recent_cwnd_limitation_time[(idx + 2) % 3],
-                    conn->conn_create_time) /
-                    1000);
+            p = xqc_sprintf(p, last, "<path:%ui, (%ui,%ui,%ui)>",
+            path->path_id,
+            xqc_calc_delay(path->path_send_ctl->ctl_recent_cwnd_limitation_time[idx], conn->conn_create_time) / 1000,
+            xqc_calc_delay(path->path_send_ctl->ctl_recent_cwnd_limitation_time[(idx + 1) % 3], conn->conn_create_time) / 1000,
+            xqc_calc_delay(path->path_send_ctl->ctl_recent_cwnd_limitation_time[(idx + 2) % 3], conn->conn_create_time) / 1000
+            );
             if (p < last) {
                 *p = '\0';
             } else {
