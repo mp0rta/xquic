@@ -37,6 +37,8 @@
 #include <inttypes.h>
 #include <openssl/rand.h>
 
+#define XQC_DEFAULT_MAX_STREAMS 1024
+
 xqc_conn_settings_t internal_default_conn_settings = {
     .pacing_on = 0,
     .ping_on = 0,
@@ -260,6 +262,13 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
 
     if (xqc_check_proto_version_valid(settings->proto_version)) {
         engine->default_conn_settings.proto_version = settings->proto_version;
+    }
+
+    if (settings->max_streams_bidi > 0) {
+        engine->default_conn_settings.max_streams_bidi = settings->max_streams_bidi;
+    }
+    if (settings->max_streams_uni > 0) {
+        engine->default_conn_settings.max_streams_uni = settings->max_streams_uni;
     }
 
     engine->default_conn_settings.keyupdate_pkt_threshold =
@@ -590,8 +599,18 @@ xqc_conn_init_trans_settings(xqc_connection_t *conn)
         ls->max_streams_uni = 128;
 
     } else {
-        ls->max_streams_bidi = 1024;
-        ls->max_streams_uni = 1024;
+        if (conn->conn_settings.max_streams_bidi) {
+            ls->max_streams_bidi = conn->conn_settings.max_streams_bidi;
+
+        } else {
+            ls->max_streams_bidi = XQC_DEFAULT_MAX_STREAMS;
+        }
+        if (conn->conn_settings.max_streams_uni) {
+            ls->max_streams_uni = conn->conn_settings.max_streams_uni;
+
+        } else {
+            ls->max_streams_uni = XQC_DEFAULT_MAX_STREAMS;
+        }
     }
     ls->max_stream_data_bidi_remote = XQC_MAX_RECV_WINDOW;
     ls->max_stream_data_uni = XQC_MAX_RECV_WINDOW;
