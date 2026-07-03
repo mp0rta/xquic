@@ -90,15 +90,15 @@ typedef struct xqc_stream_frame_s {
 /* Put all received STREAM data here */
 typedef struct xqc_stream_data_in_s {
     /* A list of STREAM frame, order by offset */
-    xqc_list_head_t frames_tailq; /* xqc_stream_frame_t */
-    uint64_t merged_offset_end;   /* [0,end) */
-    uint64_t next_read_offset;    /* next offset in stream */
-    uint64_t stream_length;
-    xqc_bool_t stream_determined;
+    xqc_list_head_t         frames_tailq;       /* xqc_stream_frame_t */
+    uint64_t                merged_offset_end;  /* [0,end) */
+    uint64_t                next_read_offset;   /* next offset in stream */
+    uint64_t                stream_length;
+    xqc_bool_t              stream_determined;
 
     /* buffered out-of-order frame resource tracking (CWE-770 mitigation) */
-    uint64_t buffered_frame_count; /* number of buffered frame nodes */
-    uint64_t buffered_data_bytes;  /* total bytes of buffered frame data */
+    uint64_t                buffered_frame_count;   /* number of buffered frame nodes */
+    uint64_t                buffered_data_bytes;    /* total bytes of buffered frame data */
 } xqc_stream_data_in_t;
 
 

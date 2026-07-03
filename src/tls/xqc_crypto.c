@@ -32,6 +32,21 @@ xqc_crypto_check_hp_sample(xqc_crypto_t *crypto, uint8_t *pktno, uint8_t *end)
     return XQC_OK;
 }
 
+static inline xqc_int_t
+xqc_crypto_check_hp_sample(xqc_crypto_t *crypto, uint8_t *pktno, uint8_t *end)
+{
+    const size_t need = 4 + XQC_HP_SAMPLELEN;
+
+    if (pktno > end || (size_t)(end - pktno) < need) {
+        xqc_log(crypto->log, XQC_LOG_ERROR,
+                "|illegal pkt, hp sample exceed buffer|left:%uz|need:%uz|",
+                pktno > end ? 0 : (size_t)(end - pktno), need);
+        return -XQC_EILLPKT;
+    }
+
+    return XQC_OK;
+}
+
 static inline void
 xqc_vec_init(xqc_vec_t *vec)
 {
@@ -223,7 +238,7 @@ xqc_crypto_encrypt_header(xqc_crypto_t *crypto, xqc_pkt_type_t pkt_type, uint8_t
     size_t nwrite;
 
     /* packet number position and sample position */
-    size_t pktno_len = XQC_PACKET_SHORT_HEADER_PKTNO_LEN(header);
+    size_t   pktno_len  = XQC_PACKET_SHORT_HEADER_PKTNO_LEN(header);
     uint8_t *sample;
 
     /* hp cipher and key */
@@ -302,11 +317,11 @@ xqc_crypto_decrypt_header(xqc_crypto_t *crypto, xqc_pkt_type_t pkt_type, uint8_t
     }
     sample = pktno + 4;
 
-    ret = hp_cipher->hp_mask(
-        hp_cipher, crypto->keys.rx_hp_ctx, mask, XQC_HP_MASKLEN, &nwrite, /* mask */
-        XQC_FAKE_HP_MASK, sizeof(XQC_FAKE_HP_MASK) - 1,                   /* ciphertext */
-        hp->base, hp->len,                                                /* key */
-        sample, XQC_HP_SAMPLELEN);                                        /* sample */
+    ret = hp_cipher->hp_mask(hp_cipher, crypto->keys.rx_hp_ctx,
+                             mask, XQC_HP_MASKLEN, &nwrite,                     /* mask */
+                             XQC_FAKE_HP_MASK, sizeof(XQC_FAKE_HP_MASK) - 1,    /* ciphertext */
+                             hp->base, hp->len,                                 /* key */
+                             sample, XQC_HP_SAMPLELEN);                         /* sample */
     if (ret != XQC_OK || nwrite < XQC_HP_MASKLEN) {
         xqc_log(crypto->log, XQC_LOG_ERROR,
                 "|calculate header protection mask error|ret:%d|"

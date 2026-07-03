@@ -793,10 +793,15 @@ xqc_h3_stream_process_control(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
             return -XQC_H3_DECODE_ERROR;
         }
 
-        if (pctx->frame.type != XQC_H3_FRM_SETTINGS &&
-            !(h3s->h3c->flags & XQC_H3_CONN_FLAG_SETTINGS_RECVED)) {
+        if (pctx->frame.type != XQC_H3_FRM_SETTINGS
+            && !(h3s->h3c->flags & XQC_H3_CONN_FLAG_SETTINGS_RECVED))
+        {
+            xqc_log(h3c->log, XQC_LOG_ERROR,
+                    "|first control frame is not SETTINGS|type:%xL|",
+                    pctx->frame.type);
             xqc_h3_frm_reset_pctx(pctx);
-            return -H3_FRAME_UNEXPECTED;
+            XQC_H3_CONN_ERR(h3c, H3_MISSING_SETTINGS, -XQC_H3_MISSING_SETTINGS);
+            return -XQC_H3_MISSING_SETTINGS;
         }
 
         if (pctx->state == XQC_H3_FRM_STATE_END) {
@@ -848,10 +853,8 @@ xqc_h3_stream_process_control(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
 
             default:
                 /* RFC 9114 §9: ignore unknown frame types */
-                xqc_log(h3c->log, XQC_LOG_INFO,
-                        "|ignore unknown frame|"
-                        "type:%xL|",
-                        pctx->frame.type);
+                xqc_log(h3c->log, XQC_LOG_INFO, "|ignore unknown frame|"
+                        "type:%xL|", pctx->frame.type);
                 break;
             }
 
@@ -1125,10 +1128,8 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
 
             default:
                 /* RFC 9114 §9: ignore unknown frame types */
-                xqc_log(h3s->log, XQC_LOG_INFO,
-                        "|ignore unknown frame|"
-                        "frame type:%xL|",
-                        pctx->frame.type);
+                xqc_log(h3s->log, XQC_LOG_INFO, "|ignore unknown frame|"
+                        "frame type:%xL|", pctx->frame.type);
                 break;
             }
 
@@ -1632,26 +1633,22 @@ xqc_h3_stream_process_in(xqc_h3_stream_t *h3s, unsigned char *data, size_t data_
 
             /* check blocked buffer size limit */
             size_t remaining_size = data_len - processed;
-            if (h3c->max_blocked_buf_per_stream &&
-                (h3s->blocked_buf_size + remaining_size >
-                 h3c->max_blocked_buf_per_stream)) {
+            if (h3c->max_blocked_buf_per_stream
+                && (h3s->blocked_buf_size + remaining_size > h3c->max_blocked_buf_per_stream))
+            {
                 xqc_log(h3c->log, XQC_LOG_ERROR,
-                        "|blocked buffer size limit "
-                        "exceeded|stream_id:%ui|current:%uz|adding:%uz|limit:%uz|",
-                        h3s->stream_id, h3s->blocked_buf_size, remaining_size,
-                        h3c->max_blocked_buf_per_stream);
+                        "|blocked buffer size limit exceeded|stream_id:%ui|current:%uz|adding:%uz|limit:%uz|",
+                        h3s->stream_id, h3s->blocked_buf_size, remaining_size, h3c->max_blocked_buf_per_stream);
                 XQC_H3_CONN_ERR(h3c, H3_EXCESSIVE_LOAD, -XQC_H3_EPROC_REQUEST);
                 return -XQC_H3_EPROC_REQUEST;
             }
 
-            if (h3c->max_blocked_buf_per_conn &&
-                (h3c->total_blocked_buf_size + remaining_size >
-                 h3c->max_blocked_buf_per_conn)) {
+            if (h3c->max_blocked_buf_per_conn
+                && (h3c->total_blocked_buf_size + remaining_size > h3c->max_blocked_buf_per_conn))
+            {
                 xqc_log(h3c->log, XQC_LOG_ERROR,
-                        "|connection blocked buffer size limit "
-                        "exceeded|total:%uz|adding:%uz|limit:%uz|",
-                        h3c->total_blocked_buf_size, remaining_size,
-                        h3c->max_blocked_buf_per_conn);
+                        "|connection blocked buffer size limit exceeded|total:%uz|adding:%uz|limit:%uz|",
+                        h3c->total_blocked_buf_size, remaining_size, h3c->max_blocked_buf_per_conn);
                 XQC_H3_CONN_ERR(h3c, H3_EXCESSIVE_LOAD, -XQC_H3_EPROC_REQUEST);
                 return -XQC_H3_EPROC_REQUEST;
             }
@@ -2141,6 +2138,21 @@ xqc_h3_stream_update_stats(xqc_h3_stream_t *h3s)
     }
 }
 
+static inline xqc_bool_t
+xqc_h3_stream_is_critical(uint64_t type)
+{
+    /*
+     * RFC 9114 6.2.1 / RFC 9204 4.2: the control stream and the two QPACK
+     * unidirectional streams must remain open for the lifetime of the
+     * connection. Peer-initiated closure of any of them is a connection
+     * error of type H3_CLOSED_CRITICAL_STREAM.
+     */
+    return type == XQC_H3_STREAM_TYPE_CONTROL
+           || type == XQC_H3_STREAM_TYPE_QPACK_ENCODER
+           || type == XQC_H3_STREAM_TYPE_QPACK_DECODER;
+}
+
+
 int
 xqc_h3_stream_close_notify(xqc_stream_t *stream, void *user_data)
 {
@@ -2152,6 +2164,25 @@ xqc_h3_stream_close_notify(xqc_stream_t *stream, void *user_data)
 
     xqc_h3_stream_t *h3s = (xqc_h3_stream_t *)user_data;
     h3s->flags |= XQC_HTTP3_STREAM_FLAG_CLOSED;
+
+    /*
+     * Detect peer-initiated closure of an HTTP/3 critical stream. The
+     * CLOSING_NOTIFY flag and conn_state guards keep us from clobbering
+     * an existing conn_err when the connection is already tearing down
+     * (e.g. local close, transport error), in which case the stream
+     * close here is just a side effect, not a protocol violation.
+     */
+    if (xqc_h3_stream_is_critical(h3s->type)
+        && !(h3s->h3c->conn->conn_flag & XQC_CONN_FLAG_CLOSING_NOTIFY)
+        && h3s->h3c->conn->conn_state < XQC_CONN_STATE_CLOSING)
+    {
+        xqc_log(h3s->log, XQC_LOG_ERROR,
+                "|peer closed critical stream|type:%ui|stream_id:%ui|h3s:%p",
+                h3s->type, h3s->stream_id, h3s);
+        XQC_H3_CONN_ERR(h3s->h3c, H3_CLOSED_CRITICAL_STREAM,
+                        -XQC_H3_CLOSE_CRITICAL_STREAM);
+    }
+
     xqc_h3_stream_get_err(h3s);
     xqc_h3_stream_get_path_info(h3s);
 

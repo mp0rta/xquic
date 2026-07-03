@@ -233,13 +233,17 @@ int g_drop_rate;
 int g_spec_url;
 int g_is_get;
 uint64_t g_last_sock_op_time;
-//currently, the maximum used test case id is 55
-//please keep this comment updated if you are adding more test cases. :-D
-//55 for RFC 9114 §4.2 forbidden header e2e validation
-//99 for pure fin
-//2XX for datagram testcases
-//3XX for h3 ext bytestream testcases
-//4XX for conn_settings configuration
+/*
+ * currently, the maximum used test case id is 55
+ * please keep this comment updated if you are adding more test cases. :-D
+ * 55 for RFC 9114 Section 4.2 forbidden header e2e validation
+ * 99 for pure fin
+ * 2XX for datagram testcases
+ * 3XX for h3 ext bytestream testcases
+ * 4XX for conn_settings configuration
+ * 7XX for 0-RTT transport param validation
+ * 8XX for MASQUE e2e testcases
+ */
 int g_test_case;
 int g_ipv6;
 int g_no_crypt;
@@ -973,12 +977,6 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
     send_buf_size = size;
     memcpy(send_buf, buf, send_buf_size);
 
-    /* trigger version negotiation */
-    if (g_test_case == 33) {
-        /* makes version 0xff000001 */
-        send_buf[1] = 0xff;
-    }
-
     /* make initial packet loss to test 0rtt buffer */
     if (g_test_case == 39) {
         g_test_case = -1;
@@ -1196,12 +1194,6 @@ xqc_client_write_socket_ex(uint64_t path_id,
     }
     send_buf_size = size;
     memcpy(send_buf, buf, send_buf_size);
-
-    /* trigger version negotiation */
-    if (g_test_case == 33) {
-        /* makes version 0xff000001 */
-        send_buf[1] = 0xff;
-    }
 
     /* make initial packet loss to test 0rtt buffer */
     if (g_test_case == 39) {
@@ -5047,6 +5039,14 @@ int main(int argc, char *argv[]) {
                g_test_case, g_masque_mode, g_enable_multipath);
     }
 
+    if (g_test_case == 454) {
+        conn_settings.simulate_ecn = 1;
+    }
+
+    if (g_test_case == 455) {
+        conn_settings.simulate_ecn = 0;
+    }
+
     conn_settings.pacing_on = pacing_on;
     conn_settings.proto_version = XQC_VERSION_V1;
     conn_settings.max_datagram_frame_size = g_max_dgram_size;
@@ -5067,6 +5067,11 @@ int main(int argc, char *argv[]) {
     if (g_test_case == 211) {
         conn_settings.datagram_redundancy = 2;
         conn_settings.datagram_redundant_probe = 30000;
+    }
+
+    if (g_test_case == 703) {
+        g_verify_cert = 1;
+        g_verify_cert_allow_self_sign = 0;
     }
 
     g_conn_settings = &conn_settings;
@@ -5404,6 +5409,23 @@ int main(int argc, char *argv[]) {
         
         if (g_test_case == 80) {
             fec_params.fec_code_rate = 1;
+        }
+
+        /*
+         * Case 700: end-to-end validation for issue #534 (xqc_frame_type_bit_t
+         * 64-bit overflow fix).  XQC_FRAME_BIT_REPAIR_SYMBOL = 1ULL << 32;
+         * if the type were a 32-bit enum (MSVC), this constant would silently
+         * truncate to 0, making FEC repair frame tracking dead code.
+         *
+         * fec_code_rate = 1.0  -> 1:1 redundancy, guarantees repair symbols
+         * fec_max_symbol_num_per_block = 5  -> small blocks for fast triggering
+         *
+         * case_test.sh validates by grepping "FEC_REPAIR" in packet logs; that
+         * string is only emitted when bit 32 of po_frame_types is actually set.
+         */
+        if (g_test_case == 700) {
+            fec_params.fec_code_rate = 1.0;
+            fec_params.fec_max_symbol_num_per_block = 5;
         }
 
         conn_settings.fec_params = fec_params;
