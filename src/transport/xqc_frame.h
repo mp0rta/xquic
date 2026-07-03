@@ -106,7 +106,7 @@ typedef uint64_t xqc_frame_type_bit_t;
 #define XQC_FRAME_BIT_MAX_PATH_ID ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_MAX_PATH_ID)
 #define XQC_FRAME_BIT_PATH_FROZEN ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_PATH_FROZEN)
 #define XQC_FRAME_BIT_DATAGRAM    ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_DATAGRAM)
-#define XQC_FRAME_BIT_Extension   ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_Extension)
+#define XQC_FRAME_BIT_EXTENSION ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_Extension)
 #define XQC_FRAME_BIT_SID         ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_SID)
 #define XQC_FRAME_BIT_REPAIR_SYMBOL \
     ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_REPAIR_SYMBOL)

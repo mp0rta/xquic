@@ -43,17 +43,6 @@
  * These caps prevent unbounded memory allocation from sparse CRYPTO fragments
  * that keep next_read_offset pinned (RFC 9001 §5.2 attack surface).
  */
-#define XQC_MAX_CRYPTO_FRAME_BUFFERED_COUNT \
-    1024 /* max buffered frame nodes per crypto stream */
-#define XQC_MAX_CRYPTO_FRAME_BUFFERED_BYTES                                            \
-    (1 * 1024 * 1024) /* max buffered data bytes per crypto stream (1MB), accommodates \
-                         large cert chains under reordering */
-
-/*
- * CWE-770 mitigation: limit buffered out-of-order CRYPTO frame resources.
- * These caps prevent unbounded memory allocation from sparse CRYPTO fragments
- * that keep next_read_offset pinned (RFC 9001 §5.2 attack surface).
- */
 #define XQC_MAX_CRYPTO_FRAME_BUFFERED_COUNT     1024    /* max buffered frame nodes per crypto stream */
 #define XQC_MAX_CRYPTO_FRAME_BUFFERED_BYTES     (1*1024*1024)  /* max buffered data bytes per crypto stream (1MB), accommodates large cert chains under reordering */
 

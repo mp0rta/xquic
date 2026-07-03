@@ -32,21 +32,6 @@ xqc_crypto_check_hp_sample(xqc_crypto_t *crypto, uint8_t *pktno, uint8_t *end)
     return XQC_OK;
 }
 
-static inline xqc_int_t
-xqc_crypto_check_hp_sample(xqc_crypto_t *crypto, uint8_t *pktno, uint8_t *end)
-{
-    const size_t need = 4 + XQC_HP_SAMPLELEN;
-
-    if (pktno > end || (size_t)(end - pktno) < need) {
-        xqc_log(crypto->log, XQC_LOG_ERROR,
-                "|illegal pkt, hp sample exceed buffer|left:%uz|need:%uz|",
-                pktno > end ? 0 : (size_t)(end - pktno), need);
-        return -XQC_EILLPKT;
-    }
-
-    return XQC_OK;
-}
-
 static inline void
 xqc_vec_init(xqc_vec_t *vec)
 {

@@ -38,7 +38,10 @@ xqc_test_frame_type_enum_ordinals()
 {
     CU_ASSERT(XQC_FRAME_SID == 31);
     CU_ASSERT(XQC_FRAME_REPAIR_SYMBOL == 32);
-    CU_ASSERT(XQC_FRAME_NUM == 33);
+    /* mqvpn fork: draft-21 PATHS_BLOCKED / PATH_CIDS_BLOCKED extend the enum */
+    CU_ASSERT(XQC_FRAME_PATHS_BLOCKED == 33);
+    CU_ASSERT(XQC_FRAME_PATH_CIDS_BLOCKED == 34);
+    CU_ASSERT(XQC_FRAME_NUM == 35);
 }
 
 
@@ -57,7 +60,9 @@ xqc_test_frame_bit_high_values_nonzero()
 
     /* exact expected values */
     CU_ASSERT(XQC_FRAME_BIT_REPAIR_SYMBOL == (1ULL << 32));
-    CU_ASSERT(XQC_FRAME_BIT_NUM == (1ULL << 33));
+    CU_ASSERT(XQC_FRAME_BIT_PATHS_BLOCKED == (1ULL << 33));
+    CU_ASSERT(XQC_FRAME_BIT_PATH_CIDS_BLOCKED == (1ULL << 34));
+    CU_ASSERT(XQC_FRAME_BIT_NUM == (1ULL << 35));
 
     /* bit 31 (SID) is the last value that fits in 32-bit */
     CU_ASSERT(XQC_FRAME_BIT_SID == (1ULL << 31));
@@ -313,7 +318,9 @@ xqc_test_frame_bit_all_constants_have_correct_bit_position()
     CU_ASSERT(XQC_FRAME_BIT_EXTENSION            == (1ULL << 30));
     CU_ASSERT(XQC_FRAME_BIT_SID                  == (1ULL << 31));
     CU_ASSERT(XQC_FRAME_BIT_REPAIR_SYMBOL        == (1ULL << 32));
-    CU_ASSERT(XQC_FRAME_BIT_NUM                  == (1ULL << 33));
+    CU_ASSERT(XQC_FRAME_BIT_PATHS_BLOCKED        == (1ULL << 33));
+    CU_ASSERT(XQC_FRAME_BIT_PATH_CIDS_BLOCKED    == (1ULL << 34));
+    CU_ASSERT(XQC_FRAME_BIT_NUM                  == (1ULL << 35));
 
     /* verify popcount == 1 for a selection (each is a power of two) */
     CU_ASSERT((XQC_FRAME_BIT_REPAIR_SYMBOL & (XQC_FRAME_BIT_REPAIR_SYMBOL - 1)) == 0);
