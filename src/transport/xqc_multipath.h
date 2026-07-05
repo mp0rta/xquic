@@ -253,6 +253,13 @@ xqc_int_t xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code);
  * triggered). Idempotent on already-CLOSING paths. */
 xqc_int_t xqc_path_validation_on_retx(xqc_path_ctx_t *path);
 
+/* G-P3 companion: invoked once per PTO event on a VALIDATING path,
+ * since a fully black-holed PATH_CHALLENGE never generates the
+ * acknowledgments (possibly carried on another path) that
+ * xqc_path_validation_on_retx relies on. No-op on non-VALIDATING
+ * paths. */
+void xqc_path_validation_on_pto(xqc_path_ctx_t *path);
+
 /* path state: "ACTIVE/CLOSING/DRAINING" -> "CLOSED" */
 xqc_int_t xqc_path_closed(xqc_path_ctx_t *path);
 

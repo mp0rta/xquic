@@ -45,6 +45,7 @@
 #include "xqc_mp21_compliance_test.h"
 #include "xqc_test_helpers.h"
 #include "xqc_test_path_hard_cap.h"
+#include "xqc_test_next_wakeup.h"
 #include "xqc_set_conn_settings_test.h"
 #include "xqc_crypto_frame_test.h"
 #include "xqc_dos_e2e_test.h"
@@ -174,6 +175,11 @@ main()
         || !CU_add_test(pSuite, "xqc_test_retry", xqc_test_retry)
         || !CU_add_test(pSuite, "xqc_test_receive_invalid_dgram", xqc_test_receive_invalid_dgram)
         || !CU_add_test(pSuite, "xqc_test_h3_ext_frame", xqc_test_h3_ext_frame)
+        /* --- from mqvpn-main PR#52: multipath validation-stall fix tests --- */
+        || !CU_add_test(pSuite, "test_next_wakeup_includes_validating_path_timer",
+                        test_next_wakeup_includes_validating_path_timer)
+        || !CU_add_test(pSuite, "test_validation_pto_counts_attempts_and_abandons",
+                        test_validation_pto_counts_attempts_and_abandons)
 #ifdef XQC_ENABLE_FEC
         || !CU_add_test(pSuite, "xqc_test_galois_calculation",
                         xqc_test_galois_calculation) ||
