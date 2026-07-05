@@ -1,7 +1,7 @@
 /**
  * @copyright Copyright (c) 2026, mp0rta
  *
- * B3: xqc_conn_next_wakeup_time must include timers of INIT/VALIDATING
+ * B3: xqc_conn_next_wakeup_time must include timers of INIT/VALIDATING/CLOSING
  * paths so PATH_CHALLENGE retransmission is driven by the PTO timer.
  */
 
@@ -9,5 +9,6 @@
 #define XQC_TEST_NEXT_WAKEUP_H
 
 void test_next_wakeup_includes_validating_path_timer(void);
+void test_validation_pto_counts_attempts_and_abandons(void);
 
 #endif /* XQC_TEST_NEXT_WAKEUP_H */

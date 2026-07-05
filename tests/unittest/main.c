@@ -192,6 +192,8 @@ main()
                      test_dos_peer_init_max_path_id_max_valid) ||
         !CU_add_test(pSuite, "test_next_wakeup_includes_validating_path_timer",
                      test_next_wakeup_includes_validating_path_timer) ||
+        !CU_add_test(pSuite, "test_validation_pto_counts_attempts_and_abandons",
+                     test_validation_pto_counts_attempts_and_abandons) ||
         !CU_add_test(pSuite, "xqc_test_server_set_conn_settings_propagation",
                      xqc_test_server_set_conn_settings_propagation) ||
         !CU_add_test(pSuite, "xqc_test_server_set_conn_settings_zero_defaults",

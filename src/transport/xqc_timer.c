@@ -5,6 +5,7 @@
 #include "src/transport/xqc_stream.h"
 #include "src/transport/xqc_utils.h"
 #include "src/transport/xqc_reinjection.h"
+#include "src/transport/xqc_multipath.h"
 
 
 static const char * const timer_type_2_str[XQC_TIMER_N] = {
@@ -83,7 +84,10 @@ xqc_timer_loss_detection_timeout(xqc_timer_type_t type, xqc_usec_t now, void *us
         xqc_log(conn->log, XQC_LOG_DEBUG, "|send Probe pkts|conn:%p|path:%ui|bytes_in_flight:%ud|", 
                 conn, path->path_id, send_ctl->ctl_bytes_in_flight);
         xqc_usec_t t = xqc_send_ctl_get_pto_time_and_space(send_ctl, now, &pns);
-        xqc_path_send_one_or_two_ack_elicit_pkts(path, pns);
+        xqc_path_validation_on_pto(path);
+        if (path->path_state < XQC_PATH_STATE_CLOSING) {
+            xqc_path_send_one_or_two_ack_elicit_pkts(path, pns);
+        }
 
     } else {
         /* assert(!PeerCompletedAddressValidation()) */

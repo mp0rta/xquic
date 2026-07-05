@@ -51,10 +51,43 @@ test_next_wakeup_includes_validating_path_timer(void)
     path->path_state = XQC_PATH_STATE_CLOSED;
     CU_ASSERT_EQUAL(xqc_conn_next_wakeup_time(conn), 0);
 
+    /* Boundary pin: a CLOSING path with the same armed timer is also visible. */
+    path->path_state = XQC_PATH_STATE_CLOSING;
+    CU_ASSERT_EQUAL(xqc_conn_next_wakeup_time(conn), 12345);
+
     /* Unlink BEFORE freeing — if xqc_test_helper_conn_destroy walks
      * conn_paths_list, a freed-but-linked stub is a use-after-free. */
     xqc_list_del(&path->path_list);
     free(path->path_send_ctl);
     free(path);
+    xqc_test_helper_conn_destroy(conn);
+}
+
+void
+test_validation_pto_counts_attempts_and_abandons(void)
+{
+    xqc_connection_t *conn = xqc_test_helper_conn_create(NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_path_ctx_t *path = calloc(1, sizeof(*path));
+    path->path_send_ctl = calloc(1, sizeof(*path->path_send_ctl));
+    path->parent_conn = conn;
+
+    /* Non-VALIDATING paths are ignored. */
+    path->path_state = XQC_PATH_STATE_ACTIVE;
+    xqc_path_validation_on_pto(path);
+    CU_ASSERT_EQUAL(path->path_challenge_attempts, 0);
+
+    /* VALIDATING: one attempt per PTO; abandon at the cap. */
+    path->path_state = XQC_PATH_STATE_VALIDATING;
+    xqc_path_validation_on_pto(path);
+    CU_ASSERT_EQUAL(path->path_challenge_attempts, 1);
+    xqc_path_validation_on_pto(path);
+    CU_ASSERT_EQUAL(path->path_challenge_attempts, 2);
+    xqc_path_validation_on_pto(path);
+    CU_ASSERT_EQUAL(path->path_challenge_attempts, XQC_PATH_VALIDATION_MAX_ATTEMPTS);
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_CLOSING);
+
+    free(path->path_send_ctl); free(path);
     xqc_test_helper_conn_destroy(conn);
 }
