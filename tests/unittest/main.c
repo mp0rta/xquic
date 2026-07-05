@@ -45,6 +45,7 @@
 #include "xqc_mp21_compliance_test.h"
 #include "xqc_test_helpers.h"
 #include "xqc_test_path_hard_cap.h"
+#include "xqc_test_next_wakeup.h"
 #include "xqc_set_conn_settings_test.h"
 #include "xqc_crypto_frame_test.h"
 #include "xqc_dos_e2e_test.h"
@@ -189,6 +190,8 @@ main()
                      test_conn_stats_dynamic_paths_info) ||
         !CU_add_test(pSuite, "test_dos_peer_init_max_path_id_max_valid",
                      test_dos_peer_init_max_path_id_max_valid) ||
+        !CU_add_test(pSuite, "test_next_wakeup_includes_validating_path_timer",
+                     test_next_wakeup_includes_validating_path_timer) ||
         !CU_add_test(pSuite, "xqc_test_server_set_conn_settings_propagation",
                      xqc_test_server_set_conn_settings_propagation) ||
         !CU_add_test(pSuite, "xqc_test_server_set_conn_settings_zero_defaults",

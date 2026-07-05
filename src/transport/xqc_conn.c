@@ -4786,7 +4786,17 @@ xqc_conn_next_wakeup_time(xqc_connection_t *conn)
     xqc_list_for_each_safe(pos, next, &conn->conn_paths_list)
     {
         path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
-        if (path->path_state != XQC_PATH_STATE_ACTIVE) {
+        /* Include INIT/VALIDATING paths: a VALIDATING path's LOSS_DETECTION
+         * (PTO) timer drives PATH_CHALLENGE retransmission. Skipping it
+         * leaves the engine asleep until an unrelated conn timer fires,
+         * stretching challenge retx from ~PTO to ~PING interval and starving
+         * the validation-timeout counter (G-P3, see xqc_path_validation_on_retx).
+         * CLOSING paths are included too: their PATH_DRAINING timer drives
+         * CLOSING->CLOSED and path_removed_notify, and the expire loop
+         * (xqc_conn_timer_expire) already services paths below CLOSED.
+         * CLOSED paths hold no armed timers (xqc_path_closed unsets all),
+         * so they are skipped purely as documentation of intent. */
+        if (path->path_state >= XQC_PATH_STATE_CLOSED) {
             continue;
         }
 
