@@ -4795,7 +4795,12 @@ xqc_conn_next_wakeup_time(xqc_connection_t *conn)
          * CLOSING->CLOSED and path_removed_notify, and the expire loop
          * (xqc_conn_timer_expire) already services paths below CLOSED.
          * CLOSED paths hold no armed timers (xqc_path_closed unsets all),
-         * so they are skipped purely as documentation of intent. */
+         * so they are skipped purely as documentation of intent. The skip
+         * is a `>=` threshold rather than `== CLOSED`: threshold checks
+         * against the ordered lifecycle enum are the codebase idiom for
+         * "at/past this stage" (see the >= XQC_PATH_STATE_CLOSING sites,
+         * e.g. xqc_datagram.c), and it stays correct if a state is ever
+         * added after CLOSED. */
         if (path->path_state >= XQC_PATH_STATE_CLOSED) {
             continue;
         }
