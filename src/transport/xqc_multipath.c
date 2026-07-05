@@ -523,6 +523,21 @@ xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code)
     }
 
     xqc_set_path_state(path, XQC_PATH_STATE_CLOSING);
+
+    /* Draining backstop (mirrors xqc_path_immediate_close): without it,
+     * CLOSING is terminal whenever the peer never echoes the abandon —
+     * which is the NORM for a G-P3 black-holed path, since the peer
+     * typically never learned the path exists (its creation
+     * PATH_CHALLENGE never arrived). The timer drives CLOSING -> CLOSED
+     * -> path_removed_notify so the application layer can retry. */
+    if (conn != NULL && path->path_send_ctl != NULL) {
+        xqc_usec_t now = xqc_monotonic_timestamp();
+        xqc_usec_t pto = xqc_conn_get_max_pto(conn);
+        if (!xqc_timer_is_set(&path->path_send_ctl->path_timer_manager, XQC_TIMER_PATH_DRAINING)) {
+            xqc_timer_set(&path->path_send_ctl->path_timer_manager, XQC_TIMER_PATH_DRAINING, now, 3 * pto);
+        }
+    }
+
     return XQC_OK;
 }
 

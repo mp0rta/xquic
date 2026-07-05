@@ -39,7 +39,7 @@ test_next_wakeup_includes_validating_path_timer(void)
     xqc_timer_t *lt =
         &path->path_send_ctl->path_timer_manager.timer[XQC_TIMER_LOSS_DETECTION];
     lt->timer_is_set = 1;
-    lt->expire_time  = 12345;
+    lt->expire_time = 12345;
 
     CU_ASSERT_EQUAL(xqc_conn_next_wakeup_time(conn), 12345);
 
@@ -72,6 +72,10 @@ test_validation_pto_counts_attempts_and_abandons(void)
     xqc_path_ctx_t *path = calloc(1, sizeof(*path));
     path->path_send_ctl = calloc(1, sizeof(*path->path_send_ctl));
     path->parent_conn = conn;
+    /* xqc_path_request_abandon's draining backstop calls xqc_timer_set,
+     * which unconditionally dereferences path_timer_manager.log via the
+     * xqc_log() macro — a calloc()-zeroed (NULL) log would segfault. */
+    path->path_send_ctl->path_timer_manager.log = conn->log;
 
     /* Non-VALIDATING paths are ignored. */
     path->path_state = XQC_PATH_STATE_ACTIVE;
@@ -88,6 +92,14 @@ test_validation_pto_counts_attempts_and_abandons(void)
     CU_ASSERT_EQUAL(path->path_challenge_attempts, XQC_PATH_VALIDATION_MAX_ATTEMPTS);
     CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_CLOSING);
 
-    free(path->path_send_ctl); free(path);
+    /* Draining backstop: without it, CLOSING is terminal whenever the peer
+     * never echoes the PATH_ABANDON (the norm for a black-holed path, since
+     * the peer typically never learned the path existed). The timer must
+     * be armed so CLOSING -> CLOSED -> path_removed_notify still fires. */
+    CU_ASSERT_TRUE(xqc_timer_is_set(&path->path_send_ctl->path_timer_manager,
+                                    XQC_TIMER_PATH_DRAINING));
+
+    free(path->path_send_ctl);
+    free(path);
     xqc_test_helper_conn_destroy(conn);
 }
