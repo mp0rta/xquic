@@ -588,31 +588,34 @@ void
 xqc_test_0rtt_params_each_reduced(void)
 {
     /*
-     * Reduce each MUST parameter individually and verify that every
-     * branch in the validation code triggers TRA_0RTT_TRANS_PARAMS_ERROR.
-     * Uses offset-based mutation so one loop covers all 8 fields.
+     * Reduce each RFC 9000 7.4.1 MUST parameter individually and verify
+     * that every branch of xqc_conn_check_0rtt_reduced_params rejects it.
+     *
+     * The check is called directly rather than through
+     * xqc_conn_tls_transport_params_cb: the callback gates it on
+     * xqc_tls_is_early_data_accepted(), which requires a real accepted
+     * 0-RTT handshake that this harness (boringssl, no session ticket)
+     * cannot produce.  The gate wiring is covered end-to-end by the 0-RTT
+     * cases in scripts/case_test.sh.
      */
     struct {
         size_t   tp_offset;       /* offset into xqc_transport_params_t */
-        size_t   rs_offset;       /* offset into xqc_trans_settings_t (for datagram) */
         uint64_t remembered_val;
     } cases[] = {
         { offsetof(xqc_transport_params_t, initial_max_data),
-          0, REMEMBERED_MAX_DATA },
+          REMEMBERED_MAX_DATA },
         { offsetof(xqc_transport_params_t, initial_max_stream_data_bidi_local),
-          0, REMEMBERED_MAX_STREAM_DATA_BIDI_LOCAL },
+          REMEMBERED_MAX_STREAM_DATA_BIDI_LOCAL },
         { offsetof(xqc_transport_params_t, initial_max_stream_data_bidi_remote),
-          0, REMEMBERED_MAX_STREAM_DATA_BIDI_REMOTE },
+          REMEMBERED_MAX_STREAM_DATA_BIDI_REMOTE },
         { offsetof(xqc_transport_params_t, initial_max_stream_data_uni),
-          0, REMEMBERED_MAX_STREAM_DATA_UNI },
+          REMEMBERED_MAX_STREAM_DATA_UNI },
         { offsetof(xqc_transport_params_t, initial_max_streams_bidi),
-          0, REMEMBERED_MAX_STREAMS_BIDI },
+          REMEMBERED_MAX_STREAMS_BIDI },
         { offsetof(xqc_transport_params_t, initial_max_streams_uni),
-          0, REMEMBERED_MAX_STREAMS_UNI },
+          REMEMBERED_MAX_STREAMS_UNI },
         { offsetof(xqc_transport_params_t, active_connection_id_limit),
-          0, REMEMBERED_ACTIVE_CID_LIMIT },
-        { offsetof(xqc_transport_params_t, max_datagram_frame_size),
-          0, REMEMBERED_MAX_DGRAM_FRAME_SIZE },
+          REMEMBERED_ACTIVE_CID_LIMIT },
     };
     size_t n = sizeof(cases) / sizeof(cases[0]);
 
@@ -623,9 +626,28 @@ xqc_test_0rtt_params_each_reduced(void)
         xqc_transport_params_t params;
         xqc_0rtt_test_init_params(&params, conn, &server_scid);
 
+        /* baseline: nothing reduced -- must pass */
+        CU_ASSERT_EQUAL(xqc_conn_check_0rtt_reduced_params(conn, &params),
+                        XQC_OK);
+
         /* reduce exactly one field below remembered */
         uint64_t *field = (uint64_t *)((char *)&params + cases[i].tp_offset);
         *field = cases[i].remembered_val - 1;
+
+        CU_ASSERT(xqc_conn_check_0rtt_reduced_params(conn, &params) != XQC_OK);
+
+        xqc_engine_destroy(conn->engine);
+    }
+
+    /* max_datagram_frame_size is checked unconditionally (not gated on
+     * early-data-accepted), so exercise it through the real TP callback. */
+    {
+        xqc_cid_t server_scid;
+        xqc_connection_t *conn = xqc_0rtt_test_make_conn(&server_scid);
+
+        xqc_transport_params_t params;
+        xqc_0rtt_test_init_params(&params, conn, &server_scid);
+        params.max_datagram_frame_size = REMEMBERED_MAX_DGRAM_FRAME_SIZE - 1;
 
         xqc_int_t err = xqc_0rtt_test_fire(conn, &params);
         CU_ASSERT_EQUAL(err, TRA_0RTT_TRANS_PARAMS_ERROR);

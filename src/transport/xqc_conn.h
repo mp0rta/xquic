@@ -686,6 +686,12 @@ xqc_int_t xqc_conn_on_recv_retry(xqc_connection_t *conn, xqc_cid_t *retry_scid);
 xqc_int_t xqc_conn_check_transport_params(xqc_connection_t *conn,
     const xqc_transport_params_t *params);
 
+/* exposed for unit tests; rejects 1-RTT transport parameters reduced below
+ * the remembered 0-RTT values per RFC 9000 7.4.1 (caller gates on
+ * early-data-accepted) */
+xqc_int_t xqc_conn_check_0rtt_reduced_params(xqc_connection_t *conn,
+    const xqc_transport_params_t *params);
+
 /* get idle timeout in milliseconds */
 xqc_msec_t xqc_conn_get_idle_timeout(xqc_connection_t *conn);
 
