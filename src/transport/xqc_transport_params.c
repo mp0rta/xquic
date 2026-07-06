@@ -264,8 +264,8 @@ xqc_transport_params_calc_length(const xqc_transport_params_t *params,
 /**
  * put variant int value param into buf
  */
-inline static uint8_t *
-xqc_put_varint_param(uint8_t *p, uint64_t id, uint64_t v)
+inline static uint8_t*
+xqc_put_varint_param(uint8_t* p, uint64_t id, uint64_t v)
 {
     p = xqc_put_varint(p, id);
     p = xqc_put_varint(p, xqc_put_varint_len(v));
@@ -1297,6 +1297,12 @@ xqc_read_transport_params(char *tp_data, size_t tp_data_len,
                            xqc_lengthof("max_datagram_frame_size=")) == 0) {
             p += xqc_lengthof("max_datagram_frame_size=");
             params->max_datagram_frame_size = strtoul(p, NULL, XQC_DECIMAL);
+
+        } else if (strncmp(p, "active_connection_id_limit=",
+                           xqc_lengthof("active_connection_id_limit=")) == 0)
+        {
+            p += xqc_lengthof("active_connection_id_limit=");
+            params->active_connection_id_limit = strtoul(p, NULL, XQC_DECIMAL);
         }
 
         p = strchr(p, '\n');
@@ -1324,22 +1330,25 @@ xqc_write_transport_params(char *tp_buf, size_t cap, const xqc_transport_params_
         }
     }
 
-
-    tp_data_len = snprintf(
-        tp_buf, cap,
-        "initial_max_streams_bidi=%" PRIu64 "\n"
-        "initial_max_streams_uni=%" PRIu64 "\n"
-        "initial_max_stream_data_bidi_local=%" PRIu64 "\n"
-        "initial_max_stream_data_bidi_remote=%" PRIu64 "\n"
-        "initial_max_stream_data_uni=%" PRIu64 "\n"
-        "initial_max_data=%" PRIu64 "\n"
-        "max_ack_delay=%" PRIu64 "\n"
-        "%s",
-        params->initial_max_streams_bidi, params->initial_max_streams_uni,
-        params->initial_max_stream_data_bidi_local,
-        params->initial_max_stream_data_bidi_remote, params->initial_max_stream_data_uni,
-        params->initial_max_data, params->max_ack_delay, dgram_tp_str);
-
+    tp_data_len = snprintf(tp_buf, cap, "initial_max_streams_bidi=%"PRIu64"\n"
+                                   "initial_max_streams_uni=%"PRIu64"\n"
+                                   "initial_max_stream_data_bidi_local=%"PRIu64"\n"
+                                   "initial_max_stream_data_bidi_remote=%"PRIu64"\n"
+                                   "initial_max_stream_data_uni=%"PRIu64"\n"
+                                   "initial_max_data=%"PRIu64"\n"
+                                   "max_ack_delay=%"PRIu64"\n"
+                                   "active_connection_id_limit=%"PRIu64"\n"
+                                   "%s",
+                                   params->initial_max_streams_bidi,
+                                   params->initial_max_streams_uni,
+                                   params->initial_max_stream_data_bidi_local,
+                                   params->initial_max_stream_data_bidi_remote,
+                                   params->initial_max_stream_data_uni,
+                                   params->initial_max_data,
+                                   params->max_ack_delay,
+                                   params->active_connection_id_limit,
+                                   dgram_tp_str);
+                                   
     if (tp_data_len < 0) {
         return -XQC_ESYS;
     }

@@ -526,8 +526,7 @@ xqc_h3_conn_create(xqc_connection_t *conn, void *user_data)
 #endif
     }
 
-    /* read effective blocked buffer limits (already computed in
-     * xqc_server_set_conn_settings) */
+    /* read effective blocked buffer limits (already computed in xqc_server_set_conn_settings) */
     h3c->max_blocked_buf_per_stream = conn->conn_settings.max_blocked_buf_per_stream;
     h3c->max_blocked_buf_per_conn = conn->conn_settings.max_blocked_buf_per_conn;
     xqc_log(h3c->log, XQC_LOG_DEBUG, "|blocked_buf_limits|per_stream:%uz|per_conn:%uz|",
@@ -603,27 +602,36 @@ xqc_h3_conn_on_uni_stream_created(xqc_h3_conn_t *h3c, uint64_t stype)
     /* check if control and qpack streams are already created */
     switch (stype) {
     case XQC_H3_STREAM_TYPE_CONTROL:
-    case XQC_H3_STREAM_TYPE_PUSH:
     case XQC_H3_STREAM_TYPE_QPACK_ENCODER:
     case XQC_H3_STREAM_TYPE_QPACK_DECODER:
-        cflag = stype_2_flag_map[stype]; /* stream creation flag */
-        /* if control/encoder/decoder stream has been created, close connection */
+        /* RFC 9114 Section 6.2.1 and RFC 9204 Section 4.2: single-instance streams */
+        cflag = stype_2_flag_map[stype];
         if (h3c->flags & cflag) {
             xqc_log(h3c->log, XQC_LOG_ERROR, "|h3 uni-stream has been created|type:%ui|",
                     stype);
 
-            XQC_H3_CONN_ERR(h3c, H3_FRAME_ERROR, -XQC_H3_INVALID_STREAM);
+            XQC_H3_CONN_ERR(h3c, H3_STREAM_CREATION_ERROR, -XQC_H3_INVALID_STREAM);
             return -XQC_H3_INVALID_STREAM;
         }
 
         h3c->flags |= cflag;
         break;
+
+    case XQC_H3_STREAM_TYPE_PUSH:
+        /* xquic does not implement server push, reject with H3_ID_ERROR */
+        xqc_log(h3c->log, XQC_LOG_ERROR,
+                "|h3 push stream not supported|type:%ui|", stype);
+
+        XQC_H3_CONN_ERR(h3c, H3_ID_ERROR, -XQC_H3_INVALID_STREAM);
+        return -XQC_H3_INVALID_STREAM;
+
     case XQC_H3_STREAM_TYPE_REQUEST:
         xqc_log(h3c->log, XQC_LOG_ERROR,
                 "|h3 uni-stream can not be used by request stream|type:%ui|", stype);
 
         XQC_H3_CONN_ERR(h3c, H3_FRAME_ERROR, -XQC_H3_INVALID_STREAM);
         return -XQC_H3_INVALID_STREAM;
+
     default:
         /* reserved stream type, do nothing */
         break;

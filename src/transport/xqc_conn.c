@@ -37,6 +37,8 @@
 #include <inttypes.h>
 #include <openssl/rand.h>
 
+#define XQC_DEFAULT_MAX_STREAMS 1024
+
 xqc_conn_settings_t internal_default_conn_settings = {
     .pacing_on = 0,
     .ping_on = 0,
@@ -262,6 +264,13 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
         engine->default_conn_settings.proto_version = settings->proto_version;
     }
 
+    if (settings->max_streams_bidi > 0) {
+        engine->default_conn_settings.max_streams_bidi = settings->max_streams_bidi;
+    }
+    if (settings->max_streams_uni > 0) {
+        engine->default_conn_settings.max_streams_uni = settings->max_streams_uni;
+    }
+
     engine->default_conn_settings.keyupdate_pkt_threshold =
         settings->keyupdate_pkt_threshold;
     engine->default_conn_settings.max_datagram_frame_size =
@@ -445,6 +454,21 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
         engine->default_conn_settings.max_blocked_buf_per_conn =
             XQC_H3_CONN_MAX_BLOCKED_BUF_SIZE_DEFAULT;
     }
+
+    engine->default_conn_settings.simulate_ecn = settings->simulate_ecn;
+
+    /* compute effective blocked buffer limits (use default if not configured) */
+    if (settings->max_blocked_buf_per_stream > 0) {
+        engine->default_conn_settings.max_blocked_buf_per_stream = settings->max_blocked_buf_per_stream;
+    } else {
+        engine->default_conn_settings.max_blocked_buf_per_stream = XQC_H3_STREAM_MAX_BLOCKED_BUF_SIZE_DEFAULT;
+    }
+
+    if (settings->max_blocked_buf_per_conn > 0) {
+        engine->default_conn_settings.max_blocked_buf_per_conn = settings->max_blocked_buf_per_conn;
+    } else {
+        engine->default_conn_settings.max_blocked_buf_per_conn = XQC_H3_CONN_MAX_BLOCKED_BUF_SIZE_DEFAULT;
+    }
 }
 
 static const char *const xqc_conn_flag_to_str[XQC_CONN_FLAG_SHIFT_NUM] = {
@@ -575,8 +599,18 @@ xqc_conn_init_trans_settings(xqc_connection_t *conn)
         ls->max_streams_uni = 128;
 
     } else {
-        ls->max_streams_bidi = 1024;
-        ls->max_streams_uni = 1024;
+        if (conn->conn_settings.max_streams_bidi) {
+            ls->max_streams_bidi = conn->conn_settings.max_streams_bidi;
+
+        } else {
+            ls->max_streams_bidi = XQC_DEFAULT_MAX_STREAMS;
+        }
+        if (conn->conn_settings.max_streams_uni) {
+            ls->max_streams_uni = conn->conn_settings.max_streams_uni;
+
+        } else {
+            ls->max_streams_uni = XQC_DEFAULT_MAX_STREAMS;
+        }
     }
     ls->max_stream_data_bidi_remote = XQC_MAX_RECV_WINDOW;
     ls->max_stream_data_uni = XQC_MAX_RECV_WINDOW;
@@ -1004,6 +1038,7 @@ xqc_conn_create(xqc_engine_t *engine, xqc_cid_t *dcid, xqc_cid_t *scid,
                                XQC_INITIAL_PATH_ID)) {
         goto fail;
     }
+    xqc_cid_set_mark_original(&xc->dcid_set, dcid, XQC_INITIAL_PATH_ID);
     xqc_cid_copy(&(xc->dcid_set.current_dcid), dcid);
     xqc_hex_dump(xc->dcid_set.current_dcid_str, dcid->cid_buf, dcid->cid_len);
     xc->dcid_set.current_dcid_str[dcid->cid_len * 2] = '\0';
@@ -1013,6 +1048,7 @@ xqc_conn_create(xqc_engine_t *engine, xqc_cid_t *dcid, xqc_cid_t *scid,
                                XQC_INITIAL_PATH_ID)) {
         goto fail;
     }
+    xqc_cid_set_mark_original(&xc->scid_set, scid, XQC_INITIAL_PATH_ID);
     xqc_cid_copy(&(xc->scid_set.user_scid), scid);
     xqc_hex_dump(xc->scid_set.original_scid_str, scid->cid_buf, scid->cid_len);
     xc->scid_set.original_scid_str[scid->cid_len * 2] = '\0';
@@ -1028,7 +1064,6 @@ xqc_conn_create(xqc_engine_t *engine, xqc_cid_t *dcid, xqc_cid_t *scid,
     xc->log->scid = xc->scid_set.original_scid_str;
     xc->transport_cbs = engine->transport_cbs;
     xc->user_data = user_data;
-    xc->discard_vn_flag = 0;
     xc->conn_type = type;
     xc->conn_flag = 0;
     xc->conn_state = (type == XQC_CONN_TYPE_SERVER) ? XQC_CONN_STATE_SERVER_INIT
@@ -4324,17 +4359,35 @@ xqc_conn_early_data_reject(xqc_connection_t *conn)
 
     xqc_conn_resend_0rtt_datagram(conn);
 
-    xqc_list_for_each_safe(pos, next, &conn->conn_all_streams)
-    {
+    /*
+     * RFC 9001 Section 4.6.2: when 0-RTT is rejected, the client
+     * resets the state of all streams. The connection-level send
+     * aggregate is the sum of every stream's send progress, so it
+     * must be reset together with the per-stream offsets below.
+     * Otherwise the buffered data, replayed in 1-RTT through
+     * xqc_write_stream_frame_to_packet, would be charged twice
+     * against the peer's MAX_DATA limit.
+     */
+    conn->conn_flow_ctl.fc_data_sent = 0;
+
+    xqc_list_for_each_safe(pos, next, &conn->conn_all_streams) {
         stream = xqc_list_entry(pos, xqc_stream_t, all_stream_list);
         if (stream->stream_flag & XQC_STREAM_FLAG_HAS_0RTT) {
             stream->stream_send_offset = 0;
             stream->stream_unacked_pkt = 0;
-            if (stream->stream_state_send >= XQC_SEND_STREAM_ST_RESET_SENT ||
-                stream->stream_state_recv >= XQC_RECV_STREAM_ST_RESET_RECVD) {
-                xqc_destroy_write_buff_list(
-                    &stream->stream_write_buff_list.write_buff_list);
-                return XQC_OK;
+            if (stream->stream_state_send >= XQC_SEND_STREAM_ST_RESET_SENT
+                || stream->stream_state_recv >= XQC_RECV_STREAM_ST_RESET_RECVD)
+            {
+                /*
+                 * RFC 9001 Section 4.6.2: when 0-RTT is rejected, the
+                 * client MUST reset the state of all streams that were
+                 * sent in 0-RTT. A stream already in RESET_SENT /
+                 * RESET_RECVD cannot be re-initialized, so just discard
+                 * its buffered 0-RTT writes and continue iterating so the
+                 * remaining 0-RTT streams are still processed.
+                 */
+                xqc_destroy_write_buff_list(&stream->stream_write_buff_list.write_buff_list);
+                continue;
             }
             xqc_stream_send_state_update(stream, XQC_SEND_STREAM_ST_READY);
             xqc_stream_recv_state_update(stream, XQC_RECV_STREAM_ST_RECV);
@@ -4588,6 +4641,23 @@ xqc_conn_handshake_complete(xqc_connection_t *conn)
         }
 
     } else {
+        /*
+         * RFC 9001 Section 8.1: clients MUST treat a handshake that
+         * completes without ALPN negotiation as a connection error of
+         * type 0x0178 (no_application_protocol).
+         */
+        const char *selected_alpn = NULL;
+        size_t      selected_alpn_len = 0;
+        xqc_tls_get_selected_alpn(conn->tls,
+                                  &selected_alpn,
+                                  &selected_alpn_len);
+        if (selected_alpn == NULL || selected_alpn_len == 0) {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|handshake completed without ALPN|");
+            XQC_CONN_ERR(conn, TRA_NO_APPLICATION_PROTOCOL);
+            return -XQC_EPROTO;
+        }
+
         /*
          * client MUST discard Initial keys when it first sends a Handshake packet,
          * equivalent to handshake complete and can send 1RTT
@@ -5025,6 +5095,7 @@ xqc_conn_confirm_cid(xqc_connection_t *c, xqc_packet_t *pkt)
                         xqc_cid_set_get_used_cnt(&c->dcid_set, XQC_INITIAL_PATH_ID));
                 return ret;
             }
+            xqc_cid_set_mark_original(&c->dcid_set, &pkt->pkt_scid, XQC_INITIAL_PATH_ID);
         }
 
         if (XQC_OK != xqc_cid_is_equal(&c->dcid_set.current_dcid, &pkt->pkt_scid)) {
@@ -5478,12 +5549,11 @@ xqc_conn_try_add_new_conn_id(xqc_connection_t *conn, uint64_t retire_prior_to)
             conn->conn_settings.multipath_version >= XQC_MULTIPATH_10) {
             /* principle #1 there are two CIDs for the next path ID */
             inner_set = xqc_get_next_unused_path_cid_set(&conn->scid_set);
-            while (inner_set &&
-                   (inner_set->unused_cnt + inner_set->used_cnt) <
-                       conn->remote_settings.active_connection_id_limit &&
-                   inner_set->unused_cnt < unused_limit) {
-                ret = xqc_write_mp_new_conn_id_frame_to_packet(conn, retire_prior_to,
-                                                               inner_set->path_id);
+            while (inner_set 
+                   && xqc_cid_set_countable_cnt(inner_set) < conn->remote_settings.active_connection_id_limit
+                   && inner_set->unused_cnt < unused_limit) 
+            {
+                ret = xqc_write_mp_new_conn_id_frame_to_packet(conn, retire_prior_to, inner_set->path_id);
                 if (ret != XQC_OK) {
                     xqc_log(
                         conn->log, XQC_LOG_ERROR,
@@ -5499,12 +5569,11 @@ xqc_conn_try_add_new_conn_id(xqc_connection_t *conn, uint64_t retire_prior_to)
             {
                 inner_set = xqc_list_entry(pos, xqc_cid_set_inner_t, next);
                 if (inner_set->set_state == XQC_CID_SET_USED) {
-                    while (inner_set &&
-                           (inner_set->unused_cnt + inner_set->used_cnt) <
-                               conn->remote_settings.active_connection_id_limit &&
-                           inner_set->unused_cnt < unused_limit) {
-                        ret = xqc_write_mp_new_conn_id_frame_to_packet(
-                            conn, retire_prior_to, inner_set->path_id);
+                    while (inner_set 
+                           && xqc_cid_set_countable_cnt(inner_set) < conn->remote_settings.active_connection_id_limit
+                           && inner_set->unused_cnt < unused_limit) 
+                    {
+                        ret = xqc_write_mp_new_conn_id_frame_to_packet(conn, retire_prior_to, inner_set->path_id);
                         if (ret != XQC_OK) {
                             xqc_log(conn->log, XQC_LOG_ERROR,
                                     "|xqc_write_mp_new_conn_id_frame_to_packet "
@@ -5537,9 +5606,9 @@ xqc_conn_try_add_new_conn_id(xqc_connection_t *conn, uint64_t retire_prior_to)
                 if (inner_set->path_id > conn->curr_max_path_id) {
                     continue;
                 }
-                while ((inner_set->unused_cnt + inner_set->used_cnt) <
-                           conn->remote_settings.active_connection_id_limit &&
-                       inner_set->unused_cnt < unused_limit) {
+                while (xqc_cid_set_countable_cnt(inner_set)
+                           < conn->remote_settings.active_connection_id_limit
+                       && inner_set->unused_cnt < unused_limit) {
                     ret = xqc_write_mp_new_conn_id_frame_to_packet(conn, retire_prior_to,
                                                                    inner_set->path_id);
                     if (ret != XQC_OK) {
@@ -5554,9 +5623,9 @@ xqc_conn_try_add_new_conn_id(xqc_connection_t *conn, uint64_t retire_prior_to)
         } else {
             inner_set = xqc_get_path_cid_set(&conn->scid_set, XQC_INITIAL_PATH_ID);
             /* origin logic for new connection id */
-            while ((inner_set->used_cnt + inner_set->unused_cnt) <
-                       conn->remote_settings.active_connection_id_limit &&
-                   inner_set->unused_cnt < unused_limit) {
+            while (xqc_cid_set_countable_cnt(inner_set) < conn->remote_settings.active_connection_id_limit
+                   && inner_set->unused_cnt < unused_limit)
+            {
                 ret = xqc_write_new_conn_id_frame_to_packet(conn, retire_prior_to);
                 if (ret != XQC_OK) {
                     xqc_log(conn->log, XQC_LOG_ERROR,
@@ -6166,8 +6235,7 @@ xqc_conn_get_local_transport_params(xqc_connection_t *conn,
 }
 
 xqc_int_t
-xqc_conn_check_transport_params(xqc_connection_t *conn,
-                                const xqc_transport_params_t *params)
+xqc_conn_check_transport_params(xqc_connection_t *conn, const xqc_transport_params_t *params)
 {
     /* parameters MUST NOT be larger than 2^60 */
     if (params->initial_max_streams_bidi > XQC_MAX_STREAMS ||
@@ -6199,14 +6267,27 @@ xqc_conn_check_transport_params(xqc_connection_t *conn,
                     xqc_scid_str(conn->engine, &params->initial_source_connection_id));
             return -XQC_TLS_TRANSPORT_PARAM;
         }
+
+        /* RFC 9000 §7.3: validate initial_source_connection_id matches peer's first Initial SCID */
+        if (!params->initial_source_connection_id_present
+            || xqc_cid_is_equal(&params->initial_source_connection_id,
+                                &conn->dcid_set.current_dcid) != XQC_OK)
+        {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|iscid mismatch|present:%d|expect:%s|got:%s|",
+                    (int)params->initial_source_connection_id_present,
+                    xqc_dcid_str(conn->engine, &conn->dcid_set.current_dcid),
+                    xqc_scid_str(conn->engine, &params->initial_source_connection_id));
+            return -XQC_TLS_TRANSPORT_PARAM;
+        }
     }
 
     if (conn->conn_type == XQC_CONN_TYPE_CLIENT) {
-        /* RFC 9000 §7.3: client validates ISCID/ODCID/RSCID from server transport params
-         */
-        if (!params->initial_source_connection_id_present ||
-            xqc_cid_is_equal(&params->initial_source_connection_id,
-                             &conn->dcid_set.current_dcid) != XQC_OK) {
+        /* RFC 9000 §7.3: client validates ISCID/ODCID/RSCID from server transport params */
+        if (!params->initial_source_connection_id_present
+            || xqc_cid_is_equal(&params->initial_source_connection_id,
+                                &conn->dcid_set.current_dcid) != XQC_OK)
+        {
             xqc_log(conn->log, XQC_LOG_ERROR,
                     "|iscid mismatch|present:%d|expect:%s|got:%s|",
                     (int)params->initial_source_connection_id_present,
@@ -6215,9 +6296,10 @@ xqc_conn_check_transport_params(xqc_connection_t *conn,
             return -XQC_TLS_TRANSPORT_PARAM;
         }
 
-        if (!params->original_dest_connection_id_present ||
-            xqc_cid_is_equal(&params->original_dest_connection_id,
-                             &conn->original_dcid) != XQC_OK) {
+        if (!params->original_dest_connection_id_present
+            || xqc_cid_is_equal(&params->original_dest_connection_id,
+                                &conn->original_dcid) != XQC_OK)
+        {
             xqc_log(conn->log, XQC_LOG_ERROR,
                     "|odcid mismatch|present:%d|expect:%s|got:%s|",
                     (int)params->original_dest_connection_id_present,
@@ -6237,10 +6319,11 @@ xqc_conn_check_transport_params(xqc_connection_t *conn,
              * so reaching this branch with cid_len == 0 would indicate an
              * internal inconsistency; reject defensively in that case as well.
              */
-            if (!params->retry_source_connection_id_present ||
-                conn->retry_scid.cid_len == 0 ||
-                xqc_cid_is_equal(&params->retry_source_connection_id,
-                                 &conn->retry_scid) != XQC_OK) {
+            if (!params->retry_source_connection_id_present
+                || conn->retry_scid.cid_len == 0
+                || xqc_cid_is_equal(&params->retry_source_connection_id,
+                                    &conn->retry_scid) != XQC_OK)
+            {
                 xqc_log(conn->log, XQC_LOG_ERROR,
                         "|rscid mismatch|present:%d|expect:%s|got:%s|",
                         (int)params->retry_source_connection_id_present,
@@ -6297,6 +6380,91 @@ xqc_check_fec_trans_param(xqc_connection_t *conn, xqc_transport_params_t params)
     }
 }
 
+/*
+ * RFC 9000 Section 7.4.1: after the server accepted early data it MUST NOT
+ * reduce these transport parameters below the values the client remembered:
+ *   - active_connection_id_limit
+ *   - initial_max_data
+ *   - initial_max_stream_data_bidi_local
+ *   - initial_max_stream_data_bidi_remote
+ *   - initial_max_stream_data_uni
+ *   - initial_max_streams_bidi
+ *   - initial_max_streams_uni
+ * conn->remote_settings still holds the remembered (0-RTT) values set by
+ * xqc_conn_set_early_remote_transport_params; the new 1-RTT values are in
+ * `params`.  Returns XQC_OK when nothing was reduced.
+ */
+xqc_int_t
+xqc_conn_check_0rtt_reduced_params(xqc_connection_t *conn,
+    const xqc_transport_params_t *params)
+{
+    const xqc_trans_settings_t *remembered = &conn->remote_settings;
+
+    if (params->initial_max_data < remembered->max_data) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|0rtt_param_reduced|initial_max_data|"
+                "remembered:%ui|new:%ui|",
+                remembered->max_data, params->initial_max_data);
+        return XQC_ERROR;
+    }
+
+    if (params->initial_max_stream_data_bidi_local < remembered->max_stream_data_bidi_local) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|0rtt_param_reduced|initial_max_stream_data_bidi_local|"
+                "remembered:%ui|new:%ui|",
+                remembered->max_stream_data_bidi_local,
+                params->initial_max_stream_data_bidi_local);
+        return XQC_ERROR;
+    }
+
+    if (params->initial_max_stream_data_bidi_remote < remembered->max_stream_data_bidi_remote) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|0rtt_param_reduced|initial_max_stream_data_bidi_remote|"
+                "remembered:%ui|new:%ui|",
+                remembered->max_stream_data_bidi_remote,
+                params->initial_max_stream_data_bidi_remote);
+        return XQC_ERROR;
+    }
+
+    if (params->initial_max_stream_data_uni < remembered->max_stream_data_uni) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|0rtt_param_reduced|initial_max_stream_data_uni|"
+                "remembered:%ui|new:%ui|",
+                remembered->max_stream_data_uni,
+                params->initial_max_stream_data_uni);
+        return XQC_ERROR;
+    }
+
+    if (params->initial_max_streams_bidi < remembered->max_streams_bidi) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|0rtt_param_reduced|initial_max_streams_bidi|"
+                "remembered:%ui|new:%ui|",
+                remembered->max_streams_bidi,
+                params->initial_max_streams_bidi);
+        return XQC_ERROR;
+    }
+
+    if (params->initial_max_streams_uni < remembered->max_streams_uni) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|0rtt_param_reduced|initial_max_streams_uni|"
+                "remembered:%ui|new:%ui|",
+                remembered->max_streams_uni,
+                params->initial_max_streams_uni);
+        return XQC_ERROR;
+    }
+
+    if (params->active_connection_id_limit < remembered->active_connection_id_limit) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|0rtt_param_reduced|active_connection_id_limit|"
+                "remembered:%ui|new:%ui|",
+                remembered->active_connection_id_limit,
+                params->active_connection_id_limit);
+        return XQC_ERROR;
+    }
+
+    return XQC_OK;
+}
+
 void
 xqc_conn_tls_transport_params_cb(const uint8_t *tp, size_t len, void *user_data)
 {
@@ -6328,10 +6496,35 @@ xqc_conn_tls_transport_params_cb(const uint8_t *tp, size_t len, void *user_data)
         return;
     }
 
-    /* check datagram parameter */
+    /*
+     * RFC 9000 Section 7.4.1: when a client has sent 0-RTT data AND the
+     * server accepted early data, the server MUST NOT reduce certain
+     * transport parameters below the remembered values.  The client MUST
+     * validate this and close with TRANSPORT_PARAMETER_ERROR if any MUST
+     * parameter was reduced.
+     *
+     * We only run this check when early data was actually accepted; if the
+     * server rejected 0-RTT the remembered values are irrelevant.
+     */
+    if (conn->conn_type == XQC_CONN_TYPE_CLIENT
+        && (conn->conn_flag & XQC_CONN_FLAG_HAS_0RTT)
+        && xqc_tls_is_early_data_accepted(conn->tls) == XQC_TLS_EARLY_DATA_ACCEPT)
+    {
+        if (xqc_conn_check_0rtt_reduced_params(conn, &params) != XQC_OK) {
+            XQC_CONN_ERR(conn, TRA_0RTT_TRANS_PARAMS_ERROR);
+            return;
+        }
+    }
+
+    /* check datagram parameter -- unconditional, not gated on early_data
+     * accepted.  For non-0RTT connections remote_settings.max_datagram_frame_size
+     * is 0, so this is a no-op. */
     if (params.max_datagram_frame_size < conn->remote_settings.max_datagram_frame_size) {
-        /* 0RTT: remote_settings.max_datagram_frame_size = X */
-        /* 1RTT: remote_settings.max_datagram_frame_size = 0 */
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|0rtt_param_reduced|max_datagram_frame_size|"
+                "remembered:%ui|new:%ui|",
+                conn->remote_settings.max_datagram_frame_size,
+                params.max_datagram_frame_size);
         XQC_CONN_ERR(conn, TRA_0RTT_TRANS_PARAMS_ERROR);
         return;
     }
@@ -6549,7 +6742,7 @@ xqc_conn_tls_crypto_data_cb(xqc_encrypt_level_t level, const uint8_t *data, size
     default:
         xqc_log(conn->log, XQC_LOG_ERROR,
                 "|impossible crypto data from encryption level|level:%d|", level);
-        XQC_CONN_ERR(conn, TRA_CRYPTO_ERROR_BASE);
+        XQC_CONN_ERR(conn, TRA_INTERNAL_ERROR);
         return -XQC_EFATAL;
     }
 
@@ -6632,8 +6825,7 @@ xqc_int_t
 xqc_conn_tls_alpn_select_cb(const char *alpn, size_t alpn_len, void *user_data)
 {
     xqc_connection_t *conn = (xqc_connection_t *)user_data;
-    xqc_conn_server_on_alpn(conn, alpn, alpn_len);
-    return XQC_OK;
+    return xqc_conn_server_on_alpn(conn, alpn, alpn_len);
 }
 
 xqc_int_t
@@ -6749,19 +6941,46 @@ xqc_conn_set_init_idle_timeout(xqc_connection_t *conn, xqc_msec_t init_idle_time
 xqc_msec_t
 xqc_conn_get_idle_timeout(xqc_connection_t *conn)
 {
-    if (conn->conn_type == XQC_CONN_TYPE_SERVER &&
-        !(conn->conn_flag & XQC_CONN_FLAG_HANDSHAKE_COMPLETED)) {
-        /* only server will limit idle timeout to init_idle_time_out before handshake
-         * completed */
+    xqc_msec_t local_to, remote_to, idle_timeout;
+
+    if (conn->conn_type == XQC_CONN_TYPE_SERVER
+        && !(conn->conn_flag & XQC_CONN_FLAG_HANDSHAKE_COMPLETED))
+    {
+        /* only server will limit idle timeout to init_idle_time_out before handshake completed */
         return conn->conn_settings.init_idle_time_out == 0
-                   ? XQC_CONN_INITIAL_IDLE_TIMEOUT
-                   : conn->conn_settings.init_idle_time_out;
+            ? XQC_CONN_INITIAL_IDLE_TIMEOUT : conn->conn_settings.init_idle_time_out;
+    }
+
+    local_to = conn->local_settings.max_idle_timeout;
+
+    /*
+     * RFC 9000 10.1: the effective idle timeout is the minimum of the
+     * max_idle_timeout values advertised by both endpoints, where a value
+     * of 0 means the endpoint imposes no limit. Remote transport
+     * parameters are only authoritative after handshake completion, so
+     * fall back to the local value before then.
+     */
+    if (conn->conn_flag & XQC_CONN_FLAG_HANDSHAKE_COMPLETED) {
+        remote_to = conn->remote_settings.max_idle_timeout;
+
+        if (local_to == 0) {
+            idle_timeout = remote_to;
+
+        } else if (remote_to == 0) {
+            idle_timeout = local_to;
+
+        } else {
+            idle_timeout = xqc_min(local_to, remote_to);
+        }
 
     } else {
-        return conn->local_settings.max_idle_timeout == 0
-                   ? XQC_CONN_DEFAULT_IDLE_TIMEOUT
-                   : conn->local_settings.max_idle_timeout;
+        idle_timeout = local_to;
     }
+
+    /* both peers disabled the timeout; fall back to xquic's safe default
+     * rather than returning 0 to avoid disabling the idle timer entirely.
+     */
+    return idle_timeout == 0 ? XQC_CONN_DEFAULT_IDLE_TIMEOUT : idle_timeout;
 }
 
 xqc_msec_t

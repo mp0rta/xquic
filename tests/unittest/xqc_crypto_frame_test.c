@@ -60,12 +60,10 @@ xqc_test_crypto_frame_flood()
 
     /* First insert offset=0 so next_read_offset advances to 1
      * (simulating TLS processing the first byte) */
-    /* Actually for this test, we skip offset 0 entirely to keep next_read_offset pinned
-     * at 0 */
+    /* Actually for this test, we skip offset 0 entirely to keep next_read_offset pinned at 0 */
 
     for (uint64_t i = 0; i < XQC_MAX_CRYPTO_FRAME_BUFFERED_COUNT + 100; i++) {
-        uint64_t offset =
-            (i + 1) * offset_step; /* start at offset 2 to leave gap at 0,1 */
+        uint64_t offset = (i + 1) * offset_step;  /* start at offset 2 to leave gap at 0,1 */
 
         xqc_stream_frame_t *frame = xqc_calloc(1, sizeof(xqc_stream_frame_t));
         CU_ASSERT(frame != NULL);
@@ -99,10 +97,8 @@ xqc_test_crypto_frame_flood()
     CU_ASSERT(rejected_at == XQC_MAX_CRYPTO_FRAME_BUFFERED_COUNT);
 
     /* Verify counters are correct */
-    CU_ASSERT(stream->stream_data_in.buffered_frame_count ==
-              XQC_MAX_CRYPTO_FRAME_BUFFERED_COUNT);
-    CU_ASSERT(stream->stream_data_in.buffered_data_bytes ==
-              XQC_MAX_CRYPTO_FRAME_BUFFERED_COUNT * data_len);
+    CU_ASSERT(stream->stream_data_in.buffered_frame_count == XQC_MAX_CRYPTO_FRAME_BUFFERED_COUNT);
+    CU_ASSERT(stream->stream_data_in.buffered_data_bytes == XQC_MAX_CRYPTO_FRAME_BUFFERED_COUNT * data_len);
 
     /* Verify next_read_offset is still 0 (pinned by the gap at offset 0-1) */
     CU_ASSERT(stream->stream_data_in.next_read_offset == 0);
@@ -142,16 +138,13 @@ xqc_test_crypto_frame_bytes_limit()
      * frag_size = 4096 -> need ~256 frames to reach 1MB, far below 1024 nodes.
      */
     uint64_t frag_size = 4096;
-    uint64_t offset_step =
-        frag_size * 2; /* leave a gap so next_read_offset stays pinned */
+    uint64_t offset_step = frag_size * 2;   /* leave a gap so next_read_offset stays pinned */
     uint64_t inserted_bytes = 0;
     uint64_t insert_count = 0;
     xqc_bool_t rejected_by_bytes = XQC_FALSE;
 
     for (uint64_t i = 0; i < XQC_MAX_CRYPTO_FRAME_BUFFERED_COUNT; i++) {
-        uint64_t offset =
-            (i + 1) *
-            offset_step; /* gap at [0, offset_step) keeps next_read_offset pinned */
+        uint64_t offset = (i + 1) * offset_step;  /* gap at [0, offset_step) keeps next_read_offset pinned */
 
         xqc_stream_frame_t *frame = xqc_calloc(1, sizeof(xqc_stream_frame_t));
         CU_ASSERT(frame != NULL);
@@ -186,13 +179,11 @@ xqc_test_crypto_frame_bytes_limit()
     CU_ASSERT(insert_count < XQC_MAX_CRYPTO_FRAME_BUFFERED_COUNT);
 
     /* Buffered bytes must never exceed the cap */
-    CU_ASSERT(stream->stream_data_in.buffered_data_bytes <=
-              XQC_MAX_CRYPTO_FRAME_BUFFERED_BYTES);
+    CU_ASSERT(stream->stream_data_in.buffered_data_bytes <= XQC_MAX_CRYPTO_FRAME_BUFFERED_BYTES);
     CU_ASSERT(stream->stream_data_in.buffered_data_bytes == inserted_bytes);
 
     /* Adding one more fragment would have exceeded the cap */
-    CU_ASSERT(stream->stream_data_in.buffered_data_bytes + frag_size >
-              XQC_MAX_CRYPTO_FRAME_BUFFERED_BYTES);
+    CU_ASSERT(stream->stream_data_in.buffered_data_bytes + frag_size > XQC_MAX_CRYPTO_FRAME_BUFFERED_BYTES);
 
     xqc_engine_destroy(conn->engine);
 }
@@ -262,8 +253,7 @@ xqc_test_crypto_frame_recycle()
      * and remove it while decrementing counters.
      */
     xqc_list_head_t *pos, *next;
-    xqc_list_for_each_safe(pos, next, &stream->stream_data_in.frames_tailq)
-    {
+    xqc_list_for_each_safe(pos, next, &stream->stream_data_in.frames_tailq) {
         xqc_stream_frame_t *sf = xqc_list_entry(pos, xqc_stream_frame_t, sf_list);
 
         /* mark as consumed */
@@ -294,7 +284,7 @@ xqc_test_crypto_frame_recycle()
         if (frame->data != NULL) {
             memset(frame->data, 0xAB, frag_size);
             frame->data_length = frag_size;
-            frame->data_offset = frag_count * frag_size; /* next in-order offset */
+            frame->data_offset = frag_count * frag_size;  /* next in-order offset */
             ret = xqc_insert_crypto_frame(conn, stream, frame);
             CU_ASSERT(ret == XQC_OK);
             CU_ASSERT(stream->stream_data_in.buffered_frame_count == 1);

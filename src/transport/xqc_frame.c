@@ -822,8 +822,7 @@ xqc_insert_crypto_frame(xqc_connection_t *conn, xqc_stream_t *stream,
     /* CWE-770 mitigation: reject if buffered frame count or data bytes exceed caps.
      * This prevents sparse out-of-order CRYPTO fragments from causing unbounded
      * memory allocation when next_read_offset is pinned by gaps. */
-    if (stream->stream_data_in.buffered_frame_count >=
-        XQC_MAX_CRYPTO_FRAME_BUFFERED_COUNT) {
+    if (stream->stream_data_in.buffered_frame_count >= XQC_MAX_CRYPTO_FRAME_BUFFERED_COUNT) {
         XQC_CONN_ERR(conn, TRA_CRYPTO_BUFFER_EXCEEDED);
         xqc_log(conn->log, XQC_LOG_ERROR,
                 "|crypto frame buffered count exceed|count:%ui|limit:%d|",
@@ -832,18 +831,19 @@ xqc_insert_crypto_frame(xqc_connection_t *conn, xqc_stream_t *stream,
         return -XQC_ELIMIT;
     }
 
-    if (stream->stream_data_in.buffered_data_bytes + stream_frame->data_length >
-        XQC_MAX_CRYPTO_FRAME_BUFFERED_BYTES) {
+    if (stream->stream_data_in.buffered_data_bytes + stream_frame->data_length
+        > XQC_MAX_CRYPTO_FRAME_BUFFERED_BYTES)
+    {
         XQC_CONN_ERR(conn, TRA_CRYPTO_BUFFER_EXCEEDED);
         xqc_log(conn->log, XQC_LOG_ERROR,
                 "|crypto frame buffered bytes exceed|bytes:%ui|new:%ud|limit:%d|",
-                stream->stream_data_in.buffered_data_bytes, stream_frame->data_length,
+                stream->stream_data_in.buffered_data_bytes,
+                stream_frame->data_length,
                 XQC_MAX_CRYPTO_FRAME_BUFFERED_BYTES);
         return -XQC_ELIMIT;
     }
 
-    xqc_list_for_each_reverse(pos, &stream->stream_data_in.frames_tailq)
-    {
+    xqc_list_for_each_reverse(pos, &stream->stream_data_in.frames_tailq) {
         frame = xqc_list_entry(pos, xqc_stream_frame_t, sf_list);
 
         if (stream_frame->data_offset >= frame->data_offset) {
@@ -869,6 +869,19 @@ xqc_int_t
 xqc_process_crypto_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 {
     xqc_int_t ret;
+
+    /*
+     * RFC 9001 Section 8.3: A server MUST treat receipt of a CRYPTO frame
+     * in a 0-RTT packet as a connection error of type PROTOCOL_VIOLATION.
+     * Reject before recording the frame type bit so a malformed packet does
+     * not leave residual state.
+     */
+    if (packet_in->pi_pkt.pkt_type == XQC_PTYPE_0RTT) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|reject CRYPTO frame in 0-RTT packet|RFC 9001 8.3|");
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
+        return -XQC_EPROTO;
+    }
 
     /* ack even if the token check fail */
     packet_in->pi_frame_types |= XQC_FRAME_BIT_CRYPTO;
@@ -1910,10 +1923,8 @@ xqc_process_path_response_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_
      * MAY generate a connection error of type PROTOCOL_VIOLATION.
      */
 
-    if (memcmp(path->path_challenge_data, path_response_data,
-               (size_t)XQC_PATH_CHALLENGE_DATA_LEN) != 0) {
-        xqc_log(conn->log, XQC_LOG_ERROR,
-                "|path:%ui|ignore|no match path challenge data|", path->path_id);
+    if (memcmp(path->path_challenge_data, path_response_data, (size_t)XQC_PATH_CHALLENGE_DATA_LEN) != 0) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|path:%ui|ignore|no match path challenge data|", path->path_id);
         return XQC_OK;
     }
 

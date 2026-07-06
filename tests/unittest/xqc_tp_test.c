@@ -11,14 +11,13 @@
 #include <CUnit/CUnit.h>
 
 /* transport parameter from server */
-#define XQC_TEST_DECODE_TP_BUF                                         \
-    "\x44\xd4\x08\x8c\x46\xe0\xc9\x1b\x81\x88\x22\x05"                 \
-    "\x04\x80\x08\x00\x00\x06\x04\x80\x08\x00\x00\x07\x04\x80\x08\x00" \
-    "\x00\x04\x04\x80\x0c\x00\x00\x08\x02\x40\x64\x09\x02\x40\x64\x01" \
-    "\x04\x80\x00\x75\x30\x03\x02\x45\xac\x0b\x01\x1a\x0c\x00\x02\x10" \
-    "\xeb\x46\xd4\xff\xd2\x14\x26\xe4\xea\x6f\x84\xd8\xcd\x6b\xf5\xa1" \
-    "\x00\x08\x0b\xf7\xbe\xf4\x06\x7a\xa1\xb7\x0e\x01\x04\x0f\x04\xec" \
-    "\x86\xa2\xa7\x20\x01\x00"
+#define XQC_TEST_DECODE_TP_BUF "\x44\xd4\x08\x8c\x46\xe0\xc9\x1b\x81\x88\x22\x05"                 \
+                               "\x04\x80\x08\x00\x00\x06\x04\x80\x08\x00\x00\x07\x04\x80\x08\x00" \
+                               "\x00\x04\x04\x80\x0c\x00\x00\x08\x02\x40\x64\x09\x02\x40\x64\x01" \
+                               "\x04\x80\x00\x75\x30\x03\x02\x45\xac\x0b\x01\x1a\x0c\x00\x02\x10" \
+                               "\xeb\x46\xd4\xff\xd2\x14\x26\xe4\xea\x6f\x84\xd8\xcd\x6b\xf5\xa1" \
+                               "\x00\x08\x0b\xf7\xbe\xf4\x06\x7a\xa1\xb7\x0e\x01\x04\x0f\x04\xec" \
+                               "\x86\xa2\xa7\x20\x01\x00"
 
 char test_encode_tp_buf[XQC_MAX_TRANSPORT_PARAM_BUF_LEN];
 
@@ -37,9 +36,8 @@ xqc_test_encode_transport_params()
     ret = xqc_conn_get_local_transport_params(conn, &params);
     CU_ASSERT(ret == XQC_OK);
 
-    ret =
-        xqc_encode_transport_params(&params, XQC_TP_TYPE_CLIENT_HELLO, test_encode_tp_buf,
-                                    XQC_MAX_TRANSPORT_PARAM_BUF_LEN, &nwrite);
+    ret = xqc_encode_transport_params(&params, XQC_TP_TYPE_CLIENT_HELLO, test_encode_tp_buf,
+                                      XQC_MAX_TRANSPORT_PARAM_BUF_LEN, &nwrite);
     CU_ASSERT(ret == XQC_OK && nwrite > 0);
 
     xqc_engine_destroy(conn->engine);
@@ -54,7 +52,8 @@ xqc_test_decode_transport_params()
     xqc_transport_params_t params;
     memset(&params, 0, sizeof(xqc_transport_params_t));
 
-    xqc_int_t ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
+    xqc_int_t ret = xqc_decode_transport_params(&params,
+                                                XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
                                                 XQC_TEST_DECODE_TP_BUF,
                                                 sizeof(XQC_TEST_DECODE_TP_BUF) - 1);
     CU_ASSERT(ret == XQC_OK);
@@ -88,8 +87,7 @@ xqc_test_encrypted_extensions()
     params.max_udp_payload_size = XQC_CONN_MAX_UDP_PAYLOAD_SIZE - 1;
 
     params.stateless_reset_token_present = 1;
-    memcpy(params.stateless_reset_token, test_stateless_reset_token,
-           sizeof(params.stateless_reset_token));
+    memcpy(params.stateless_reset_token, test_stateless_reset_token, sizeof(params.stateless_reset_token));
 
     params.ack_delay_exponent = XQC_DEFAULT_ACK_DELAY_EXPONENT + 1;
     params.disable_active_migration = 1;
@@ -99,35 +97,30 @@ xqc_test_encrypted_extensions()
     params.enable_multipath = 1;
 
     xqc_cid_set(&params.preferred_address.cid, test_pacid.cid_buf, test_pacid.cid_len);
-    memcpy(params.preferred_address.stateless_reset_token, test_stateless_reset_token,
-           sizeof(params.stateless_reset_token));
+    memcpy(params.preferred_address.stateless_reset_token, test_stateless_reset_token, sizeof(params.stateless_reset_token));
     params.preferred_address_present = 1;
 
-    xqc_cid_set(&params.original_dest_connection_id, test_odcid.cid_buf,
-                test_odcid.cid_len);
+    xqc_cid_set(&params.original_dest_connection_id, test_odcid.cid_buf, test_odcid.cid_len);
     params.original_dest_connection_id_present = 1;
 
-    xqc_cid_set(&params.initial_source_connection_id, test_iscid.cid_buf,
-                test_iscid.cid_len);
+    xqc_cid_set(&params.initial_source_connection_id, test_iscid.cid_buf, test_iscid.cid_len);
     params.initial_source_connection_id_present = 1;
 
-    xqc_cid_set(&params.retry_source_connection_id, test_rscid.cid_buf,
-                test_rscid.cid_len);
+    xqc_cid_set(&params.retry_source_connection_id, test_rscid.cid_buf, test_rscid.cid_len);
     params.retry_source_connection_id_present = 1;
 
     xqc_int_t ret = XQC_OK;
     size_t nwrite = 0;
 
-    ret = xqc_encode_transport_params(&params, XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
-                                      test_encode_tp_buf, XQC_MAX_TRANSPORT_PARAM_BUF_LEN,
-                                      &nwrite);
+    ret = xqc_encode_transport_params(&params, XQC_TP_TYPE_ENCRYPTED_EXTENSIONS, test_encode_tp_buf,
+                                      XQC_MAX_TRANSPORT_PARAM_BUF_LEN, &nwrite);
     CU_ASSERT(ret == XQC_OK && nwrite > 0);
 
     xqc_transport_params_t dec_params;
     memset(&dec_params, 0, sizeof(xqc_transport_params_t));
 
     ret = xqc_decode_transport_params(&dec_params, XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
-                                      test_encode_tp_buf, nwrite);
+                                     test_encode_tp_buf, nwrite);
     CU_ASSERT(ret == XQC_OK);
 
     xqc_engine_destroy(engine);
@@ -247,8 +240,7 @@ xqc_tp_test_check_server_iscid_mismatch(void)
 
     xqc_transport_params_t params;
     xqc_tp_test_init_baseline(&params);
-    xqc_cid_set(&params.initial_source_connection_id, wrong_iscid.cid_buf,
-                wrong_iscid.cid_len);
+    xqc_cid_set(&params.initial_source_connection_id, wrong_iscid.cid_buf, wrong_iscid.cid_len);
     params.initial_source_connection_id_present = 1;
 
     CU_ASSERT(xqc_conn_check_transport_params(conn, &params) == -XQC_TLS_TRANSPORT_PARAM);
@@ -264,8 +256,7 @@ xqc_tp_test_check_server_iscid_match(void)
 
     xqc_transport_params_t params;
     xqc_tp_test_init_baseline(&params);
-    xqc_cid_set(&params.initial_source_connection_id, peer_scid.cid_buf,
-                peer_scid.cid_len);
+    xqc_cid_set(&params.initial_source_connection_id, peer_scid.cid_buf, peer_scid.cid_len);
     params.initial_source_connection_id_present = 1;
 
     CU_ASSERT(xqc_conn_check_transport_params(conn, &params) == XQC_OK);
@@ -282,12 +273,10 @@ xqc_tp_test_check_server_rejects_server_only_param(void)
 
     xqc_transport_params_t params;
     xqc_tp_test_init_baseline(&params);
-    xqc_cid_set(&params.initial_source_connection_id, peer_scid.cid_buf,
-                peer_scid.cid_len);
+    xqc_cid_set(&params.initial_source_connection_id, peer_scid.cid_buf, peer_scid.cid_len);
     params.initial_source_connection_id_present = 1;
     /* client illegally sends a server-only parameter */
-    xqc_cid_set(&params.original_dest_connection_id, leaked_odcid.cid_buf,
-                leaked_odcid.cid_len);
+    xqc_cid_set(&params.original_dest_connection_id, leaked_odcid.cid_buf, leaked_odcid.cid_len);
     params.original_dest_connection_id_present = 1;
 
     CU_ASSERT(xqc_conn_check_transport_params(conn, &params) == -XQC_TLS_TRANSPORT_PARAM);
@@ -327,12 +316,11 @@ xqc_tp_test_check_client_iscid_mismatch(void)
 
     xqc_transport_params_t params;
     xqc_tp_test_init_baseline(&params);
-    xqc_cid_set(&params.initial_source_connection_id, wrong_iscid.cid_buf,
-                wrong_iscid.cid_len);
+    xqc_cid_set(&params.initial_source_connection_id, wrong_iscid.cid_buf, wrong_iscid.cid_len);
     params.initial_source_connection_id_present = 1;
     /* even if ODCID is correct, ISCID mismatch must reject */
-    xqc_cid_set(&params.original_dest_connection_id, conn->original_dcid.cid_buf,
-                conn->original_dcid.cid_len);
+    xqc_cid_set(&params.original_dest_connection_id,
+                conn->original_dcid.cid_buf, conn->original_dcid.cid_len);
     params.original_dest_connection_id_present = 1;
 
     CU_ASSERT(xqc_conn_check_transport_params(conn, &params) == -XQC_TLS_TRANSPORT_PARAM);
@@ -348,8 +336,7 @@ xqc_tp_test_check_client_odcid_absent(void)
 
     xqc_transport_params_t params;
     xqc_tp_test_init_baseline(&params);
-    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf,
-                server_scid.cid_len);
+    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf, server_scid.cid_len);
     params.initial_source_connection_id_present = 1;
     /* leave original_dest_connection_id_present = 0 */
 
@@ -367,11 +354,9 @@ xqc_tp_test_check_client_odcid_mismatch(void)
 
     xqc_transport_params_t params;
     xqc_tp_test_init_baseline(&params);
-    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf,
-                server_scid.cid_len);
+    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf, server_scid.cid_len);
     params.initial_source_connection_id_present = 1;
-    xqc_cid_set(&params.original_dest_connection_id, wrong_odcid.cid_buf,
-                wrong_odcid.cid_len);
+    xqc_cid_set(&params.original_dest_connection_id, wrong_odcid.cid_buf, wrong_odcid.cid_len);
     params.original_dest_connection_id_present = 1;
 
     CU_ASSERT(xqc_conn_check_transport_params(conn, &params) == -XQC_TLS_TRANSPORT_PARAM);
@@ -387,11 +372,10 @@ xqc_tp_test_check_client_all_match_no_retry(void)
 
     xqc_transport_params_t params;
     xqc_tp_test_init_baseline(&params);
-    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf,
-                server_scid.cid_len);
+    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf, server_scid.cid_len);
     params.initial_source_connection_id_present = 1;
-    xqc_cid_set(&params.original_dest_connection_id, conn->original_dcid.cid_buf,
-                conn->original_dcid.cid_len);
+    xqc_cid_set(&params.original_dest_connection_id,
+                conn->original_dcid.cid_buf, conn->original_dcid.cid_len);
     params.original_dest_connection_id_present = 1;
 
     CU_ASSERT(xqc_conn_check_transport_params(conn, &params) == XQC_OK);
@@ -412,11 +396,10 @@ xqc_tp_test_check_client_retry_rscid_absent(void)
 
     xqc_transport_params_t params;
     xqc_tp_test_init_baseline(&params);
-    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf,
-                server_scid.cid_len);
+    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf, server_scid.cid_len);
     params.initial_source_connection_id_present = 1;
-    xqc_cid_set(&params.original_dest_connection_id, conn->original_dcid.cid_buf,
-                conn->original_dcid.cid_len);
+    xqc_cid_set(&params.original_dest_connection_id,
+                conn->original_dcid.cid_buf, conn->original_dcid.cid_len);
     params.original_dest_connection_id_present = 1;
     /* server omitted retry_source_connection_id */
 
@@ -438,14 +421,12 @@ xqc_tp_test_check_client_retry_rscid_mismatch(void)
 
     xqc_transport_params_t params;
     xqc_tp_test_init_baseline(&params);
-    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf,
-                server_scid.cid_len);
+    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf, server_scid.cid_len);
     params.initial_source_connection_id_present = 1;
-    xqc_cid_set(&params.original_dest_connection_id, conn->original_dcid.cid_buf,
-                conn->original_dcid.cid_len);
+    xqc_cid_set(&params.original_dest_connection_id,
+                conn->original_dcid.cid_buf, conn->original_dcid.cid_len);
     params.original_dest_connection_id_present = 1;
-    xqc_cid_set(&params.retry_source_connection_id, wrong_rscid.cid_buf,
-                wrong_rscid.cid_len);
+    xqc_cid_set(&params.retry_source_connection_id, wrong_rscid.cid_buf, wrong_rscid.cid_len);
     params.retry_source_connection_id_present = 1;
 
     CU_ASSERT(xqc_conn_check_transport_params(conn, &params) == -XQC_TLS_TRANSPORT_PARAM);
@@ -465,14 +446,12 @@ xqc_tp_test_check_client_retry_all_match(void)
 
     xqc_transport_params_t params;
     xqc_tp_test_init_baseline(&params);
-    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf,
-                server_scid.cid_len);
+    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf, server_scid.cid_len);
     params.initial_source_connection_id_present = 1;
-    xqc_cid_set(&params.original_dest_connection_id, conn->original_dcid.cid_buf,
-                conn->original_dcid.cid_len);
+    xqc_cid_set(&params.original_dest_connection_id,
+                conn->original_dcid.cid_buf, conn->original_dcid.cid_len);
     params.original_dest_connection_id_present = 1;
-    xqc_cid_set(&params.retry_source_connection_id, retry_scid.cid_buf,
-                retry_scid.cid_len);
+    xqc_cid_set(&params.retry_source_connection_id, retry_scid.cid_buf, retry_scid.cid_len);
     params.retry_source_connection_id_present = 1;
 
     CU_ASSERT(xqc_conn_check_transport_params(conn, &params) == XQC_OK);
@@ -491,15 +470,13 @@ xqc_tp_test_check_client_no_retry_but_rscid_present(void)
 
     xqc_transport_params_t params;
     xqc_tp_test_init_baseline(&params);
-    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf,
-                server_scid.cid_len);
+    xqc_cid_set(&params.initial_source_connection_id, server_scid.cid_buf, server_scid.cid_len);
     params.initial_source_connection_id_present = 1;
-    xqc_cid_set(&params.original_dest_connection_id, conn->original_dcid.cid_buf,
-                conn->original_dcid.cid_len);
+    xqc_cid_set(&params.original_dest_connection_id,
+                conn->original_dcid.cid_buf, conn->original_dcid.cid_len);
     params.original_dest_connection_id_present = 1;
     /* server illegally attaches retry_source_connection_id without sending Retry */
-    xqc_cid_set(&params.retry_source_connection_id, ghost_rscid.cid_buf,
-                ghost_rscid.cid_len);
+    xqc_cid_set(&params.retry_source_connection_id, ghost_rscid.cid_buf, ghost_rscid.cid_len);
     params.retry_source_connection_id_present = 1;
 
     CU_ASSERT(xqc_conn_check_transport_params(conn, &params) == -XQC_TLS_TRANSPORT_PARAM);
@@ -507,26 +484,6 @@ xqc_tp_test_check_client_no_retry_but_rscid_present(void)
     xqc_engine_destroy(conn->engine);
 }
 
-void
-xqc_test_check_transport_params_cids(void)
-{
-    /* server-side */
-    xqc_tp_test_check_server_iscid_absent();
-    xqc_tp_test_check_server_iscid_mismatch();
-    xqc_tp_test_check_server_iscid_match();
-    xqc_tp_test_check_server_rejects_server_only_param();
-
-    /* client-side */
-    xqc_tp_test_check_client_iscid_absent();
-    xqc_tp_test_check_client_iscid_mismatch();
-    xqc_tp_test_check_client_odcid_absent();
-    xqc_tp_test_check_client_odcid_mismatch();
-    xqc_tp_test_check_client_all_match_no_retry();
-    xqc_tp_test_check_client_retry_rscid_absent();
-    xqc_tp_test_check_client_retry_rscid_mismatch();
-    xqc_tp_test_check_client_retry_all_match();
-    xqc_tp_test_check_client_no_retry_but_rscid_present();
-}
 /*
  * Test: reject TP CID fields exceeding XQC_MAX_CID_LEN (20 bytes).
  * Constructs raw TP buffers with oversized CID to trigger the length check.
@@ -603,3 +560,23 @@ xqc_test_tp_cid_overflow(void)
     CU_ASSERT(params.initial_source_connection_id.cid_len == 20);
 }
 
+void
+xqc_test_check_transport_params_cids(void)
+{
+    /* server-side */
+    xqc_tp_test_check_server_iscid_absent();
+    xqc_tp_test_check_server_iscid_mismatch();
+    xqc_tp_test_check_server_iscid_match();
+    xqc_tp_test_check_server_rejects_server_only_param();
+
+    /* client-side */
+    xqc_tp_test_check_client_iscid_absent();
+    xqc_tp_test_check_client_iscid_mismatch();
+    xqc_tp_test_check_client_odcid_absent();
+    xqc_tp_test_check_client_odcid_mismatch();
+    xqc_tp_test_check_client_all_match_no_retry();
+    xqc_tp_test_check_client_retry_rscid_absent();
+    xqc_tp_test_check_client_retry_rscid_mismatch();
+    xqc_tp_test_check_client_retry_all_match();
+    xqc_tp_test_check_client_no_retry_but_rscid_present();
+}

@@ -18,8 +18,8 @@
 /* Default maximum total size of blocked buffers per connection (8 MB) */
 #define XQC_H3_CONN_MAX_BLOCKED_BUF_SIZE_DEFAULT (8 * 1024 * 1024)
 
-typedef struct xqc_h3_conn_s xqc_h3_conn_t;
-typedef struct xqc_h3_stream_s xqc_h3_stream_t;
+typedef struct xqc_h3_conn_s    xqc_h3_conn_t;
+typedef struct xqc_h3_stream_s  xqc_h3_stream_t;
 
 typedef enum {
     /* uni stream types */
@@ -141,10 +141,10 @@ typedef struct xqc_h3_stream_s {
 
     /* blocked data buffer, used to store request
        stream data when stream is blocked */
-    xqc_list_head_t blocked_buf;
+    xqc_list_head_t                 blocked_buf;
     /* current size of blocked buffer */
-    size_t blocked_buf_size;
-    xqc_h3_blocked_stream_t *blocked_stream;
+    size_t                          blocked_buf_size;
+    xqc_h3_blocked_stream_t        *blocked_stream;
 
     /* context of representation */
     xqc_rep_ctx_t *ctx;
@@ -223,9 +223,7 @@ void xqc_h3_stream_get_path_info(xqc_h3_stream_t *h3s);
 void xqc_h3_stream_set_priority(xqc_h3_stream_t *h3s, xqc_h3_priority_t *prio);
 
 xqc_int_t xqc_h3_stream_send_bidi_stream_type(xqc_h3_stream_t *h3s,
-                                              xqc_h3_bidi_stream_type_t stype,
-                                              uint8_t fin);
-
+   xqc_h3_bidi_stream_type_t stype, uint8_t fin);
 /* PR3 §4.3 Rev 4: flat dynamic per-h3-stream paths_info helpers. */
 static inline xqc_path_metrics_t *
 xqc_h3_stream_path_metrics_get_or_grow(xqc_h3_stream_t *h3s, uint64_t path_id)
@@ -277,5 +275,12 @@ xqc_h3_stream_path_metrics_destroy(xqc_h3_stream_t *h3s)
     h3s->paths_info_count = 0;
     h3s->paths_info_capacity = 0;
 }
+
+
+ssize_t xqc_h3_stream_process_control(xqc_h3_stream_t *h3s, unsigned char *data,
+    size_t data_len);
+
+ssize_t xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data,
+    size_t data_len, xqc_bool_t fin_flag);
 
 #endif

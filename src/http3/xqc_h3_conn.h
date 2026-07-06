@@ -94,16 +94,15 @@ typedef struct xqc_h3_conn_s {
     uint64_t block_stream_count;
 
     /* h3 settings */
-    xqc_h3_conn_settings_t
-        local_h3_conn_settings; /* set by user for sending to the peer */
-    xqc_h3_conn_settings_t peer_h3_conn_settings; /* receive from peer */
+    xqc_h3_conn_settings_t       local_h3_conn_settings; /* set by user for sending to the peer */
+    xqc_h3_conn_settings_t       peer_h3_conn_settings;  /* receive from peer */
 
     /* blocked buffer limits (effective values computed at init time) */
-    size_t max_blocked_buf_per_stream; /* effective limit per stream */
-    size_t max_blocked_buf_per_conn;   /* effective limit per connection */
+    size_t                       max_blocked_buf_per_stream;       /* effective limit per stream */
+    size_t                       max_blocked_buf_per_conn;         /* effective limit per connection */
 
     /* blocked buffer monitoring */
-    size_t total_blocked_buf_size; /* current total blocked buffer size */
+    size_t                       total_blocked_buf_size;           /* current total blocked buffer size */
 } xqc_h3_conn_t;
 
 
