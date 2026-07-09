@@ -414,7 +414,9 @@ if(APPLE OR PLATFORM MATCHES "mac")
         ${SSL_LIB_PATH}
         "-Wl"
         -lpthread
-        -lstdc++
+        # libc++, not libstdc++: Apple toolchains dropped libstdc++ stubs at
+        # Xcode 10 — -lstdc++ fails with "library not found" on modern SDKs.
+        -lc++
     )
 else()
     target_link_libraries(
