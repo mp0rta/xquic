@@ -1,7 +1,7 @@
 build/
 bss/
 *.swp
-third_party/
+third_party/*
 # BoringSSL is now a tracked submodule (exact pin), not a build-time clone
 !third_party/boringssl
 .idea/
