@@ -39,7 +39,6 @@ jobs:
 
     - name: Build BoringSSL
       run: |
-        git clone https://github.com/google/boringssl.git ./third_party/boringssl
         cd ./third_party/boringssl
         mkdir -p build
         cd build
