@@ -1,0 +1,114 @@
+# Weekly check for a new upstream BoringSSL release. If google/boringssl has
+# cut a newer date-based release tag (0.YYYYMMDD.N) than the one pinned in
+# third_party/boringssl, open a PR bumping the submodule pin so the maintainer
+# notices it.
+#
+# Awareness-only by design: the branch is pushed and the PR opened with the
+# default GITHUB_TOKEN, so this does NOT auto-trigger build.yml / CodeQL
+# (GitHub suppresses workflow events on token-authored refs, and the bump
+# branch is not in build.yml's push filter anyway). Real validation happens
+# during human review and when the mqvpn consumer bumps its xquic pin.
+name: Bump BoringSSL submodule
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'      # Every Monday 09:00 JST (00:00 UTC)
+  workflow_dispatch:          # Manual trigger for on-demand checks
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout mqvpn-main (with submodules)
+        uses: actions/checkout@v4
+        with:
+          ref: mqvpn-main
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Resolve latest BoringSSL release tag
+        id: latest
+        run: |
+          set -euo pipefail
+          # BoringSSL cuts date-based release tags: 0.YYYYMMDD.N
+          latest=$(git ls-remote --tags --refs https://github.com/google/boringssl.git \
+            | awk -F/ '{print $NF}' \
+            | grep -E '^0\.[0-9]{8}\.[0-9]+$' \
+            | sort -V | tail -n1)
+          if [ -z "$latest" ]; then
+            echo "::error::could not resolve a BoringSSL release tag"
+            exit 1
+          fi
+          echo "tag=$latest" >> "$GITHUB_OUTPUT"
+          echo "Latest BoringSSL release: $latest"
+
+      - name: Read current pin
+        id: current
+        run: |
+          set -euo pipefail
+          cd third_party/boringssl
+          git fetch --tags --quiet origin
+          cur=$(git describe --tags --exact-match HEAD 2>/dev/null || git rev-parse --short HEAD)
+          echo "tag=$cur" >> "$GITHUB_OUTPUT"
+          echo "Current pin: $cur"
+
+      - name: Bump submodule if a newer release exists
+        id: bump
+        env:
+          LATEST: ${{ steps.latest.outputs.tag }}
+          CURRENT: ${{ steps.current.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$LATEST" = "$CURRENT" ]; then
+            echo "Already at latest ($CURRENT) — nothing to do."
+            exit 0
+          fi
+          branch="chore/bump-boringssl-$LATEST"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "Branch $branch already pushed — PR presumably open. Skipping."
+            exit 0
+          fi
+          git -C third_party/boringssl checkout --quiet "refs/tags/$LATEST"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add third_party/boringssl
+          git commit -m "build: bump BoringSSL to $LATEST"
+          git push origin "$branch"
+          echo "changed=true"   >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure a PR exists
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST:  ${{ steps.latest.outputs.tag }}
+          CURRENT: ${{ steps.current.outputs.tag }}
+          BRANCH:  ${{ steps.bump.outputs.branch }}
+        run: |
+          set -euo pipefail
+          gh pr create \
+            --base mqvpn-main \
+            --head "$BRANCH" \
+            --title "build: bump BoringSSL $CURRENT → $LATEST" \
+            --body "$(cat <<'BODY'
+          ## Auto BoringSSL pin bump
+
+          A newer BoringSSL release tag is available upstream. This PR bumps the
+          `third_party/boringssl` submodule pin to it. Opened automatically by
+          `.github/workflows/bump-boringssl.yml` (weekly, Monday 09:00 JST).
+
+          > Awareness-only: this PR is token-authored, so `build.yml` / CodeQL do
+          > **not** run automatically. Trigger CI manually (re-run or push an
+          > empty commit) and validate before merge.
+
+          ### Review checklist
+          - [ ] Skim the BoringSSL changelog between the old and new tag for API / build breaks
+          - [ ] Local build passes against the new pin (`./third_party/boringssl` + xquic)
+          - [ ] mqvpn builds against this xquic SHA (bump the consumer's xquic pin to test)
+          BODY
+          )"
