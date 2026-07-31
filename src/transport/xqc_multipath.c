@@ -947,6 +947,7 @@ xqc_conn_path_metrics_print(xqc_connection_t *conn, xqc_conn_stats_t *stats)
             m->path_pkt_send_count  = path->path_send_ctl->ctl_send_count;
             m->path_send_bytes      = path->path_send_ctl->ctl_app_bytes_send;
             m->path_recv_bytes      = path->path_send_ctl->ctl_app_bytes_recv;
+            m->path_send_reinject_bytes = path->path_send_ctl->ctl_reinj_send_bytes;
             m->path_app_status      = path->app_path_status;
 
             /* Extended scheduler metrics */

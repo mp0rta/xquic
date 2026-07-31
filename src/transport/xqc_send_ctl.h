@@ -130,6 +130,8 @@ typedef struct xqc_send_ctl_s {
     uint32_t                    ctl_dgram_recv_count;
     uint32_t                    ctl_reinj_dgram_send_count;
     uint32_t                    ctl_reinj_dgram_recv_count;
+    uint64_t                    ctl_reinj_send_bytes;       /* bytes of reinjected replica packets (stream + datagram)
+                                                         * sent on this path */
 
     uint32_t                    ctl_max_bytes_in_flight;
     uint8_t                     ctl_is_cwnd_limited;
