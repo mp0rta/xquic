@@ -765,6 +765,10 @@ xqc_send_ctl_on_packet_sent(xqc_send_ctl_t *send_ctl, xqc_pn_ctl_t *pn_ctl, xqc_
             packet_out->po_flag &= ~XQC_POF_TLP;
         }
 
+        if (packet_out->po_flag & XQC_POF_REINJECTED_REPLICA) {
+            send_ctl->ctl_reinj_send_bytes += packet_out->po_enc_size;
+        }
+
         /* record dgram stats */
         if (packet_out->po_frame_types & XQC_FRAME_BIT_DATAGRAM) {
             send_ctl->ctl_conn->dgram_stats.total_dgram++;
