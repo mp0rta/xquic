@@ -896,6 +896,14 @@ xqc_wlb_scheduler_get_path(void *scheduler,
 {
     xqc_wlb_scheduler_t *s = (xqc_wlb_scheduler_t *)scheduler;
 
+    /* Replicas exist to ride a DIFFERENT path than their origin; flow
+     * pinning (ordering protection) is meaningless for a duplicate. Route
+     * every reinjection query through the fallback, which already excludes
+     * the origin path and checks cwnd. */
+    if (reinject) {
+        return wlb_minrtt_fallback(conn, packet_out, check_cwnd, reinject, cc_blocked);
+    }
+
     /* Non-datagram packets → MinRTT fallback */
     if (packet_out->po_flow_hash == 0) {
         return wlb_minrtt_fallback(conn, packet_out, check_cwnd, reinject, cc_blocked);

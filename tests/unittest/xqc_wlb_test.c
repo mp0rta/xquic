@@ -206,6 +206,22 @@ wlb_test_invoke(wlb_test_fixture_t *f, uint32_t flow_hash)
     return p ? p->path_id : UINT64_MAX;
 }
 
+/* Like wlb_test_invoke, but lets the caller set po_path_id (the packet's
+ * origin path, used by reinjection queries) and the reinject flag. */
+static uint64_t
+wlb_test_invoke_ex(wlb_test_fixture_t *f, uint32_t flow_hash,
+                    uint64_t origin_path_id, int reinject)
+{
+    xqc_packet_out_t po;
+    wlb_test_make_packet_out(&po, flow_hash);
+    po.po_path_id = origin_path_id;
+    xqc_bool_t cc_blk = XQC_FALSE;
+    xqc_path_ctx_t *p = xqc_wlb_scheduler_cb.xqc_scheduler_get_path(
+        f->scheduler, &f->conn, &po,
+        /* check_cwnd */ 1, reinject, &cc_blk);
+    return p ? p->path_id : UINT64_MAX;
+}
+
 /* ───────────────────────── tests ───────────────────────── */
 
 /* I1: asymmetric paths, single TCP flow → pin lands on wide path.
@@ -524,6 +540,36 @@ xqc_test_wlb_new_path_detected_without_expire_throttle(void)
 
     CU_ASSERT_TRUE(seen_p1 > 0);  /* secondary detected promptly, gets flows */
     CU_ASSERT_TRUE(seen_p0 > 0);  /* primary still used too */
+
+    wlb_test_teardown(&f);
+}
+
+/* Reinjection queries must bypass flow pinning. A datagram replica inherits
+ * po_flow_hash from its origin via xqc_packet_out_replicate's memcpy, so
+ * without routing reinject=1 through wlb_minrtt_fallback, a pinned flow's
+ * reinject query would hit the flow table and return the SAME path as
+ * po_path_id (the origin) — defeating path diversity for the replica.
+ * reinject=1 must exclude the origin path regardless of any existing pin. */
+void
+xqc_test_wlb_reinject_bypasses_pin(void)
+{
+    wlb_test_fixture_t f;
+    wlb_test_setup(&f);
+
+    wlb_test_add_path(&f, 0, 10000, 64 * 1024, 0);
+    wlb_test_add_path(&f, 1, 30000, 64 * 1024, 0);
+
+    uint32_t flow = 0x7E17EC70;
+    (void)wlb_test_invoke(&f, flow);              /* establishes pin */
+    uint64_t pinned = wlb_test_invoke(&f, flow);
+    CU_ASSERT_EQUAL(pinned, 0 /* sanity: flow pins to wide path 0 */);
+
+    /* Reinject query for a replica of a packet the origin sent on path 0,
+     * same flow_hash as the pinned flow. Must NOT return path 0. */
+    uint64_t reinj_path = wlb_test_invoke_ex(&f, flow, /* origin */ 0,
+                                              /* reinject */ 1);
+    CU_ASSERT_NOT_EQUAL(reinj_path, 0);
+    CU_ASSERT_EQUAL(reinj_path, 1 /* only remaining path */);
 
     wlb_test_teardown(&f);
 }

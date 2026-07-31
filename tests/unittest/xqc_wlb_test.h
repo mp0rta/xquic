@@ -53,4 +53,9 @@ void xqc_test_wlb_single_path_does_not_pin(void);
  * though the expire throttle has NOT yet unblocked. */
 void xqc_test_wlb_new_path_detected_without_expire_throttle(void);
 
+/* Reinjection queries (reinject=1) must bypass flow pinning and route
+ * through the origin-excluding MinRTT fallback, even for an already-pinned
+ * flow whose replica's po_path_id equals the pinned path. */
+void xqc_test_wlb_reinject_bypasses_pin(void);
+
 #endif /* XQC_WLB_TEST_H_INCLUDED */
