@@ -318,6 +318,9 @@ main()
         || !CU_add_test(pSuite, "xqc_test_wlb_sym_multiflow_distributes", xqc_test_wlb_sym_multiflow_distributes)
         || !CU_add_test(pSuite, "xqc_test_wlb_recovery_prefer_skips_initial_path_addition", xqc_test_wlb_recovery_prefer_skips_initial_path_addition)
         || !CU_add_test(pSuite, "xqc_test_wlb_recovery_prefer_fires_after_real_failover", xqc_test_wlb_recovery_prefer_fires_after_real_failover)
+        || !CU_add_test(pSuite, "xqc_test_wlb_single_path_does_not_pin", xqc_test_wlb_single_path_does_not_pin)
+        || !CU_add_test(pSuite, "xqc_test_wlb_new_path_detected_without_expire_throttle", xqc_test_wlb_new_path_detected_without_expire_throttle)
+        || !CU_add_test(pSuite, "xqc_test_wlb_reinject_bypasses_pin", xqc_test_wlb_reinject_bypasses_pin)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();

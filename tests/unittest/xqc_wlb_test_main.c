@@ -44,7 +44,9 @@ main(void)
         || NULL == CU_add_test(s, "single_path_does_not_pin",
                                xqc_test_wlb_single_path_does_not_pin)
         || NULL == CU_add_test(s, "new_path_detected_without_expire_throttle",
-                               xqc_test_wlb_new_path_detected_without_expire_throttle))
+                               xqc_test_wlb_new_path_detected_without_expire_throttle)
+        || NULL == CU_add_test(s, "reinject_bypasses_pin",
+                               xqc_test_wlb_reinject_bypasses_pin))
     {
         CU_cleanup_registry();
         return (int)CU_get_error();
