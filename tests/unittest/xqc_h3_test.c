@@ -176,6 +176,91 @@ xqc_test_frame()
     xqc_var_buf_free(buf);
 }
 
+
+void
+xqc_test_h3_single_vint_frame_valid()
+{
+    const unsigned char frames[][4] = {
+        { XQC_H3_FRM_CANCEL_PUSH, 0x02, 0x40, 0x01 },
+        { XQC_H3_FRM_GOAWAY, 0x02, 0x40, 0x04 },
+        { XQC_H3_FRM_MAX_PUSH_ID, 0x02, 0x40, 0x01 },
+    };
+    const uint64_t types[] = {
+        XQC_H3_FRM_CANCEL_PUSH,
+        XQC_H3_FRM_GOAWAY,
+        XQC_H3_FRM_MAX_PUSH_ID,
+    };
+
+    for (size_t i = 0; i < sizeof(frames) / sizeof(frames[0]); i++) {
+        xqc_h3_frame_pctx_t pctx;
+        memset(&pctx, 0, sizeof(pctx));
+
+        ssize_t processed = xqc_h3_frm_parse(frames[i], 3, &pctx);
+        CU_ASSERT(processed == 3);
+        CU_ASSERT(pctx.state == XQC_H3_FRM_STATE_PAYLOAD);
+        CU_ASSERT(pctx.frame.consumed_len == 1);
+
+        processed = xqc_h3_frm_parse(frames[i] + 3, 1, &pctx);
+        CU_ASSERT(processed == 1);
+        CU_ASSERT(pctx.state == XQC_H3_FRM_STATE_END);
+        CU_ASSERT(pctx.frame.type == types[i]);
+        CU_ASSERT(pctx.frame.len == 2);
+        CU_ASSERT(pctx.frame.consumed_len == 2);
+
+        xqc_h3_frm_reset_pctx(&pctx);
+    }
+}
+
+
+void
+xqc_test_h3_single_vint_frame_length_error()
+{
+    const unsigned char overlong[][7] = {
+        { XQC_H3_FRM_CANCEL_PUSH, 0x05, 0x40, 0x01, 0x21, 0x01, 0x00 },
+        { XQC_H3_FRM_GOAWAY, 0x05, 0x40, 0x04, 0x21, 0x01, 0x00 },
+        { XQC_H3_FRM_MAX_PUSH_ID, 0x05, 0x40, 0x01, 0x21, 0x01, 0x00 },
+    };
+    const unsigned char short_payload[][4] = {
+        { XQC_H3_FRM_CANCEL_PUSH, 0x01, 0x40, 0x01 },
+        { XQC_H3_FRM_GOAWAY, 0x01, 0x40, 0x04 },
+        { XQC_H3_FRM_MAX_PUSH_ID, 0x01, 0x40, 0x01 },
+    };
+
+    for (size_t i = 0; i < sizeof(overlong) / sizeof(overlong[0]); i++) {
+        xqc_h3_frame_pctx_t pctx;
+        memset(&pctx, 0, sizeof(pctx));
+
+        ssize_t processed = xqc_h3_frm_parse(overlong[i], 3, &pctx);
+        CU_ASSERT(processed == 3);
+        CU_ASSERT(pctx.state == XQC_H3_FRM_STATE_PAYLOAD);
+        CU_ASSERT(pctx.frame.consumed_len == 1);
+
+        processed = xqc_h3_frm_parse(overlong[i] + 3,
+                                     sizeof(overlong[i]) - 3, &pctx);
+        CU_ASSERT(processed == -XQC_H3_DECODE_ERROR);
+        CU_ASSERT(pctx.state == XQC_H3_FRM_STATE_PAYLOAD);
+        CU_ASSERT(pctx.frame.consumed_len == 2);
+
+        xqc_h3_frm_reset_pctx(&pctx);
+    }
+
+    for (size_t i = 0;
+         i < sizeof(short_payload) / sizeof(short_payload[0]); i++)
+    {
+        xqc_h3_frame_pctx_t pctx;
+        memset(&pctx, 0, sizeof(pctx));
+
+        ssize_t processed = xqc_h3_frm_parse(short_payload[i],
+                                             sizeof(short_payload[i]), &pctx);
+        CU_ASSERT(processed == -XQC_H3_DECODE_ERROR);
+        CU_ASSERT(pctx.state == XQC_H3_FRM_STATE_PAYLOAD);
+        CU_ASSERT(pctx.frame.consumed_len == 2);
+
+        xqc_h3_frm_reset_pctx(&pctx);
+    }
+}
+
+
 void
 xqc_test_ins()
 {
@@ -623,7 +708,6 @@ xqc_test_h3_critical_stream_close()
  * xqc_h3_conn_on_uni_stream_created must:
  *   - Accept first CONTROL/QPACK_ENCODER/QPACK_DECODER (set creation flag)
  *   - Reject second instance with H3_STREAM_CREATION_ERROR (0x103)
- *   - Reject PUSH with H3_ID_ERROR (0x108) since xquic does not support push
  *
  * Each sub-case uses a fresh test_engine_connect() for state isolation.
  */
@@ -667,10 +751,12 @@ xqc_test_h3_second_stream_one(uint64_t stype, uint64_t expected_err_second)
 }
 
 static void
-xqc_test_h3_push_stream_rejected(void)
+xqc_test_h3_push_stream_rejected(xqc_conn_type_t conn_type,
+    uint64_t expected_err)
 {
     xqc_connection_t *conn = test_engine_connect();
     CU_ASSERT_FATAL(conn != NULL);
+    conn->conn_type = conn_type;
 
     if (conn->alpn) {
         xqc_free(conn->alpn);
@@ -684,16 +770,10 @@ xqc_test_h3_push_stream_rejected(void)
 
     CU_ASSERT(conn->conn_err == 0);
 
-    /*
-     * PUSH stream: xquic does not support server push, so even the first
-     * push stream must be rejected with H3_ID_ERROR (0x108).
-     * RFC 9114 Section 4.6 / Section 6.2.2
-     */
     xqc_int_t ret = xqc_h3_conn_on_uni_stream_created(h3c,
             XQC_H3_STREAM_TYPE_PUSH);
     CU_ASSERT(ret == -XQC_H3_INVALID_STREAM);
-    CU_ASSERT(conn->conn_err == H3_ID_ERROR);
-    CU_ASSERT(conn->conn_err == 0x108);  /* literal H3_ID_ERROR */
+    CU_ASSERT(conn->conn_err == expected_err);
     CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
 
     xqc_h3_conn_destroy(h3c);
@@ -719,10 +799,55 @@ xqc_test_h3_second_control_stream_rejected()
      * per RFC 9204 Section 4.2 */
     xqc_test_h3_second_stream_one(XQC_H3_STREAM_TYPE_QPACK_DECODER,
             H3_STREAM_CREATION_ERROR);
+}
 
-    /* Case 4: PUSH stream (unsupported) -> H3_ID_ERROR
-     * per RFC 9114 Section 4.6 / 6.2.2 */
-    xqc_test_h3_push_stream_rejected();
+
+void
+xqc_test_h3_reserved_uni_stream_accepted()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->conn_type = XQC_CONN_TYPE_SERVER;
+
+    if (conn->alpn) {
+        xqc_free(conn->alpn);
+    }
+    conn->alpn_len = strlen(XQC_ALPN_H3);
+    conn->alpn = xqc_calloc(1, conn->alpn_len + 1);
+    xqc_memcpy(conn->alpn, XQC_ALPN_H3, conn->alpn_len);
+
+    xqc_h3_conn_t *h3c = xqc_h3_conn_create(conn, NULL);
+    CU_ASSERT_FATAL(h3c != NULL);
+
+    /* RFC 9114 Section 6.2.3 requires reserved stream types to be ignored. */
+    xqc_int_t ret = xqc_h3_conn_on_uni_stream_created(h3c, 0x21);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) == 0);
+
+    xqc_h3_conn_destroy(h3c);
+    if (conn->alpn) {
+        xqc_free(conn->alpn);
+    }
+}
+
+
+void
+xqc_test_h3_push_stream_error_codes()
+{
+    /*
+     * RFC 9114 Section 4.6: a client that has not sent MAX_PUSH_ID must
+     * close the connection with H3_ID_ERROR upon receiving any push stream.
+     * XQUIC has no production path that sends MAX_PUSH_ID.
+     */
+    xqc_test_h3_push_stream_rejected(XQC_CONN_TYPE_CLIENT, H3_ID_ERROR);
+
+    /*
+     * RFC 9114 Section 6.2.2: a server rejects a client-initiated push
+     * stream with H3_STREAM_CREATION_ERROR.
+     */
+    xqc_test_h3_push_stream_rejected(XQC_CONN_TYPE_SERVER,
+            H3_STREAM_CREATION_ERROR);
 }
 
 
@@ -1049,11 +1174,17 @@ xqc_test_h3_malformed_headers_uses_message_error()
     xqc_int_t ret = xqc_h3_stream_process_in(h3s, buf, sizeof(buf),
             XQC_TRUE);
 
-    /* process_in collapses sub-errors to -XQC_H3_EPROC_REQUEST */
-    CU_ASSERT(ret == -XQC_H3_EPROC_REQUEST);
-    CU_ASSERT(conn->conn_err == H3_MESSAGE_ERROR);
-    CU_ASSERT(conn->conn_err == 0x10E);
-    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+    /*
+     * RFC 9114 Section 4.1.2 makes this a stream error. process_in
+     * consumes the handled parse failure after scheduling RESET_STREAM.
+     */
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(h3s->stream->stream_err == H3_MESSAGE_ERROR);
+    CU_ASSERT(h3s->stream->stream_err == 0x10E);
+    CU_ASSERT(h3s->stream->stream_state_send
+              == XQC_SEND_STREAM_ST_RESET_SENT);
+    CU_ASSERT(conn->conn_err == 0);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) == 0);
 
     xqc_h3_msgerr_teardown(h3s, h3c, conn);
 }
@@ -1119,6 +1250,9 @@ xqc_test_h3_valid_headers_smoke()
     CU_ASSERT(ret == XQC_OK);
     CU_ASSERT(conn->conn_err == 0);
     CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) == 0);
+    CU_ASSERT(h3s->stream->stream_err == 0);
+    CU_ASSERT(h3s->stream->stream_state_send
+              < XQC_SEND_STREAM_ST_RESET_SENT);
     /* the HEADERS frame should have advanced the request to 1 section */
     CU_ASSERT(h3s->h3r->current_header == 1);
 
@@ -1243,6 +1377,83 @@ xqc_h3_ctrl_feed_settings(xqc_h3_stream_t *h3s)
     unsigned char settings[] = { 0x04, 0x02, 0x06, 0x00 };
     return xqc_h3_stream_process_control(h3s, settings, sizeof(settings));
 }
+
+
+static ssize_t
+xqc_h3_ctrl_feed_max_push_id(xqc_h3_stream_t *h3s, unsigned char push_id)
+{
+    unsigned char frame[] = { XQC_H3_FRM_MAX_PUSH_ID, 0x01, push_id };
+    return xqc_h3_stream_process_control(h3s, frame, sizeof(frame));
+}
+
+
+void
+xqc_test_h3_max_push_id_valid()
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_ctrl_test_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+
+    conn->conn_type = XQC_CONN_TYPE_SERVER;
+    CU_ASSERT_FATAL(xqc_h3_ctrl_feed_settings(h3s) > 0);
+
+    /*
+     * RFC 9114 Section 7.2.7: a server accepts MAX_PUSH_ID from a client,
+     * including the first value zero, later increases, and equal values.
+     */
+    CU_ASSERT(xqc_h3_ctrl_feed_max_push_id(h3s, 0) == 3);
+    CU_ASSERT(h3c->max_stream_id_recvd == 0);
+    CU_ASSERT(xqc_h3_ctrl_feed_max_push_id(h3s, 5) == 3);
+    CU_ASSERT(h3c->max_stream_id_recvd == 5);
+    CU_ASSERT(xqc_h3_ctrl_feed_max_push_id(h3s, 5) == 3);
+    CU_ASSERT(h3c->max_stream_id_recvd == 5);
+    CU_ASSERT(conn->conn_err == 0);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) == 0);
+
+    xqc_h3_ctrl_test_teardown(h3s, h3c, conn);
+}
+
+
+void
+xqc_test_h3_max_push_id_errors()
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_ctrl_test_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+
+    CU_ASSERT_FATAL(conn->conn_type == XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(xqc_h3_ctrl_feed_settings(h3s) > 0);
+
+    /* A client cannot receive MAX_PUSH_ID from a server. */
+    CU_ASSERT(xqc_h3_ctrl_feed_max_push_id(h3s, 1)
+              == -XQC_H3_INVALID_MAX_PUSH_ID);
+    CU_ASSERT(conn->conn_err == H3_FRAME_UNEXPECTED);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+    CU_ASSERT(h3c->max_stream_id_recvd == 0);
+
+    xqc_h3_ctrl_test_teardown(h3s, h3c, conn);
+
+    conn = NULL;
+    h3c = NULL;
+    h3s = xqc_h3_ctrl_test_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+
+    conn->conn_type = XQC_CONN_TYPE_SERVER;
+    CU_ASSERT_FATAL(xqc_h3_ctrl_feed_settings(h3s) > 0);
+    CU_ASSERT_FATAL(xqc_h3_ctrl_feed_max_push_id(h3s, 5) == 3);
+
+    /* A decreasing value is H3_ID_ERROR and cannot replace the maximum. */
+    CU_ASSERT(xqc_h3_ctrl_feed_max_push_id(h3s, 4)
+              == -XQC_H3_INVALID_MAX_PUSH_ID);
+    CU_ASSERT(conn->conn_err == H3_ID_ERROR);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+    CU_ASSERT(h3c->max_stream_id_recvd == 5);
+
+    xqc_h3_ctrl_test_teardown(h3s, h3c, conn);
+}
+
 
 /* Case 1: DATA frame (with payload) rejected on control stream */
 static void
@@ -1722,6 +1933,81 @@ xqc_test_h3_request_frame_unexpected()
 
 
 void
+xqc_test_h3_server_reserved_request_frame_accepted()
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+    conn->conn_type = XQC_CONN_TYPE_SERVER;
+
+    /*
+     * RFC 9114 Section 9 requires unknown frame types, including the
+     * reserved type 0x21, to be ignored.
+     */
+    unsigned char reserved_frame[] = { 0x21, 0x00 };
+    ssize_t processed = xqc_h3_stream_process_request(h3s, reserved_frame,
+            sizeof(reserved_frame), XQC_FALSE);
+
+    CU_ASSERT(processed == sizeof(reserved_frame));
+    CU_ASSERT(conn->conn_err == 0);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) == 0);
+
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
+}
+
+
+void
+xqc_test_h3_server_push_promise_rejected()
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+    conn->conn_type = XQC_CONN_TYPE_SERVER;
+
+    /*
+     * RFC 9114 Section 7.2.5: a server that receives PUSH_PROMISE from a
+     * client must close the connection with H3_FRAME_UNEXPECTED.
+     */
+    unsigned char push_promise[] = { 0x05, 0x02, 0x00, 0x00 };
+    ssize_t processed = xqc_h3_stream_process_request(h3s, push_promise,
+            sizeof(push_promise), XQC_FALSE);
+
+    CU_ASSERT(processed == -XQC_H3_REQUEST_FRAME_UNEXPECTED);
+    CU_ASSERT(conn->conn_err == H3_FRAME_UNEXPECTED);
+    CU_ASSERT(conn->conn_err == 0x0105);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
+
+    /*
+     * Cover a PUSH_PROMISE as the first frame on a peer-created bidi
+     * stream. The unknown-type dispatcher parses that first frame before
+     * request-stream processing, so it must enforce the same rule.
+     */
+    conn = NULL;
+    h3c = NULL;
+    h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+    conn->conn_type = XQC_CONN_TYPE_SERVER;
+    xqc_h3_request_destroy(h3s->h3r);
+    h3s->h3r = NULL;
+    h3s->type = XQC_H3_STREAM_TYPE_UNKNOWN;
+
+    processed = xqc_h3_stream_process_in(h3s, push_promise,
+            sizeof(push_promise), XQC_FALSE);
+
+    CU_ASSERT(processed == -XQC_H3_EPROC_REQUEST);
+    CU_ASSERT(conn->conn_err == H3_FRAME_UNEXPECTED);
+    CU_ASSERT(conn->conn_err == 0x0105);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
+}
+
+
+void
 xqc_test_h3_allowed_headers_pass()
 {
     /* content-type: normal header, never forbidden */
@@ -1810,4 +2096,95 @@ xqc_test_h3_blocked_buf_limit(void)
 
     xqc_var_buf_free(fs);
     xqc_h3_msgerr_teardown(h3s, h3c, conn);
+}
+
+/**
+ * Test that blocked stream limit uses local settings, not peer's (CVE: CWE-770)
+ * RFC 9204 Section 2.1.2: decoder enforces its own SETTINGS_QPACK_BLOCKED_STREAMS
+ */
+void
+xqc_test_h3_blocked_stream_limit_uses_local()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT(conn != NULL);
+    if (conn == NULL) return;
+
+    if (conn->alpn) {
+        xqc_free(conn->alpn);
+    }
+    conn->alpn_len = strlen(XQC_ALPN_H3);
+    conn->alpn = xqc_calloc(1, conn->alpn_len + 1);
+    xqc_memcpy(conn->alpn, XQC_ALPN_H3, conn->alpn_len);
+    conn->conn_flow_ctl.fc_max_streams_bidi_can_send = 1024;
+    conn->conn_state = XQC_CONN_STATE_ESTABED;
+
+    xqc_h3_conn_t *h3c = xqc_h3_conn_create(conn, NULL);
+    CU_ASSERT(h3c != NULL);
+    if (h3c == NULL) { xqc_engine_destroy(conn->engine); return; }
+
+    xqc_stream_t *stream = xqc_create_stream_with_conn(conn,
+            XQC_UNDEFINE_STREAM_ID, XQC_CLI_BID, NULL, NULL);
+    CU_ASSERT(stream != NULL);
+
+    xqc_h3_stream_t *h3s = xqc_h3_stream_create(h3c, stream,
+            XQC_H3_STREAM_TYPE_REQUEST, NULL);
+    CU_ASSERT(h3s != NULL);
+
+    /* Set local limit to 2, peer to UINT64_MAX (simulating attacker) */
+    h3c->local_h3_conn_settings.qpack_blocked_streams = 2;
+    h3c->peer_h3_conn_settings.qpack_blocked_streams = XQC_H3_SETTINGS_UNSET;  /* UINT64_MAX */
+
+    /* count == 0, local limit == 2: should succeed (count becomes 1) */
+    h3c->block_stream_count = 0;
+    xqc_h3_blocked_stream_t *bs1 = xqc_h3_conn_add_blocked_stream(h3c, h3s, 1);
+    CU_ASSERT(bs1 != NULL);
+
+    /* count == 1, local limit == 2: should succeed (count becomes 2) */
+    xqc_h3_blocked_stream_t *bs2 = xqc_h3_conn_add_blocked_stream(h3c, h3s, 2);
+    CU_ASSERT(bs2 != NULL);
+
+    /* count == 2, local limit == 2: should be rejected (== limit) */
+    xqc_h3_blocked_stream_t *bs3 = xqc_h3_conn_add_blocked_stream(h3c, h3s, 3);
+    CU_ASSERT(bs3 == NULL);
+
+    /* Verify peer setting is UINT64_MAX (would have allowed if bug present) */
+    CU_ASSERT(h3c->peer_h3_conn_settings.qpack_blocked_streams == XQC_H3_SETTINGS_UNSET);
+
+    /* cleanup: engine_destroy handles full teardown including h3c, h3s, streams */
+    xqc_engine_destroy(conn->engine);
+}
+
+/*
+ * Test that oversized SETTINGS frame is rejected to prevent memory exhaustion.
+ * ALIBABA-2026-42073004: xqc_h3_frm_parse_settings must reject frame->len > 1024.
+ */
+void
+xqc_test_h3_settings_frame_size_limit()
+{
+    xqc_h3_frame_pctx_t pctx;
+    ssize_t ret;
+
+    /* Construct a SETTINGS frame with frame->len = 8192 (> 4096 limit)
+     * Type: 0x04 (SETTINGS, 1-byte varint)
+     * Length: 8192 = 0x2000 (2-byte varint: 0x6000)
+     * Payload: 1 byte dummy (just to trigger parsing)
+     */
+    unsigned char oversized_settings[] = { 0x04, 0x60, 0x00, 0x00 };
+
+    memset(&pctx, 0, sizeof(xqc_h3_frame_pctx_t));
+    ret = xqc_h3_frm_parse(oversized_settings, sizeof(oversized_settings), &pctx);
+    /* frame parser should return negative error for oversized SETTINGS */
+    CU_ASSERT(ret < 0);
+
+    /* Construct a normal-sized SETTINGS frame (len=4, well under 1024 limit)
+     * Type: 0x04 (SETTINGS)
+     * Length: 4 (1-byte varint: 0x04)
+     * Payload: two varint pairs (id=0x06, value=0x00) = 2 bytes each
+     */
+    unsigned char normal_settings[] = { 0x04, 0x04, 0x06, 0x00, 0x01, 0x00 };
+
+    memset(&pctx, 0, sizeof(xqc_h3_frame_pctx_t));
+    ret = xqc_h3_frm_parse(normal_settings, sizeof(normal_settings), &pctx);
+    /* normal-sized SETTINGS frame should parse successfully */
+    CU_ASSERT(ret >= 0);
 }

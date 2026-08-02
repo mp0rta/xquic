@@ -16,6 +16,8 @@
 #include <xquic/xquic.h>
 #include <xquic/xquic_typedef.h>
 #include <xquic/xqc_http3.h>
+#include "src/http3/xqc_h3_conn.h"
+#include "src/http3/xqc_h3_request.h"
 #include "platform.h"
 #ifndef XQC_SYS_WINDOWS
 #include <unistd.h>
@@ -64,7 +66,28 @@ printf_null(const char *format, ...)
 
 #define XQC_MAX_LOG_LEN 2048
 
+#define XQC_TEST_CASE_H3_RESERVED_UNI_STREAM 1000
+#define XQC_TEST_CASE_H3_CLIENT_PUSH_STREAM 1001
+#define XQC_TEST_CASE_H3_RESERVED_REQUEST_FRAME 1002
+#define XQC_TEST_CASE_H3_CLIENT_PUSH_PROMISE 1003
+#define XQC_TEST_CASE_H3_MAX_PUSH_ID_WRONG_ROLE 1004
+#define XQC_TEST_CASE_H3_MAX_PUSH_ID_VALID 1005
+#define XQC_TEST_CASE_H3_MAX_PUSH_ID_DECREASE 1006
+#define XQC_TEST_CASE_H3_SINGLE_VINT_VALID 1007
+#define XQC_TEST_CASE_H3_SINGLE_VINT_OVERLONG 1008
+#define XQC_TEST_CASE_H3_FIELD_SECTION_VALID 1011
+#define XQC_TEST_CASE_H3_FIELD_SECTION_OVER_LIMIT 1012
+
 typedef struct user_conn_s user_conn_t;
+
+static void xqc_client_send_test_uni_stream(xqc_h3_conn_t *h3_conn,
+    xqc_h3_stream_type_t stream_type);
+static xqc_int_t xqc_client_send_test_request_frame(
+    xqc_h3_request_t *h3_request, uint64_t frame_type);
+static void xqc_client_send_test_max_push_ids(xqc_h3_conn_t *h3_conn,
+    uint64_t first, uint64_t second);
+static void xqc_client_send_test_single_vint_frame(
+    xqc_h3_conn_t *h3_conn, xqc_bool_t overlong);
 
 
 #define XQC_TEST_DGRAM_BATCH_SZ 32
@@ -109,6 +132,8 @@ typedef struct user_stream_s {
     xqc_usec_t               last_read_time;
     int                      abnormal_count;
     int                      body_read_notify_cnt;
+    int                      h3_test_frame_queued;
+    int                      h3_test_request_index;
     xqc_usec_t               last_recv_log_time;
     uint64_t                 recv_log_bytes;
 
@@ -234,14 +259,17 @@ int g_spec_url;
 int g_is_get;
 uint64_t g_last_sock_op_time;
 /*
- * currently, the maximum used test case id is 55
+ * currently, the maximum used test case id is 704
  * please keep this comment updated if you are adding more test cases. :-D
  * 55 for RFC 9114 Section 4.2 forbidden header e2e validation
  * 99 for pure fin
  * 2XX for datagram testcases
  * 3XX for h3 ext bytestream testcases
  * 4XX for conn_settings configuration
- * 7XX for 0-RTT transport param validation
+ * 700 for FEC frame type bit validation
+ * 701/702 for 0-RTT transport param validation
+ * 703 for CRYPTO_ERROR validation
+ * 704 for active_connection_id_limit validation
  * 8XX for MASQUE e2e testcases
  */
 int g_test_case;
@@ -1951,7 +1979,10 @@ xqc_client_h3_conn_close_notify(xqc_h3_conn_t *conn, const xqc_cid_t *cid, void 
     DEBUG;
 
     user_conn_t *user_conn = (user_conn_t *) user_data;
+    xqc_connection_t *transport_conn = xqc_h3_conn_get_xqc_conn(conn);
     printf("conn errno:%d\n", xqc_h3_conn_get_errno(conn));
+    printf("conn_err_type:%d\n",
+           (int)xqc_conn_get_err_type(transport_conn));
     client_ctx_t *p_ctx;
     if (g_test_qch_mode) {
         p_ctx = user_conn->ctx;
@@ -1965,6 +1996,14 @@ xqc_client_h3_conn_close_notify(xqc_h3_conn_t *conn, const xqc_cid_t *cid, void 
     xqc_conn_stats_t stats = xqc_conn_get_stats(p_ctx->engine, cid);
     printf("send_count:%u, lost_count:%u, tlp_count:%u, recv_count:%u, srtt:%"PRIu64" early_data_flag:%d, conn_err:%d, mp_state:%d, ack_info:%s, alpn:%s, conn_info:%s\n",
            stats.send_count, stats.lost_count, stats.tlp_count, stats.recv_count, stats.srtt, stats.early_data_flag, stats.conn_err, stats.mp_state, stats.ack_info, stats.alpn, stats.conn_info);
+
+    if (g_test_case == XQC_TEST_CASE_H3_FIELD_SECTION_VALID
+        || g_test_case == XQC_TEST_CASE_H3_FIELD_SECTION_OVER_LIMIT)
+    {
+        printf("[h3-field-section-test]|client_conn_close|case:%d|"
+               "conn_err:%d|\n", g_test_case, stats.conn_err);
+        fflush(stdout);
+    }
 
     if (!g_test_qch_mode) {
         printf("[h3-dgram]|recv_dgram_bytes:%zu|sent_dgram_bytes:%zu|lost_dgram_bytes:%zu|lost_cnt:%zu|\n", 
@@ -2132,6 +2171,27 @@ xqc_client_h3_conn_handshake_finished(xqc_h3_conn_t *h3_conn, void *user_data)
         printf("[initial-salt-test] handshake ok, conn_err:%d\n", stats.conn_err);
     }
 
+    if (g_test_case == XQC_TEST_CASE_H3_RESERVED_UNI_STREAM) {
+        xqc_client_send_test_uni_stream(h3_conn,
+                (xqc_h3_stream_type_t)0x21);
+
+    } else if (g_test_case == XQC_TEST_CASE_H3_CLIENT_PUSH_STREAM) {
+        xqc_client_send_test_uni_stream(h3_conn,
+                XQC_H3_STREAM_TYPE_PUSH);
+
+    } else if (g_test_case == XQC_TEST_CASE_H3_MAX_PUSH_ID_VALID) {
+        xqc_client_send_test_max_push_ids(h3_conn, 1, 3);
+
+    } else if (g_test_case == XQC_TEST_CASE_H3_MAX_PUSH_ID_DECREASE) {
+        xqc_client_send_test_max_push_ids(h3_conn, 3, 1);
+
+    } else if (g_test_case == XQC_TEST_CASE_H3_SINGLE_VINT_VALID) {
+        xqc_client_send_test_single_vint_frame(h3_conn, XQC_FALSE);
+
+    } else if (g_test_case == XQC_TEST_CASE_H3_SINGLE_VINT_OVERLONG) {
+        xqc_client_send_test_single_vint_frame(h3_conn, XQC_TRUE);
+    }
+
     if (g_test_case == 200 || g_test_case == 201) {
         printf("[h3-dgram-200]|1RTT|updated_mss:%zu|\n", user_conn->dgram_mss);
     }
@@ -2145,6 +2205,120 @@ xqc_client_h3_conn_handshake_finished(xqc_h3_conn_t *h3_conn, void *user_data)
         xqc_client_masque_start_tunnel(user_conn);
     }
 }
+
+
+static void
+xqc_client_send_test_uni_stream(xqc_h3_conn_t *h3_conn,
+    xqc_h3_stream_type_t stream_type)
+{
+    xqc_h3_stream_t *h3_stream =
+        xqc_h3_conn_create_uni_stream(h3_conn, stream_type);
+    if (h3_stream == NULL) {
+        printf("[h3-uni-stream-test]|type:0x%" PRIx64 "|create_failed|\n",
+               (uint64_t)stream_type);
+        return;
+    }
+
+    xqc_int_t ret = xqc_h3_stream_send_finish(h3_stream);
+    printf("[h3-uni-stream-test]|type:0x%" PRIx64 "|ret:%d|\n",
+           (uint64_t)stream_type, ret);
+}
+
+
+static xqc_int_t
+xqc_client_send_test_request_frame(xqc_h3_request_t *h3_request,
+    uint64_t frame_type)
+{
+    xqc_h3_stream_t *h3_stream = h3_request->h3_stream;
+    xqc_var_buf_t *buf = xqc_var_buf_create(2);
+    if (buf == NULL) {
+        return -XQC_EMALLOC;
+    }
+
+    xqc_int_t ret;
+    if (frame_type == XQC_H3_FRM_PUSH_PROMISE) {
+        ret = xqc_h3_frm_write_push_promise(&h3_stream->send_buf, 0, buf,
+                                            XQC_FALSE);
+
+    } else {
+        unsigned char frame[] = { 0x21, 0x00 };
+        ret = xqc_var_buf_save_data(buf, frame, sizeof(frame));
+        if (ret == XQC_OK) {
+            ret = xqc_list_buf_to_tail(&h3_stream->send_buf, buf);
+        }
+    }
+
+    if (ret != XQC_OK) {
+        xqc_var_buf_free(buf);
+        return ret;
+    }
+
+    ret = xqc_h3_stream_send_buffer(h3_stream);
+    if (ret == -XQC_EAGAIN) {
+        ret = XQC_OK;
+    }
+
+    printf("[h3-request-frame-test]|type:0x%" PRIx64 "|ret:%d|\n",
+           frame_type, ret);
+    return ret;
+}
+
+
+static void
+xqc_client_send_test_max_push_ids(xqc_h3_conn_t *h3_conn,
+    uint64_t first, uint64_t second)
+{
+    xqc_h3_stream_t *control = h3_conn->control_stream_out;
+    xqc_int_t first_ret = xqc_h3_frm_write_max_push_id(
+        &control->send_buf, first, XQC_FALSE);
+    xqc_int_t second_ret = xqc_h3_frm_write_max_push_id(
+        &control->send_buf, second, XQC_FALSE);
+    xqc_int_t send_ret = xqc_h3_stream_send_buffer(control);
+
+    printf("[h3-max-push-id-test]|first:%" PRIu64 "|second:%" PRIu64
+           "|write:%d,%d|send:%d|\n",
+           first, second, first_ret, second_ret, send_ret);
+}
+
+
+static void
+xqc_client_send_test_single_vint_frame(xqc_h3_conn_t *h3_conn,
+    xqc_bool_t overlong)
+{
+    const unsigned char valid[] = {
+        XQC_H3_FRM_MAX_PUSH_ID, 0x02, 0x40, 0x01
+    };
+    const unsigned char invalid[] = {
+        XQC_H3_FRM_MAX_PUSH_ID, 0x05, 0x40, 0x01, 0x21, 0x01, 0x00
+    };
+    const unsigned char *frame = overlong ? invalid : valid;
+    size_t frame_len = overlong ? sizeof(invalid) : sizeof(valid);
+    xqc_h3_stream_t *control = h3_conn->control_stream_out;
+    xqc_var_buf_t *buf = xqc_var_buf_create(frame_len);
+    xqc_int_t write_ret = -XQC_EMALLOC;
+    xqc_int_t send_ret = XQC_ERROR;
+
+    if (buf != NULL) {
+        write_ret = xqc_var_buf_save_data(buf, frame, frame_len);
+        if (write_ret == XQC_OK) {
+            write_ret = xqc_list_buf_to_tail(&control->send_buf, buf);
+        }
+
+        if (write_ret != XQC_OK) {
+            xqc_var_buf_free(buf);
+
+        } else {
+            send_ret = xqc_h3_stream_send_buffer(control);
+            if (send_ret == -XQC_EAGAIN) {
+                send_ret = XQC_OK;
+            }
+        }
+    }
+
+    printf("[h3-frame-length-test]|declared:%d|actual:2|write:%d"
+           "|send:%d|\n", frame[1], write_ret, send_ret);
+}
+
 
 void
 xqc_client_h3_conn_ping_acked_notify(xqc_h3_conn_t *conn, const xqc_cid_t *cid, void *ping_user_data, void *user_data)
@@ -2620,6 +2794,27 @@ xqc_client_request_send(xqc_h3_request_t *h3_request, user_stream_t *user_stream
     ssize_t ret = 0;
     char content_len[10];
 
+    if (!user_stream->h3_test_frame_queued
+        && (g_test_case == XQC_TEST_CASE_H3_RESERVED_REQUEST_FRAME
+            || g_test_case == XQC_TEST_CASE_H3_CLIENT_PUSH_PROMISE))
+    {
+        uint64_t frame_type =
+            g_test_case == XQC_TEST_CASE_H3_CLIENT_PUSH_PROMISE
+            ? XQC_H3_FRM_PUSH_PROMISE
+            : 0x21;
+        ret = xqc_client_send_test_request_frame(h3_request, frame_type);
+        if (ret != XQC_OK) {
+            return ret;
+        }
+        user_stream->h3_test_frame_queued = 1;
+    }
+
+    if (g_test_case == XQC_TEST_CASE_H3_RESERVED_REQUEST_FRAME
+        || g_test_case == XQC_TEST_CASE_H3_CLIENT_PUSH_PROMISE)
+    {
+        return XQC_OK;
+    }
+
     if (user_stream->send_body == NULL && !g_is_get /* POST */) {
         user_stream->send_body_max = MAX_BUF_SIZE;
         if (g_read_body) {
@@ -2700,6 +2895,20 @@ xqc_client_request_send(xqc_h3_request_t *h3_request, user_stream_t *user_stream
             .flags  = 0,
         },
     };
+
+    if (g_test_case == XQC_TEST_CASE_H3_FIELD_SECTION_OVER_LIMIT
+        && user_stream->h3_test_request_index == 1)
+    {
+        memset(test_long_value, 'a', 1024);
+        header[header_size].name.iov_base = "x-test-large";
+        header[header_size].name.iov_len = 12;
+        header[header_size].value.iov_base = test_long_value;
+        header[header_size].value.iov_len = 1024;
+        header[header_size].flags = 0;
+        header_size++;
+        printf("[h3-field-section-test]|oversized_request_sent|"
+               "stream_id:%"PRIu64"|\n", xqc_h3_stream_id(h3_request));
+    }
 
     if (g_test_case == 47) {
         header[header_size].name.iov_base = "test_null_hdr";
@@ -3347,9 +3556,13 @@ xqc_client_request_close_notify(xqc_h3_request_t *h3_request, void *user_data)
            stats.mp_standby_path_send_weight, stats.mp_standby_path_recv_weight,
            stats.stream_info);
 
-    printf("retx:%u, sent:%u, max_pto:%u\n", stats.retrans_cnt, stats.sent_pkt_cnt, stats.max_pto_backoff);
+    printf("retx:%u, sent:%u, max_pto:%u\n", stats.retrans_cnt,
+           stats.sent_pkt_cnt, stats.max_pto_backoff);
 
-    if (g_echo_check) {
+    if (g_echo_check
+        && !(g_test_case == XQC_TEST_CASE_H3_FIELD_SECTION_OVER_LIMIT
+             && stats.stream_err == H3_MESSAGE_ERROR))
+    {
         int pass = 0;
         if (user_stream->recv_fin && user_stream->send_body_len == user_stream->recv_body_len
             && memcmp(user_stream->send_body, user_stream->recv_body, user_stream->send_body_len) == 0)
@@ -3394,6 +3607,12 @@ xqc_client_request_closing_notify(xqc_h3_request_t *h3_request,
     user_stream_t *user_stream = (user_stream_t *)h3s_user_data;
 
     printf("***** request closing notify triggered\n");
+    if (g_test_case == XQC_TEST_CASE_H3_FIELD_SECTION_OVER_LIMIT) {
+        printf("[h3-field-section-test]|client_stream_closing|"
+               "stream_id:%"PRIu64"|err:%d|\n",
+               xqc_h3_stream_id(h3_request), err);
+        fflush(stdout);
+    }
 }
 
 void
@@ -5625,6 +5844,7 @@ int main(int argc, char *argv[]) {
                 g_req_cnt++;
                 user_stream_t *user_stream = calloc(1, sizeof(user_stream_t));
                 user_stream->user_conn = user_conn;
+                user_stream->h3_test_request_index = g_req_cnt;
                 user_stream->last_recv_log_time = xqc_now();
                 user_stream->recv_log_bytes = 0;
                 if (user_conn->h3 == 0 || user_conn->h3 == 2) {
