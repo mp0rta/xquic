@@ -6,11 +6,17 @@
 #define XQUIC_XQC_H3_TEST_H
 
 void xqc_test_frame();
+void xqc_test_h3_single_vint_frame_valid();
+void xqc_test_h3_single_vint_frame_length_error();
 void xqc_test_stream();
 void xqc_test_ins();
 void xqc_test_rep();
 void xqc_test_h3_critical_stream_close();
 void xqc_test_h3_second_control_stream_rejected();
+void xqc_test_h3_reserved_uni_stream_accepted();
+void xqc_test_h3_push_stream_error_codes();
+void xqc_test_h3_max_push_id_valid();
+void xqc_test_h3_max_push_id_errors();
 void xqc_test_h3_uncompressed_fields_size();
 void xqc_test_h3_recv_header_field_section_size();
 
@@ -25,6 +31,10 @@ void xqc_test_h3_missing_settings();
 
 /* issue #609: RFC 9114 §7.2 control-only frames on request stream */
 void xqc_test_h3_request_frame_unexpected();
+
+/* issue #849: RFC 9114 §7.2.5 PUSH_PROMISE sender role */
+void xqc_test_h3_server_reserved_request_frame_accepted();
+void xqc_test_h3_server_push_promise_rejected();
 
 /* issue #746: RFC 9114 §4.2 forbidden connection-specific headers */
 void xqc_test_h3_message_error_enum();
@@ -47,5 +57,10 @@ void xqc_test_h3_blocked_buf_limit();
 
 /* issue #609: RFC 9114 §7.2 control-only frames on request stream */
 void xqc_test_h3_request_frame_unexpected();
+
+/* vul 42057008: blocked stream limit must use local settings (RFC 9204 §2.1.2) */
+void xqc_test_h3_blocked_stream_limit_uses_local();
+/* ALIBABA-2026-42073004: SETTINGS frame size limit */
+void xqc_test_h3_settings_frame_size_limit();
 
 #endif // XQUIC_XQC_H3_TEST_H

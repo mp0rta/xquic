@@ -398,6 +398,7 @@ struct xqc_connection_s {
     uint32_t wakeup_pq_index;
 
     uint64_t conn_err;
+    xqc_conn_err_type_t conn_err_type;
     const char *conn_close_msg;
 
     /* for multi-path */
@@ -432,7 +433,7 @@ struct xqc_connection_s {
 
     /* for qlog */
     uint32_t MTU_updated_count;
-    uint32_t packet_dropped_count;
+    uint64_t packet_dropped_count; /**< RFC 9001 §6.6: decryption failure count across all keys */
 
 
     const xqc_scheduler_callback_t *scheduler_callback;
