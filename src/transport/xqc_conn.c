@@ -310,6 +310,12 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
     engine->default_conn_settings.close_dgram_redundancy =
         settings->close_dgram_redundancy;
 
+    /* Server connections inherit from default_conn_settings, and this copier
+     * is field-by-field — unlike the client path, which assigns the whole
+     * struct in xqc_client_connect. Without this line a server that asked for
+     * deferral silently keeps flushing on every datagram send. */
+    engine->default_conn_settings.defer_dgram_flush = settings->defer_dgram_flush;
+
 #ifdef XQC_ENABLE_FEC
     engine->default_conn_settings.enable_encode_fec = settings->enable_encode_fec;
     if (engine->default_conn_settings.enable_encode_fec) {
