@@ -704,6 +704,13 @@ xqc_engine_process_conn(xqc_connection_t *conn, xqc_usec_t now)
     int ret;
     xqc_bool_t wait_scid, wait_dcid;
 
+    /* The engine is now running this conn, so whatever wakeup a deferred
+     * datagram send armed has been honored: the next deferred send starts a
+     * fresh run and arms again. Cleared here rather than in either caller so
+     * xqc_engine_conn_logic() and xqc_engine_main_logic() cannot diverge.
+     * No-op unless conn_settings.defer_dgram_flush is set. */
+    conn->dgram_flush_pending = 0;
+
     xqc_conn_timer_expire(conn, now);
 
     /* notify closing event as soon as possible */

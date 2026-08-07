@@ -1627,6 +1627,27 @@ typedef struct xqc_conn_settings_s {
      * Default: 0 (use internal default: 8MB)
      */
     size_t                      max_blocked_buf_per_conn;
+
+    /**
+     * Defer the send flush that xqc_datagram_send() / _send_on_path() /
+     * _send_multiple() normally perform at the end of each call.
+     *
+     * 0 (default) = unchanged: every datagram send drives
+     * xqc_engine_conn_logic() immediately, so a caller that writes one
+     * datagram per call never accumulates more than one packet in the send
+     * queue and the sendmmsg/GSO burst path can never form a batch.
+     *
+     * 1 = the send only queues the packet and arms a wakeup; the flush
+     * happens on the next xqc_engine_main_logic(). Intended for callers that
+     * write a run of datagrams and then drive the engine once (e.g. a tunnel
+     * reading a batch of packets per event-loop iteration). Such a caller
+     * MUST run the engine after the run; the armed wakeup only bounds the
+     * damage to one event-loop iteration if it does not.
+     *
+     * Append-only field — zero-initialized for ABI-compat with consumers
+     * built before it existed, whose behavior is therefore unchanged.
+     */
+    uint8_t                     defer_dgram_flush;
 } xqc_conn_settings_t;
 
 
