@@ -1659,10 +1659,12 @@ typedef struct xqc_conn_settings_s {
      *
      * ABI: appending this field enlarges xqc_conn_settings_t. Rebuilt
      * consumers are source-compatible and default to 0, but this is NOT
-     * binary-compatible — xqc_client_connect copies the whole struct, so a
-     * caller built against the older header passes a smaller object and the
-     * copy reads past its end. Ship xquic and its consumers in lockstep, or
-     * version the shared library.
+     * binary-compatible. A caller built against the older header passes a
+     * smaller object, and both entry points read past its end: xqc_conn_create
+     * assigns the whole struct on the client path, and
+     * xqc_server_set_conn_settings now reads this field on the server path.
+     * Ship xquic and its consumers in lockstep, or version the shared library
+     * — libxquic currently carries no SOVERSION.
      */
     uint8_t                     defer_dgram_flush;
 } xqc_conn_settings_t;

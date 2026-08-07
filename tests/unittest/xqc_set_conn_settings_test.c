@@ -22,7 +22,7 @@ make_zero_engine(void)
     return e;
 }
 
-/* The 14 fields below are the subset of xqc_conn_settings_t that
+/* The 15 fields below are the subset of xqc_conn_settings_t that
  * mqvpn (the primary downstream consumer) populates today. Each
  * picks a non-default sentinel value so a missing copy line in
  * xqc_server_set_conn_settings would zero the field and trip an
@@ -55,6 +55,7 @@ xqc_test_server_set_conn_settings_propagation(void)
     in.proto_version = XQC_VERSION_V1;   /* valid → wins over engine default */
     in.init_max_path_id = 16;            /* non-zero → wins over default */
     in.max_path_id_grant_max_value = 32; /* direct copy */
+    in.defer_dgram_flush = 1;            /* direct copy */
 
     xqc_server_set_conn_settings(e, &in);
 
@@ -80,6 +81,12 @@ xqc_test_server_set_conn_settings_propagation(void)
     CU_ASSERT_EQUAL(e->default_conn_settings.proto_version, XQC_VERSION_V1);
     CU_ASSERT_EQUAL(e->default_conn_settings.init_max_path_id, 16);
     CU_ASSERT_EQUAL(e->default_conn_settings.max_path_id_grant_max_value, 32);
+    /* This one was missing for a while: the copier is field-by-field, so an
+     * appended setting nobody adds a line for reaches every server connection
+     * as 0 while the API call still reports success. Nothing else catches it
+     * — the client path assigns the whole struct so it cannot notice, and a
+     * downstream builder test only proves the input side. */
+    CU_ASSERT_EQUAL(e->default_conn_settings.defer_dgram_flush, 1);
 
     free(e);
 }

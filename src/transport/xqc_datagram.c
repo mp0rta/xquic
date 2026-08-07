@@ -22,10 +22,19 @@
  *
  * When deferral is enabled, the caller writes a run of datagrams and drives
  * the engine once afterwards, letting the burst path fill a real
- * sendmmsg/GSO batch. The conn is already on the active queue by the time we
- * get here, so all the deferred branch owes is a wakeup — armed once per run
- * so that a caller which forgets to drive the engine loses one event-loop
- * iteration instead of stalling until an unrelated timer fires.
+ * sendmmsg/GSO batch. All the deferred branch then owes is a wakeup, armed
+ * once per run. How much that wakeup is actually worth depends on the
+ * caller's set_event_timer — see the field doc in xquic.h. Callers must drive
+ * the engine after the run regardless.
+ *
+ * Deferral also requires the conn to really be scheduled. Every caller runs
+ * xqc_engine_add_active_queue() immediately before this, and that sets
+ * XQC_CONN_FLAG_TICKING only on a successful push; if the push failed
+ * (priority-queue growth under memory pressure) the conn sits in neither
+ * engine queue and nothing would ever come back for it. Falling back to the
+ * immediate flush is exact rather than merely defensive: it processes this
+ * conn by pointer and so does not depend on the queues at all — which is
+ * precisely why the pre-deferral code could ignore that failure.
  *
  * Single audit point on purpose: the three send entry points share it so the
  * enabled and disabled paths cannot drift apart between them.
@@ -33,7 +42,9 @@
 static void
 xqc_datagram_flush_or_defer(xqc_connection_t *conn)
 {
-    if (conn->conn_settings.defer_dgram_flush) {
+    if (conn->conn_settings.defer_dgram_flush
+        && (conn->conn_flag & XQC_CONN_FLAG_TICKING))
+    {
         if (!conn->dgram_flush_pending) {
             conn->dgram_flush_pending = 1;
             xqc_engine_wakeup_once(conn->engine);
