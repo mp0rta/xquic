@@ -312,11 +312,10 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
 
     /* Server connections inherit from default_conn_settings, and this copier
      * is field-by-field — unlike xqc_conn_create() below, which assigns the
-     * whole struct and so needs no per-field maintenance. Without these lines a
-     * server that asked for deferral silently keeps flushing on every datagram
-     * or stream send. tests/unittest/xqc_set_conn_settings_test.c pins both. */
-    engine->default_conn_settings.defer_dgram_flush = settings->defer_dgram_flush;
-    engine->default_conn_settings.defer_stream_flush = settings->defer_stream_flush;
+     * whole struct and so needs no per-field maintenance. Without this line a
+     * server that asked for deferral silently keeps flushing on every send.
+     * tests/unittest/xqc_set_conn_settings_test.c pins it. */
+    engine->default_conn_settings.defer_send_flush = settings->defer_send_flush;
 
 #ifdef XQC_ENABLE_FEC
     engine->default_conn_settings.enable_encode_fec = settings->enable_encode_fec;
@@ -481,23 +480,23 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
 
 /*
  * Flush the packets a send entry point has just queued — or leave that to the
- * caller's next engine run.
+ * caller's next engine run, per conn_settings.defer_send_flush.
  *
- * `defer` is the conn_settings knob for the CALLER's send kind
- * (defer_dgram_flush for the datagram entry points, defer_stream_flush for the
- * h3 stream one), passed in rather than read here so a single helper serves
- * both without having to know which of them applies.
+ * With deferral off this is the original behavior: drive the connection
+ * immediately, so one write per call means one packet in the send queue and
+ * the burst path (xqc_path_send_burst_packets) never has more than one packet
+ * to batch.
  *
- * defer == 0 is the original behavior: drive the connection immediately, so
- * one write per call means one packet in the send queue and the burst path
- * (xqc_path_send_burst_packets) never has more than one packet to batch.
+ * With it on, the caller writes a run of packets and drives the engine once
+ * afterwards, letting the burst path fill a real sendmmsg/GSO batch. All the
+ * deferred branch then owes is a wakeup, armed once per run. How much that
+ * wakeup is actually worth depends on the caller's set_event_timer — see the
+ * field doc in xquic.h. Callers must drive the engine after the run
+ * regardless.
  *
- * When deferral is enabled, the caller writes a run of packets and drives the
- * engine once afterwards, letting the burst path fill a real sendmmsg/GSO
- * batch. All the deferred branch then owes is a wakeup, armed once per run.
- * How much that wakeup is actually worth depends on the caller's
- * set_event_timer — see the field doc in xquic.h. Callers must drive the
- * engine after the run regardless.
+ * One knob for every send kind, read here rather than passed in: a flush
+ * drives the whole connection and all send kinds share one send queue, so
+ * per-kind deferral was never expressible anyway (see the field doc).
  *
  * Deferral also requires the conn to really be scheduled. Every caller has run
  * xqc_engine_add_active_queue() by this point — the datagram entry points call
@@ -513,9 +512,11 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
  * enabled and disabled paths cannot drift apart between them.
  */
 void
-xqc_conn_flush_or_defer(xqc_connection_t *conn, uint8_t defer)
+xqc_conn_flush_or_defer(xqc_connection_t *conn)
 {
-    if (defer && (conn->conn_flag & XQC_CONN_FLAG_TICKING)) {
+    if (conn->conn_settings.defer_send_flush
+        && (conn->conn_flag & XQC_CONN_FLAG_TICKING))
+    {
         if (!conn->deferred_flush_pending) {
             conn->deferred_flush_pending = 1;
             xqc_engine_wakeup_once(conn->engine);

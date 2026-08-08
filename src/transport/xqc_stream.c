@@ -999,8 +999,9 @@ xqc_stream_close_with_error(xqc_stream_t *stream, uint64_t err_code)
      * away. Without deferral every xqc_h3_stream_send_data() flushed before
      * returning, so by the time an application closed a stream its accepted
      * bytes had already been transmitted and this drop only ever discarded
-     * packets that were genuinely still unsendable. conn_settings.
-     * defer_stream_flush breaks that: an application that writes a body and
+     * packets that were genuinely still unsendable.
+     * conn_settings.defer_send_flush breaks that: an application that writes a
+     * body and
      * then closes the stream from the same reactor callback — a relay
      * reacting to its origin socket erroring right after the final read is
      * the motivating case — would have those accepted bytes freed here,

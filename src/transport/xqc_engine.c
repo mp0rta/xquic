@@ -832,8 +832,8 @@ end:
      * arming. Cleared here rather than in either caller so
      * xqc_engine_conn_logic() and xqc_engine_main_logic() cannot diverge. The
      * one path that skips this label is the TIME_OUT early return above, which
-     * has already moved the conn to CLOSED. No-op unless one of
-     * conn_settings.defer_dgram_flush / defer_stream_flush is set. */
+     * has already moved the conn to CLOSED. No-op unless
+     * conn_settings.defer_send_flush is set. */
     conn->deferred_flush_pending = 0;
 
     conn->packet_need_process_count = 0;

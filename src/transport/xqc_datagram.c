@@ -12,22 +12,6 @@
 #include "src/transport/xqc_engine.h"
 
 
-/*
- * Flush the packets a datagram send has just queued.
- *
- * Thin wrapper: the shared xqc_conn_flush_or_defer() (src/transport/
- * xqc_conn.c) holds the whole rationale, including why the deferred branch
- * needs XQC_CONN_FLAG_TICKING. All this adds is which knob applies here —
- * kept as a named function so the three datagram entry points below read the
- * same as they did before the helper was shared with the stream path.
- */
-static void
-xqc_datagram_flush_or_defer(xqc_connection_t *conn)
-{
-    xqc_conn_flush_or_defer(conn, conn->conn_settings.defer_dgram_flush);
-}
-
-
 xqc_datagram_0rtt_buffer_t* 
 xqc_datagram_create_0rtt_buffer(void *data, size_t data_len, 
     uint64_t dgram_id, xqc_data_qos_level_t qos_level)
@@ -307,7 +291,7 @@ xqc_int_t xqc_datagram_send(xqc_connection_t *conn, void *data,
     }
 
     /* call main logic to send packets out (or defer it, see the helper) */
-    xqc_datagram_flush_or_defer(conn);
+    xqc_conn_flush_or_defer(conn);
 
     return XQC_OK;
 }
@@ -428,7 +412,7 @@ xqc_datagram_send_on_path(xqc_connection_t *conn, void *data,
     }
 
     /* call main logic to send packets out (or defer it, see the helper) */
-    xqc_datagram_flush_or_defer(conn);
+    xqc_conn_flush_or_defer(conn);
 
     return XQC_OK;
 }
@@ -603,7 +587,7 @@ xqc_datagram_send_multiple_internal(xqc_connection_t *conn,
         }
 
         /* call main logic to send packets out (or defer it, see the helper) */
-        xqc_datagram_flush_or_defer(conn);
+        xqc_conn_flush_or_defer(conn);
     }
 
     return ret < 0 ? ret : XQC_OK;

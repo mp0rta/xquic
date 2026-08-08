@@ -461,9 +461,9 @@ struct xqc_connection_s {
     uint64_t next_dgram_id;
     /* WLB scheduler: flow hash hint set by app before datagram_send() */
     uint32_t next_dgram_flow_hash;
-    /* conn_settings.defer_dgram_flush / defer_stream_flush: "a wakeup has been
-     * armed for work this conn has not been run for yet", so further deferred
-     * sends in the same run skip re-arming. Set in xqc_conn_flush_or_defer,
+    /* conn_settings.defer_send_flush: "a wakeup has been armed for work this
+     * conn has not been run for yet", so further deferred sends in the same
+     * run skip re-arming. Set in xqc_conn_flush_or_defer,
      * cleared at the end of xqc_engine_process_conn — deliberately at the end,
      * so a deferred send issued from a callback the engine invokes mid-run
      * (e.g. a datagram or stream write-notify) does not leave the flag set on
@@ -809,5 +809,5 @@ void xqc_conn_try_to_enable_pmtud(xqc_connection_t *conn);
 
 xqc_int_t xqc_conn_server_accept(xqc_connection_t *c);
 
-void xqc_conn_flush_or_defer(xqc_connection_t *conn, uint8_t defer);
+void xqc_conn_flush_or_defer(xqc_connection_t *conn);
 #endif /* _XQC_CONN_H_INCLUDED_ */

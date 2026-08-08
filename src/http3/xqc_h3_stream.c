@@ -556,11 +556,11 @@ xqc_h3_stream_send_data(xqc_h3_stream_t *h3s, unsigned char *data, size_t data_s
             "|stream_id:%ui|data_size:%uz|write:%z|fin:%ud|conn:%p|", h3s->stream_id,
             data_size, write, (unsigned int)fin, h3s->h3c->conn);
 
-    /* The bulk send path: one call per application write, and every write that
-     * fits a single QUIC packet leaves exactly one packet in the send queue if
-     * this flushes. conn_settings.defer_stream_flush hands the flush to the
-     * caller's next engine run so a run of writes can fill a sendmmsg/GSO
-     * batch — see xqc_conn_flush_or_defer(). Reaching here means
+    /* The bulk send path: one call per application write. Flushing here means
+     * a caller issuing many writes per event-loop iteration flushes each one
+     * separately, so the burst path only ever sees one write's packets.
+     * conn_settings.defer_send_flush hands the flush to the caller's next
+     * engine run instead — see xqc_conn_flush_or_defer(). Reaching here means
      * xqc_stream_send() accepted something, and it queues the conn on the
      * engine before returning, so the deferred branch's XQC_CONN_FLAG_TICKING
      * precondition holds; a fully-EAGAIN'd write returned above without ever
@@ -570,8 +570,7 @@ xqc_h3_stream_send_data(xqc_h3_stream_t *h3s, unsigned char *data, size_t data_s
      * mode means the application drives every send itself, which subsumes
      * deferral. */
     if (!h3s->h3c->conn->engine->config->manually_triggered_send) {
-        xqc_conn_flush_or_defer(h3s->h3c->conn,
-                                h3s->h3c->conn->conn_settings.defer_stream_flush);
+        xqc_conn_flush_or_defer(h3s->h3c->conn);
     }
 
     return write;

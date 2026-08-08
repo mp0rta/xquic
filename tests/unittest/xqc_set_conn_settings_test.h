@@ -6,11 +6,11 @@
 #define _XQC_SET_CONN_SETTINGS_TEST_H
 
 /* PR8 G-N6 test gap #c. Pins xqc_server_set_conn_settings field
- * propagation for the 19 xqc_conn_settings_t fields that mqvpn (the
+ * propagation for the 18 xqc_conn_settings_t fields that mqvpn (the
  * primary downstream consumer) actually sets today.
  *
  * What this test catches: deleting / breaking a copy line for one of
- * the 19 fields in src/transport/xqc_conn.c — the matching field's
+ * the 18 fields in src/transport/xqc_conn.c — the matching field's
  * sentinel won't land in engine->default_conn_settings, an assertion
  * trips.
  *

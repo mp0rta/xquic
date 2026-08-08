@@ -23,7 +23,7 @@ make_zero_engine(void)
     return e;
 }
 
-/* The 19 fields below are the subset of xqc_conn_settings_t that
+/* The 18 fields below are the subset of xqc_conn_settings_t that
  * mqvpn (the primary downstream consumer) populates today. Each
  * picks a non-default sentinel value so a missing copy line in
  * xqc_server_set_conn_settings would zero the field and trip an
@@ -62,8 +62,7 @@ xqc_test_server_set_conn_settings_propagation(void)
     in.proto_version = XQC_VERSION_V1;   /* valid → wins over engine default */
     in.init_max_path_id = 16;            /* non-zero → wins over default */
     in.max_path_id_grant_max_value = 32; /* direct copy */
-    in.defer_dgram_flush = 1;            /* direct copy */
-    in.defer_stream_flush = 1;           /* direct copy */
+    in.defer_send_flush = 1;             /* direct copy */
 
     /* mqvpn_build_conn_settings() runs mqvpn_apply_scheduler() and
      * mqvpn_apply_reinjection() unconditionally, so a server's input always
@@ -102,8 +101,7 @@ xqc_test_server_set_conn_settings_propagation(void)
      * as 0 while the API call still reports success. Nothing else catches it
      * — the client path assigns the whole struct so it cannot notice, and a
      * downstream builder test only proves the input side. */
-    CU_ASSERT_EQUAL(e->default_conn_settings.defer_dgram_flush, 1);
-    CU_ASSERT_EQUAL(e->default_conn_settings.defer_stream_flush, 1);
+    CU_ASSERT_EQUAL(e->default_conn_settings.defer_send_flush, 1);
 
     /* Scheduler / reinjection: the copy lines these pin are the ones whose
      * silent loss costs the most (default scheduler instead of WLB). */
@@ -205,19 +203,22 @@ xqc_test_conn_flush_or_defer(void)
      * is owed. This is the arm that keeps "the knob off behaves exactly as it
      * did before deferral existed" true. */
     flush_or_defer_wakeups = 0;
-    xqc_conn_flush_or_defer(c, 0);
+    c->conn_settings.defer_send_flush = 0;
+    xqc_conn_flush_or_defer(c);
     CU_ASSERT_EQUAL(c->deferred_flush_pending, 0);
     CU_ASSERT_EQUAL(flush_or_defer_wakeups, 0);
 
     /* Deferral on, conn scheduled: latch and arm exactly one wakeup. */
-    xqc_conn_flush_or_defer(c, 1);
+    c->conn_settings.defer_send_flush = 1;
+    xqc_conn_flush_or_defer(c);
     CU_ASSERT_EQUAL(c->deferred_flush_pending, 1);
     CU_ASSERT_EQUAL(flush_or_defer_wakeups, 1);
 
     /* Further deferred sends in the same run must not re-arm — that is the
-     * whole point of the pending flag. */
-    xqc_conn_flush_or_defer(c, 1);
-    xqc_conn_flush_or_defer(c, 1);
+     * whole point of the pending flag. Both send kinds share it, so this also
+     * covers a run mixing datagram and stream writes. */
+    xqc_conn_flush_or_defer(c);
+    xqc_conn_flush_or_defer(c);
     CU_ASSERT_EQUAL(c->deferred_flush_pending, 1);
     CU_ASSERT_EQUAL(flush_or_defer_wakeups, 1);
 
@@ -229,7 +230,8 @@ xqc_test_conn_flush_or_defer(void)
     c->deferred_flush_pending = 0;
     c->conn_flag &= ~XQC_CONN_FLAG_TICKING;
     flush_or_defer_wakeups = 0;
-    xqc_conn_flush_or_defer(c, 1);
+    c->conn_settings.defer_send_flush = 1;
+    xqc_conn_flush_or_defer(c);
     CU_ASSERT_EQUAL(c->deferred_flush_pending, 0);
     CU_ASSERT_EQUAL(flush_or_defer_wakeups, 0);
 
