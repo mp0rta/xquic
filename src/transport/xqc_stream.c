@@ -995,6 +995,27 @@ xqc_stream_close_with_error(xqc_stream_t *stream, uint64_t err_code)
         return XQC_OK;
     }
 
+    /* Deferred sends must reach the socket before the drop below throws them
+     * away. Without deferral every xqc_h3_stream_send_data() flushed before
+     * returning, so by the time an application closed a stream its accepted
+     * bytes had already been transmitted and this drop only ever discarded
+     * packets that were genuinely still unsendable. conn_settings.
+     * defer_stream_flush breaks that: an application that writes a body and
+     * then closes the stream from the same reactor callback — a relay
+     * reacting to its origin socket erroring right after the final read is
+     * the motivating case — would have those accepted bytes freed here,
+     * unsent, and replaced by RESET_STREAM, so the peer sees a body truncated
+     * by up to one application write.
+     *
+     * Flushing here rather than requiring every caller to flush first keeps
+     * the fix where the invariant lives. No-op when nothing is pending, and
+     * xqc_engine_conn_logic() itself no-ops while the engine is running — a
+     * close from inside an engine callback is still followed by that run's
+     * own send, exactly as before deferral existed. */
+    if (conn->deferred_flush_pending) {
+        xqc_engine_conn_logic(conn->engine, conn);
+    }
+
     xqc_send_queue_drop_stream_frame_packets(conn, stream->stream_id);
     ret = xqc_write_reset_stream_to_packet(conn, stream, err_code,
                                            stream->stream_send_offset);

@@ -1669,8 +1669,12 @@ typedef struct xqc_conn_settings_s {
     uint8_t                     defer_dgram_flush;
 
     /**
-     * The same deferral for the h3 stream bulk send path
-     * (xqc_h3_request_send_body() -> xqc_h3_stream_send_data()).
+     * The same deferral for the h3 stream data send path, i.e. every caller of
+     * xqc_h3_stream_send_data(): xqc_h3_request_send_body() and also the
+     * ext-bytestream API (xqc_h3_ext_bytestream_send() and its write-notify
+     * path). The bytestream case matters because, unlike an h3 request body
+     * driven from a tunnel's own read loop, nothing there guarantees an engine
+     * run right after the write — see the caller obligation below.
      *
      * A separate knob rather than one shared with defer_dgram_flush because
      * the two carry different traffic: an application can tunnel bulk data
@@ -1680,26 +1684,37 @@ typedef struct xqc_conn_settings_s {
      * datagram and stream writes still arms exactly one wakeup.
      *
      * 0 (default) = unchanged: every xqc_h3_stream_send_data() drives
-     * xqc_engine_conn_logic() immediately. A caller whose writes each fit one
-     * QUIC packet — anything at or below the path MTU, which is what a relayed
-     * TCP segment is — therefore leaves exactly one packet in the send queue
-     * per flush, and the sendmmsg/GSO burst path can never form a batch.
+     * xqc_engine_conn_logic() immediately. Note this is NOT "one packet per
+     * flush": xqc_stream_send() loops until the write is consumed, so a write
+     * larger than the path MTU already queues several packet_outs before that
+     * flush. What the default costs is batching ACROSS writes — a caller that
+     * issues many small-to-medium writes per event-loop iteration flushes each
+     * one separately, and the sendmmsg/GSO burst path only ever sees the
+     * packets of a single write.
      *
      * 1 = the send only queues packets; the flush happens on the caller's next
      * xqc_engine_main_logic().
      *
      * Scope, the engine-run caveat, and the ABI note are identical to
-     * defer_dgram_flush above; read them there. Two specifics for streams:
-     * this covers ONLY the data path. HEADERS (xqc_h3_stream_send_headers),
-     * the FIN (xqc_h3_stream_send_finish), GOAWAY and stream-type frames keep
-     * flushing immediately — they are once-per-stream control writes with
-     * nothing to batch, and deferring them would delay handshake and flow
-     * control for no gain. And a write that returns -XQC_EAGAIN never reached
-     * the flush in the first place, so deferral cannot change how
-     * backpressure is reported; it does mean the send queue drains one engine
-     * run later, so a caller near the queue limit
-     * (conn_settings.sndq_packets_used_max, default 18000 packets) will see
-     * -XQC_EAGAIN marginally sooner.
+     * defer_dgram_flush above; read them there. Three specifics for streams:
+     *
+     * - This covers ONLY the data path. HEADERS (xqc_h3_stream_send_headers),
+     *   the explicit FIN (xqc_h3_stream_send_finish), GOAWAY and stream-type
+     *   frames keep flushing immediately — they are once-per-stream control
+     *   writes with nothing to batch, and deferring them would delay handshake
+     *   and flow control for no gain. A fin-only body write
+     *   (xqc_h3_request_send_body(req, NULL, 0, 1)) does go through the data
+     *   path and is therefore deferred like any other write.
+     * - A write that returns -XQC_EAGAIN never reached the flush in the first
+     *   place, so deferral does not change how backpressure is reported. Nor
+     *   does it move the threshold: sndq_packets_used is decremented when a
+     *   packet_out is freed, not when it is transmitted, and STREAM packets
+     *   are ack-eliciting, so they stay counted until acknowledged whether the
+     *   flush ran inside the send call or one engine run later.
+     * - Closing a stream flushes any pending deferred send first
+     *   (xqc_stream_close_with_error), so writing a body and closing from the
+     *   same callback does not lose the accepted bytes to the queue drop that
+     *   close performs.
      */
     uint8_t                     defer_stream_flush;
 } xqc_conn_settings_t;
