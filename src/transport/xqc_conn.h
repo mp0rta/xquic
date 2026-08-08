@@ -461,6 +461,14 @@ struct xqc_connection_s {
     uint64_t next_dgram_id;
     /* WLB scheduler: flow hash hint set by app before datagram_send() */
     uint32_t next_dgram_flow_hash;
+    /* conn_settings.defer_dgram_flush: "a wakeup has been armed for work this
+     * conn has not been run for yet", so further deferred sends in the same
+     * run skip re-arming. Set in xqc_datagram_flush_or_defer, cleared at the
+     * end of xqc_engine_process_conn — deliberately at the end, so a deferred
+     * send issued from a callback the engine invokes mid-run (e.g. a datagram
+     * write-notify) does not leave the flag set on a run that already flushed
+     * it. */
+    uint8_t dgram_flush_pending;
     xqc_list_head_t dgram_0rtt_buffer_list;
     uint16_t dgram_mss;
 
