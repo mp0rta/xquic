@@ -28,8 +28,13 @@ void xqc_test_server_set_conn_settings_clamp(void);
  * as opposed to the settings that select it: that the deferred branch latches
  * and arms exactly one wakeup per run, that it is idempotent within a run,
  * and — the branch the helper's own comment calls load-bearing — that a conn
- * without XQC_CONN_FLAG_TICKING falls back to the immediate flush instead of
- * deferring into a queue it is not on. */
+ * without XQC_CONN_FLAG_TICKING does NOT defer.
+ *
+ * Bounded on purpose: the connection is a stub and the engine is marked
+ * RUNNING, so the immediate branch's xqc_engine_conn_logic() returns at its
+ * top and leaves nothing to assert on. This pins the deferred bookkeeping
+ * (latch / wakeup / idempotence / the TICKING precondition), not that the
+ * non-deferred branch transmits. The e2e's UdpGso=false arm covers that. */
 void xqc_test_conn_flush_or_defer(void);
 
 #endif /* _XQC_SET_CONN_SETTINGS_TEST_H */

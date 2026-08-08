@@ -199,9 +199,17 @@ xqc_test_conn_flush_or_defer(void)
     c->log = log;
     c->conn_flag |= XQC_CONN_FLAG_TICKING;
 
-    /* Deferral off: the flush is immediate, so nothing latches and no wakeup
-     * is owed. This is the arm that keeps "the knob off behaves exactly as it
-     * did before deferral existed" true. */
+    /* Deferral off: nothing latches and no wakeup is owed.
+     *
+     * What this does NOT prove: that the immediate branch actually drives the
+     * engine. The engine is marked RUNNING above (it has to be — this conn is
+     * a stub), so xqc_engine_conn_logic() returns at its top and leaves no
+     * observable trace, which means a helper that simply returned on this
+     * branch would satisfy the assertions below too. Pinning the immediate
+     * flush needs a real driven connection; that lives in the e2e suite (the
+     * UdpGso=false arm, whose batching factor is exactly 1.0000 only because
+     * every send still flushes). Here the claim is narrower and honest: the
+     * DEFERRED bookkeeping stays untouched when the knob is off. */
     flush_or_defer_wakeups = 0;
     c->conn_settings.defer_send_flush = 0;
     xqc_conn_flush_or_defer(c);
@@ -226,7 +234,14 @@ xqc_test_conn_flush_or_defer(void)
      * active-queue push failed, so the conn sits in neither engine queue.
      * Deferring there would strand it — nothing would ever run it, and since
      * the pending flag is only cleared by a completed engine run, no later
-     * send would re-arm either. It must fall back to the immediate flush. */
+     * send would re-arm either.
+     *
+     * Pinned here: with the knob ON but TICKING clear, the helper must NOT
+     * take the deferred branch. Same caveat as above — that it instead
+     * performs the immediate flush is not observable through a RUNNING
+     * engine, so what this rules out is the specific regression of deferring
+     * an unscheduled conn, which is the failure that strands a connection
+     * until the idle timeout. */
     c->deferred_flush_pending = 0;
     c->conn_flag &= ~XQC_CONN_FLAG_TICKING;
     flush_or_defer_wakeups = 0;
