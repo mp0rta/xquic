@@ -1667,6 +1667,41 @@ typedef struct xqc_conn_settings_s {
      * — libxquic currently carries no SOVERSION.
      */
     uint8_t                     defer_dgram_flush;
+
+    /**
+     * The same deferral for the h3 stream bulk send path
+     * (xqc_h3_request_send_body() -> xqc_h3_stream_send_data()).
+     *
+     * A separate knob rather than one shared with defer_dgram_flush because
+     * the two carry different traffic: an application can tunnel bulk data
+     * over DATAGRAM while keeping request/response streams on the original
+     * immediate-flush timing, or the reverse. Enabling both is fine — they
+     * share one per-connection "wakeup already armed" flag, so a run mixing
+     * datagram and stream writes still arms exactly one wakeup.
+     *
+     * 0 (default) = unchanged: every xqc_h3_stream_send_data() drives
+     * xqc_engine_conn_logic() immediately. A caller whose writes each fit one
+     * QUIC packet — anything at or below the path MTU, which is what a relayed
+     * TCP segment is — therefore leaves exactly one packet in the send queue
+     * per flush, and the sendmmsg/GSO burst path can never form a batch.
+     *
+     * 1 = the send only queues packets; the flush happens on the caller's next
+     * xqc_engine_main_logic().
+     *
+     * Scope, the engine-run caveat, and the ABI note are identical to
+     * defer_dgram_flush above; read them there. Two specifics for streams:
+     * this covers ONLY the data path. HEADERS (xqc_h3_stream_send_headers),
+     * the FIN (xqc_h3_stream_send_finish), GOAWAY and stream-type frames keep
+     * flushing immediately — they are once-per-stream control writes with
+     * nothing to batch, and deferring them would delay handshake and flow
+     * control for no gain. And a write that returns -XQC_EAGAIN never reached
+     * the flush in the first place, so deferral cannot change how
+     * backpressure is reported; it does mean the send queue drains one engine
+     * run later, so a caller near the queue limit
+     * (conn_settings.sndq_packets_used_max, default 18000 packets) will see
+     * -XQC_EAGAIN marginally sooner.
+     */
+    uint8_t                     defer_stream_flush;
 } xqc_conn_settings_t;
 
 

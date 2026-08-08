@@ -15,44 +15,16 @@
 /*
  * Flush the packets a datagram send has just queued.
  *
- * The default (conn_settings.defer_dgram_flush == 0) is the original
- * behavior: drive the connection immediately, so one datagram per call means
- * one packet in the send queue and the burst path
- * (xqc_path_send_burst_packets) never has more than one packet to batch.
- *
- * When deferral is enabled, the caller writes a run of datagrams and drives
- * the engine once afterwards, letting the burst path fill a real
- * sendmmsg/GSO batch. All the deferred branch then owes is a wakeup, armed
- * once per run. How much that wakeup is actually worth depends on the
- * caller's set_event_timer — see the field doc in xquic.h. Callers must drive
- * the engine after the run regardless.
- *
- * Deferral also requires the conn to really be scheduled. Every caller runs
- * xqc_engine_add_active_queue() immediately before this, and that sets
- * XQC_CONN_FLAG_TICKING only on a successful push; if the push failed
- * (priority-queue growth under memory pressure) the conn sits in neither
- * engine queue and nothing would ever come back for it. Falling back to the
- * immediate flush is exact rather than merely defensive: it processes this
- * conn by pointer and so does not depend on the queues at all — which is
- * precisely why the pre-deferral code could ignore that failure.
- *
- * Single audit point on purpose: the three send entry points share it so the
- * enabled and disabled paths cannot drift apart between them.
+ * Thin wrapper: the shared xqc_conn_flush_or_defer() (src/transport/
+ * xqc_conn.c) holds the whole rationale, including why the deferred branch
+ * needs XQC_CONN_FLAG_TICKING. All this adds is which knob applies here —
+ * kept as a named function so the three datagram entry points below read the
+ * same as they did before the helper was shared with the stream path.
  */
 static void
 xqc_datagram_flush_or_defer(xqc_connection_t *conn)
 {
-    if (conn->conn_settings.defer_dgram_flush
-        && (conn->conn_flag & XQC_CONN_FLAG_TICKING))
-    {
-        if (!conn->dgram_flush_pending) {
-            conn->dgram_flush_pending = 1;
-            xqc_engine_wakeup_once(conn->engine);
-        }
-        return;
-    }
-
-    xqc_engine_conn_logic(conn->engine, conn);
+    xqc_conn_flush_or_defer(conn, conn->conn_settings.defer_dgram_flush);
 }
 
 
