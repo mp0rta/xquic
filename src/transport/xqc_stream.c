@@ -995,28 +995,27 @@ xqc_stream_close_with_error(xqc_stream_t *stream, uint64_t err_code)
         return XQC_OK;
     }
 
-    /* Deferred sends must reach the socket before the drop below throws them
-     * away. Without deferral every xqc_h3_stream_send_data() flushed before
-     * returning, so by the time an application closed a stream its accepted
-     * bytes had already been transmitted and this drop only ever discarded
-     * packets that were genuinely still unsendable.
-     * conn_settings.defer_send_flush breaks that: an application that writes a
-     * body and
-     * then closes the stream from the same reactor callback — a relay
-     * reacting to its origin socket erroring right after the final read is
-     * the motivating case — would have those accepted bytes freed here,
-     * unsent, and replaced by RESET_STREAM, so the peer sees a body truncated
-     * by up to one application write.
+    /* With conn_settings.defer_send_flush enabled, accepted bytes may still be
+     * queued when we get here, and the drop below discards them: an
+     * application that writes and then ABORTS a stream from the same callback
+     * loses that write.
      *
-     * Flushing here rather than requiring every caller to flush first keeps
-     * the fix where the invariant lives. No-op when nothing is pending, and
-     * xqc_engine_conn_logic() itself no-ops while the engine is running — a
-     * close from inside an engine callback is still followed by that run's
-     * own send, exactly as before deferral existed. */
-    if (conn->deferred_flush_pending) {
-        xqc_engine_conn_logic(conn->engine, conn);
-    }
-
+     * Flushing here first was tried and reverted, deliberately. Driving the
+     * engine from inside a close runs timers and application notifications
+     * re-entrantly — xqc_timer_stream_close_timeout() can xqc_destroy_stream()
+     * the very `stream` this function still holds (its guard above admits
+     * DATA_RECVD, which is below RESET_SENT), and a notification can re-enter
+     * close and set RESET_SENT without this invocation rechecking. It also
+     * no-ops entirely when called from inside an engine callback, which is
+     * precisely where the loss is hardest to avoid. A use-after-free is worse
+     * than the truncation it was meant to prevent.
+     *
+     * The exposure is bounded: this is the abort path (xqc_stream_close()
+     * passes H3_REQUEST_CANCELLED), normal FIN completion retires streams via
+     * xqc_stream_maybe_need_close() without coming here, a connection already
+     * CLOSING returned above, and the peer receives RESET_STREAM so the
+     * truncation is visible rather than silent. Recorded in the
+     * defer_send_flush field doc in xquic.h. */
     xqc_send_queue_drop_stream_frame_packets(conn, stream->stream_id);
     ret = xqc_write_reset_stream_to_packet(conn, stream, err_code,
                                            stream->stream_send_offset);

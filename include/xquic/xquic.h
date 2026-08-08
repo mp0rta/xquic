@@ -1705,10 +1705,21 @@ typedef struct xqc_conn_settings_s {
      *   the flush in the first place, and the threshold does not move either:
      *   sndq_packets_used drops when a packet_out is freed, not when it is
      *   transmitted, and STREAM packets are ack-eliciting.
-     * - Closing a stream flushes any pending deferred send first
-     *   (xqc_stream_close_with_error), so writing a body and closing from the
-     *   same callback does not lose the accepted bytes to the queue drop that
-     *   close performs.
+     * - KNOWN LIMITATION — aborting a stream can discard a deferred write.
+     *   xqc_stream_close_with_error() drops this stream's queued packets
+     *   before sending RESET_STREAM, so bytes accepted by a write that has not
+     *   been flushed yet are lost: write-then-abort from the same callback
+     *   truncates by up to one write. Flush explicitly (drive the engine)
+     *   between the write and the abort if that matters.
+     *   Scope: the ABORT path only — xqc_stream_close() / xqc_h3_request_close()
+     *   and the peer-reset handler. Normal FIN completion retires a stream
+     *   through xqc_stream_maybe_need_close() and never comes here, and a
+     *   connection already CLOSING returns before the drop. The peer always
+     *   sees RESET_STREAM, so the truncation is visible rather than silent.
+     *   Flushing inside the close was tried and reverted: it re-enters timers
+     *   and notifications, letting xqc_timer_stream_close_timeout() destroy
+     *   the stream the caller still holds, and it no-ops anyway when the close
+     *   comes from inside an engine callback.
      *
      * ABI: appending this field enlarges xqc_conn_settings_t. Rebuilt
      * consumers are source-compatible and default to 0, but this is NOT
