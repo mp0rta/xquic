@@ -823,17 +823,18 @@ xqc_engine_process_conn(xqc_connection_t *conn, xqc_usec_t now)
     }
 
 end:
-    /* The wakeup a deferred datagram send armed has now been honored, so the
-     * next deferred send starts a fresh run and arms again. Cleared at the
-     * END, not on entry: a send issued from a callback the engine itself
-     * invokes during this function (xqc_datagram_notify_write) would
-     * otherwise leave the flag set on a run that already flushed it, and the
-     * next run would then skip arming. Cleared here rather than in either
-     * caller so xqc_engine_conn_logic() and xqc_engine_main_logic() cannot
-     * diverge. The one path that skips this label is the TIME_OUT early
-     * return above, which has already moved the conn to CLOSED.
-     * No-op unless conn_settings.defer_dgram_flush is set. */
-    conn->dgram_flush_pending = 0;
+    /* The wakeup a deferred send armed has now been honored, so the next
+     * deferred send starts a fresh run and arms again. Cleared at the END, not
+     * on entry: a send issued from a callback the engine itself invokes during
+     * this function (xqc_datagram_notify_write, or an h3 write-notify that
+     * goes on to call xqc_h3_request_send_body) would otherwise leave the flag
+     * set on a run that already flushed it, and the next run would then skip
+     * arming. Cleared here rather than in either caller so
+     * xqc_engine_conn_logic() and xqc_engine_main_logic() cannot diverge. The
+     * one path that skips this label is the TIME_OUT early return above, which
+     * has already moved the conn to CLOSED. No-op unless
+     * conn_settings.defer_send_flush is set. */
+    conn->deferred_flush_pending = 0;
 
     conn->packet_need_process_count = 0;
     conn->conn_flag &= ~XQC_CONN_FLAG_NEED_RUN;

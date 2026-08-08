@@ -1629,25 +1629,39 @@ typedef struct xqc_conn_settings_s {
     size_t                      max_blocked_buf_per_conn;
 
     /**
-     * Defer the connection flush that xqc_datagram_send() / _send_on_path() /
-     * _send_multiple() normally perform at the end of each call.
+     * Defer the connection flush that a send call normally performs before it
+     * returns. Covers both send kinds: the datagram entry points
+     * (xqc_datagram_send() / _send_on_path() / _send_multiple()) and the h3
+     * stream data path (xqc_h3_stream_send_data(), reached from
+     * xqc_h3_request_send_body() and from the ext-bytestream API).
      *
-     * 0 (default) = unchanged: every datagram send drives
-     * xqc_engine_conn_logic() immediately, so a caller that writes one
-     * datagram per call never accumulates more than one packet in the send
-     * queue and the sendmmsg/GSO burst path can never form a batch.
+     * 0 (default) = unchanged: every send drives xqc_engine_conn_logic()
+     * before returning. A caller that writes one datagram per call therefore
+     * never accumulates more than one packet in the send queue, and the
+     * sendmmsg/GSO burst path can never form a batch. For streams the same
+     * limit applies ACROSS writes rather than within one: xqc_stream_send()
+     * loops until a write is consumed, so a large write already queues several
+     * packets, but each write still flushes separately.
      *
-     * 1 = the send only queues the packet; the flush happens on the caller's
-     * next xqc_engine_main_logic(). Intended for callers that write a run of
-     * datagrams and then drive the engine once (e.g. a tunnel reading a batch
-     * of packets per event-loop iteration).
+     * 1 = sends only queue packets; the flush happens on the caller's next
+     * xqc_engine_main_logic(). Intended for callers that write a run of
+     * packets and then drive the engine once — e.g. a tunnel reading a batch
+     * of packets per event-loop iteration.
+     *
+     * ONE knob for both kinds on purpose. A flush drives the whole connection
+     * and datagram and STREAM packet_outs share one send queue
+     * (xqc_send_queue_t.sndq_send_packets), so a per-kind knob could only
+     * select which SEND CALLS flush — never give each kind its own batching
+     * regime. On a connection carrying both, the non-deferred kind's sends
+     * would keep flushing the deferred kind's packets, so the split bought
+     * nothing but a way to misconfigure it.
      *
      * Scope — this defers ALL of xqc_engine_process_conn(), not only the
-     * datagram write: timer expiry, pending-ACK emission, PTO probes,
-     * retransmits and PMTUD probing move to the caller's next engine run too.
-     * Nothing is skipped and no wire format changes, but a peer's ACK can be
-     * emitted up to one full caller batch later than it would have been.
-     * Weigh that before enabling on a latency-sensitive path.
+     * write: timer expiry, pending-ACK emission, PTO probes, retransmits and
+     * PMTUD probing move to the caller's next engine run too. Nothing is
+     * skipped and no wire format changes, but a peer's ACK can be emitted up
+     * to one full caller batch later than it would have been. Weigh that
+     * before enabling on a latency-sensitive path.
      *
      * The caller MUST run the engine after the run of sends. A wakeup is
      * armed once per run as a backstop, but how much protection that actually
@@ -1657,16 +1671,33 @@ typedef struct xqc_conn_settings_s {
      * deadline for the caller to poll later gets no bound at all, because
      * nothing polls it until the engine is driven anyway.
      *
+     * Stream specifics:
+     * - Only the DATA path defers. HEADERS (xqc_h3_stream_send_headers), the
+     *   explicit FIN (xqc_h3_stream_send_finish), GOAWAY and stream-type
+     *   frames keep flushing immediately — once-per-stream control writes with
+     *   nothing to batch, where deferral would delay handshake and flow
+     *   control for no gain. A fin-only body write
+     *   (xqc_h3_request_send_body(req, NULL, 0, 1)) does take the data path
+     *   and is deferred like any other write.
+     * - Backpressure is unchanged. A write returning -XQC_EAGAIN never reached
+     *   the flush in the first place, and the threshold does not move either:
+     *   sndq_packets_used drops when a packet_out is freed, not when it is
+     *   transmitted, and STREAM packets are ack-eliciting.
+     * - Closing a stream flushes any pending deferred send first
+     *   (xqc_stream_close_with_error), so writing a body and closing from the
+     *   same callback does not lose the accepted bytes to the queue drop that
+     *   close performs.
+     *
      * ABI: appending this field enlarges xqc_conn_settings_t. Rebuilt
      * consumers are source-compatible and default to 0, but this is NOT
      * binary-compatible. A caller built against the older header passes a
      * smaller object, and both entry points read past its end: xqc_conn_create
      * assigns the whole struct on the client path, and
-     * xqc_server_set_conn_settings now reads this field on the server path.
+     * xqc_server_set_conn_settings reads this field on the server path.
      * Ship xquic and its consumers in lockstep, or version the shared library
      * — libxquic currently carries no SOVERSION.
      */
-    uint8_t                     defer_dgram_flush;
+    uint8_t                     defer_send_flush;
 } xqc_conn_settings_t;
 
 

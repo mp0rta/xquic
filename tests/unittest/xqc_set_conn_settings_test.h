@@ -6,11 +6,11 @@
 #define _XQC_SET_CONN_SETTINGS_TEST_H
 
 /* PR8 G-N6 test gap #c. Pins xqc_server_set_conn_settings field
- * propagation for the 15 xqc_conn_settings_t fields that mqvpn (the
+ * propagation for the 18 xqc_conn_settings_t fields that mqvpn (the
  * primary downstream consumer) actually sets today.
  *
  * What this test catches: deleting / breaking a copy line for one of
- * the 15 fields in src/transport/xqc_conn.c — the matching field's
+ * the 18 fields in src/transport/xqc_conn.c — the matching field's
  * sentinel won't land in engine->default_conn_settings, an assertion
  * trips.
  *
@@ -23,5 +23,13 @@
 void xqc_test_server_set_conn_settings_propagation(void);
 void xqc_test_server_set_conn_settings_zero_defaults(void);
 void xqc_test_server_set_conn_settings_clamp(void);
+
+/* Behaviour of the shared deferral helper itself (xqc_conn_flush_or_defer),
+ * as opposed to the settings that select it: that the deferred branch latches
+ * and arms exactly one wakeup per run, that it is idempotent within a run,
+ * and — the branch the helper's own comment calls load-bearing — that a conn
+ * without XQC_CONN_FLAG_TICKING falls back to the immediate flush instead of
+ * deferring into a queue it is not on. */
+void xqc_test_conn_flush_or_defer(void);
 
 #endif /* _XQC_SET_CONN_SETTINGS_TEST_H */

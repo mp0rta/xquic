@@ -12,50 +12,6 @@
 #include "src/transport/xqc_engine.h"
 
 
-/*
- * Flush the packets a datagram send has just queued.
- *
- * The default (conn_settings.defer_dgram_flush == 0) is the original
- * behavior: drive the connection immediately, so one datagram per call means
- * one packet in the send queue and the burst path
- * (xqc_path_send_burst_packets) never has more than one packet to batch.
- *
- * When deferral is enabled, the caller writes a run of datagrams and drives
- * the engine once afterwards, letting the burst path fill a real
- * sendmmsg/GSO batch. All the deferred branch then owes is a wakeup, armed
- * once per run. How much that wakeup is actually worth depends on the
- * caller's set_event_timer — see the field doc in xquic.h. Callers must drive
- * the engine after the run regardless.
- *
- * Deferral also requires the conn to really be scheduled. Every caller runs
- * xqc_engine_add_active_queue() immediately before this, and that sets
- * XQC_CONN_FLAG_TICKING only on a successful push; if the push failed
- * (priority-queue growth under memory pressure) the conn sits in neither
- * engine queue and nothing would ever come back for it. Falling back to the
- * immediate flush is exact rather than merely defensive: it processes this
- * conn by pointer and so does not depend on the queues at all — which is
- * precisely why the pre-deferral code could ignore that failure.
- *
- * Single audit point on purpose: the three send entry points share it so the
- * enabled and disabled paths cannot drift apart between them.
- */
-static void
-xqc_datagram_flush_or_defer(xqc_connection_t *conn)
-{
-    if (conn->conn_settings.defer_dgram_flush
-        && (conn->conn_flag & XQC_CONN_FLAG_TICKING))
-    {
-        if (!conn->dgram_flush_pending) {
-            conn->dgram_flush_pending = 1;
-            xqc_engine_wakeup_once(conn->engine);
-        }
-        return;
-    }
-
-    xqc_engine_conn_logic(conn->engine, conn);
-}
-
-
 xqc_datagram_0rtt_buffer_t* 
 xqc_datagram_create_0rtt_buffer(void *data, size_t data_len, 
     uint64_t dgram_id, xqc_data_qos_level_t qos_level)
@@ -335,7 +291,7 @@ xqc_int_t xqc_datagram_send(xqc_connection_t *conn, void *data,
     }
 
     /* call main logic to send packets out (or defer it, see the helper) */
-    xqc_datagram_flush_or_defer(conn);
+    xqc_conn_flush_or_defer(conn);
 
     return XQC_OK;
 }
@@ -456,7 +412,7 @@ xqc_datagram_send_on_path(xqc_connection_t *conn, void *data,
     }
 
     /* call main logic to send packets out (or defer it, see the helper) */
-    xqc_datagram_flush_or_defer(conn);
+    xqc_conn_flush_or_defer(conn);
 
     return XQC_OK;
 }
@@ -631,7 +587,7 @@ xqc_datagram_send_multiple_internal(xqc_connection_t *conn,
         }
 
         /* call main logic to send packets out (or defer it, see the helper) */
-        xqc_datagram_flush_or_defer(conn);
+        xqc_conn_flush_or_defer(conn);
     }
 
     return ret < 0 ? ret : XQC_OK;
