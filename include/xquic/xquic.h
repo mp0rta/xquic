@@ -1649,6 +1649,12 @@ typedef struct xqc_conn_settings_s {
      * emitted up to one full caller batch later than it would have been.
      * Weigh that before enabling on a latency-sensitive path.
      *
+     * Scope, part 2 — this selects which SEND CALLS flush, not which packets
+     * a flush transmits. Datagram and STREAM packet_outs share one send queue,
+     * so on a connection that also writes streams, any stream send whose own
+     * knob (defer_stream_flush) is off will flush the datagrams deferred here
+     * as well. See defer_stream_flush below before enabling just one.
+     *
      * The caller MUST run the engine after the run of sends. A wakeup is
      * armed once per run as a backstop, but how much protection that actually
      * buys depends on the caller's set_event_timer: it bounds the delay to
@@ -1676,12 +1682,25 @@ typedef struct xqc_conn_settings_s {
      * driven from a tunnel's own read loop, nothing there guarantees an engine
      * run right after the write — see the caller obligation below.
      *
-     * A separate knob rather than one shared with defer_dgram_flush because
-     * the two carry different traffic: an application can tunnel bulk data
-     * over DATAGRAM while keeping request/response streams on the original
-     * immediate-flush timing, or the reverse. Enabling both is fine — they
-     * share one per-connection "wakeup already armed" flag, so a run mixing
-     * datagram and stream writes still arms exactly one wakeup.
+     * A separate knob from defer_dgram_flush, but NOT a separate queue. The
+     * two select which SEND CALLS flush; they do not give each send kind its
+     * own flush. A flush drives the whole connection, and datagram and STREAM
+     * packet_outs share one send queue (xqc_send_queue_t.sndq_send_packets),
+     * so whatever the deferred kind had queued goes out with it.
+     *
+     * The practical consequence: enabling only one of the two does not give
+     * that kind deferred timing while the other keeps immediate timing. Every
+     * send of the NON-deferred kind flushes the deferred kind's queued packets
+     * too, so a connection carrying both batches no better than its most
+     * frequent immediately-flushing send. Splitting them is useful when a
+     * connection carries essentially one kind, or to keep a low-rate control
+     * stream flushing promptly beside deferred bulk datagrams — not to run two
+     * independent batching regimes on one connection. Enable both when the
+     * goal is batching.
+     *
+     * Enabling both is otherwise free: they share one per-connection "wakeup
+     * already armed" flag, so a run mixing datagram and stream writes still
+     * arms exactly one wakeup.
      *
      * 0 (default) = unchanged: every xqc_h3_stream_send_data() drives
      * xqc_engine_conn_logic() immediately. Note this is NOT "one packet per
