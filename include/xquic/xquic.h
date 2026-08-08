@@ -1656,6 +1656,28 @@ typedef struct xqc_conn_settings_s {
      * would keep flushing the deferred kind's packets, so the split bought
      * nothing but a way to misconfigure it.
      *
+     * Coverage — only the two bulk paths named above defer. Every other
+     * xqc_engine_conn_logic() call site still flushes immediately, in three
+     * groups:
+     * - Control writes: HEADERS, the explicit FIN (xqc_h3_stream_send_finish),
+     *   GOAWAY, stream-type frames, PING, connect, close_path, stream close.
+     *   These are once-per-stream or once-per-connection with nothing to
+     *   batch, and deferring them would delay handshake and flow control for
+     *   no gain.
+     * - xqc_conn_continue_send_by_conn(), which exists precisely to resume
+     *   sending on demand; deferring it would defeat its purpose.
+     * - xqc_stream_send()'s own trailing flush. That one runs ONLY for streams
+     *   without XQC_STREAM_FLAG_HAS_H3 — h3 streams skip it and are flushed by
+     *   the h3 layer instead — so it is the bulk path of the raw transport
+     *   stream API. It would benefit from deferral on the same reasoning as
+     *   the h3 one, and is left out only because no consumer of this fork
+     *   drives it, which means the change could be neither measured nor
+     *   exercised. Route it through xqc_conn_flush_or_defer() if one appears.
+     *
+     * None of those omissions can strand a deferred packet: a flush drives the
+     * whole connection, so any immediate flush also transmits whatever was
+     * deferred earlier.
+     *
      * Scope — this defers ALL of xqc_engine_process_conn(), not only the
      * write: timer expiry, pending-ACK emission, PTO probes, retransmits and
      * PMTUD probing move to the caller's next engine run too. Nothing is
