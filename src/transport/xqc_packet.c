@@ -221,7 +221,11 @@ xqc_packet_decrypt_single(xqc_connection_t *c, xqc_packet_in_t *packet_in)
                 xqc_pkt_type_2_str(packet_in->pi_pkt.pkt_type), packet_in->pi_pkt.pkt_num);
         ret = xqc_process_frames(c, packet_in);
         if (ret != XQC_OK) {
-            xqc_log(c->log, XQC_LOG_ERROR, "|xqc_process_frames error|%d|", ret);
+            /* tolerant drops (-XQC_EIGNORE_PKT) are handled conditions,
+             * not errors — keep them out of the ERROR log */
+            xqc_log_level_t lvl =
+                (ret == -XQC_EIGNORE_PKT) ? XQC_LOG_DEBUG : XQC_LOG_ERROR;
+            xqc_log(c->log, lvl, "|xqc_process_frames error|%d|", ret);
             return ret;
         }
 

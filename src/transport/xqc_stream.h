@@ -99,6 +99,9 @@ typedef struct xqc_stream_data_in_s {
     /* buffered out-of-order frame resource tracking (CWE-770 mitigation) */
     uint64_t                buffered_frame_count;   /* number of buffered frame nodes */
     uint64_t                buffered_data_bytes;    /* total bytes of buffered frame data */
+    /* 1 while cap rejections are being logged for this stream (first hit
+     * logs at WARN, the rest at DEBUG); cleared on the next admitted frame */
+    uint8_t                 cap_reject_logged;
 } xqc_stream_data_in_t;
 
 

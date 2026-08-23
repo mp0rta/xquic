@@ -2914,6 +2914,13 @@ main(int argc, char *argv[])
         conn_settings.idle_time_out = 10000;
     }
 
+    /* case 706: tiny stream reassembly cap so client-side packet drops make
+     * the receiver hit the cap deterministically; proves the connection
+     * survives cap pressure and the transfer still completes */
+    if (g_test_case == 706) {
+        conn_settings.max_stream_frame_buffered_cnt = 16;
+    }
+
     /* enable_multipath */
     if (g_enable_multipath) {
         conn_settings.enable_multipath = g_enable_multipath;

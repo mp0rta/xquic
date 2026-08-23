@@ -185,6 +185,8 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
     engine->default_conn_settings.ping_on = settings->ping_on;
     engine->default_conn_settings.so_sndbuf = settings->so_sndbuf;
     engine->default_conn_settings.sndq_packets_used_max = settings->sndq_packets_used_max;
+    engine->default_conn_settings.max_stream_frame_buffered_cnt =
+        settings->max_stream_frame_buffered_cnt;
     engine->default_conn_settings.linger = settings->linger;
     engine->default_conn_settings.spurious_loss_detect_on =
         settings->spurious_loss_detect_on;
@@ -5421,8 +5423,13 @@ xqc_conn_process_packet(xqc_connection_t *c, const unsigned char *packet_in_buf,
             ret = xqc_conn_on_pkt_processed(c, packet_in, recv_time);
 
         } else if (xqc_conn_tolerant_error(ret)) {
-            /* ignore the remain bytes */
-            xqc_log(c->log, XQC_LOG_INFO, "|ignore err|%d|", ret);
+            /* ignore the remain bytes. -XQC_EIGNORE_PKT drops are a handled
+             * per-packet condition (e.g. reassembly-cap backpressure) that
+             * can occur once per rejected packet under sustained pressure —
+             * keep them at DEBUG so INFO deployments are not flooded. */
+            xqc_log_level_t lvl =
+                (ret == -XQC_EIGNORE_PKT) ? XQC_LOG_DEBUG : XQC_LOG_INFO;
+            xqc_log(c->log, lvl, "|ignore err|%d|", ret);
             packet_in->pos = packet_in->last;
             ret = XQC_OK;
             goto end;
