@@ -1731,6 +1731,32 @@ xqc_send_ctl_on_pmtud_ping_acked(xqc_send_ctl_t *send_ctl,
 /**
  * OnPacketAcked
  */
+static uint64_t
+xqc_send_ctl_app_payload_bytes(xqc_packet_out_t *packet_out)
+{
+    uint64_t payload_bytes = 0;
+
+    if (packet_out->po_frame_types & XQC_FRAME_BIT_DATAGRAM) {
+        payload_bytes = packet_out->po_dgram_payload_size;
+    }
+
+    if (packet_out->po_frame_types & XQC_FRAME_BIT_STREAM) {
+        for (int i = 0; i < XQC_MAX_STREAM_FRAME_IN_PO; i++) {
+            if (packet_out->po_stream_frames[i].ps_is_used == 0) {
+                break;
+            }
+            uint64_t stream_bytes =
+                packet_out->po_stream_frames[i].ps_length;
+            if (UINT64_MAX - payload_bytes < stream_bytes) {
+                return UINT64_MAX;
+            }
+            payload_bytes += stream_bytes;
+        }
+    }
+
+    return payload_bytes;
+}
+
 void
 xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl,
     xqc_packet_out_t *acked_packet, xqc_usec_t now, int do_cc)
@@ -1739,6 +1765,22 @@ xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl,
     xqc_packet_out_t *packet_out = acked_packet;
     xqc_connection_t *conn = send_ctl->ctl_conn;
     xqc_bool_t notify_ping;
+
+    xqc_bool_t first_confirmed_ack = do_cc && !packet_out->po_acked;
+    if (packet_out->po_origin) {
+        first_confirmed_ack = first_confirmed_ack
+                              && !packet_out->po_origin->po_acked;
+    }
+    if (first_confirmed_ack
+        && conn->scheduler_callback != NULL
+        && conn->scheduler_callback->xqc_scheduler_on_app_packet_acked)
+    {
+        uint64_t app_payload_bytes = xqc_send_ctl_app_payload_bytes(packet_out);
+        if (app_payload_bytes > 0) {
+            conn->scheduler_callback->xqc_scheduler_on_app_packet_acked(
+                conn->scheduler, packet_out->po_path_id, app_payload_bytes);
+        }
+    }
 
     if ((conn->conn_type == XQC_CONN_TYPE_SERVER) && (acked_packet->po_frame_types & XQC_FRAME_BIT_HANDSHAKE_DONE)) {
         conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_DONE_ACKED;

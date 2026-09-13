@@ -103,6 +103,7 @@ typedef struct xqc_packet_out_s {
 
     /* only meaningful if it contains a DATAGRAM frame */
     uint64_t                po_dgram_id;
+    uint64_t                po_dgram_payload_size;
 
     /* WLB scheduler: flow hash for datagram flow-affinity scheduling.
      * Set by application via xqc_conn_set_dgram_flow_hash() before send. */

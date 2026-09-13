@@ -5996,6 +5996,7 @@ xqc_conn_reassemble_packet(xqc_connection_t *conn, xqc_packet_out_t *ori_po)
 
     /* copy packet_out info */
     new_po->po_frame_types = ori_po->po_frame_types;
+    new_po->po_dgram_payload_size = ori_po->po_dgram_payload_size;
     for (int i = 0; i < XQC_MAX_STREAM_FRAME_IN_PO; i++) {
         new_po->po_stream_frames[i] = ori_po->po_stream_frames[i];
     }
