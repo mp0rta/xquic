@@ -5608,15 +5608,15 @@ killall test_server 2> /dev/null
 rm -f h3_field_section_server.log
 
 
-# ── QUIC transport: stream reassembly cap (case IDs 705/706) ──────────────
-# 705 happy path: default cap, lossy echo transfer completes and the cap
+# ── QUIC transport: stream reassembly cap (case IDs 727/728) ──────────────
+# 727 happy path: default cap, lossy echo transfer completes and the cap
 # machinery stays quiet (no buffered-count rejections logged).
 killall test_server 2> /dev/null
 ${SERVER_BIN} -l d -e > /dev/null &
 sleep 1
 clear_log
 echo -e "stream reassembly cap happy path ...\c"
-result=`${CLIENT_BIN} -s 2048000 -l d -t 5 -E -d 300 -x 705|grep ">>>>>>>> pass:1"`
+result=`${CLIENT_BIN} -s 2048000 -l d -t 5 -E -d 300 -x 727|grep ">>>>>>>> pass:1"`
 cap_hit=`grep "stream frame buffered count exceed" slog`
 if [ -n "$result" ] && [ -z "$cap_hit" ]; then
     echo ">>>>>>>> pass:1"
@@ -5626,17 +5626,17 @@ else
     case_print_result "stream_reassembly_cap_happy" "fail"
 fi
 
-# 706 abnormal path: server shrinks the reassembly cap to 16 (-x 706), the
+# 728 abnormal path: server shrinks the reassembly cap to 16 (-x 728), the
 # client-side drop rate forces cap rejections; the transfer must STILL
 # complete byte-identically and the server engine must not report a packet
 # processing failure (the pre-fix behavior closed the whole connection with
 # FRAME_ENCODING_ERROR here).
 killall test_server 2> /dev/null
-${SERVER_BIN} -l d -e -x 706 > /dev/null &
+${SERVER_BIN} -l d -e -x 728 > /dev/null &
 sleep 1
 clear_log
 echo -e "stream reassembly cap pressure recovery ...\c"
-result=`${CLIENT_BIN} -s 65536 -l d -t 12 -E -d 150 -x 706|grep ">>>>>>>> pass:1"`
+result=`${CLIENT_BIN} -s 65536 -l d -t 12 -E -d 150 -x 728|grep ">>>>>>>> pass:1"`
 cap_hit=`grep "stream frame buffered count exceed" slog`
 fatal=`grep "fail to process packets" slog`
 if [ -n "$result" ] && [ -n "$cap_hit" ] && [ -z "$fatal" ]; then

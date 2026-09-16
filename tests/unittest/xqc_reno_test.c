@@ -19,6 +19,7 @@
  * commit.
  */
 #define XQC_RENO_TEST_MSS               XQC_MSS
+#define XQC_RENO_TEST_MIN_WIN           (2 * XQC_RENO_TEST_MSS)
 #define XQC_RENO_TEST_MIN_INIT_WIN_PKTS 4
 #define XQC_RENO_TEST_MAX_INIT_WIN_PKTS 100
 
@@ -72,6 +73,44 @@ xqc_test_reno()
     xqc_reno_cb.xqc_cong_ctl_reset_cwnd(&reno);
     print_reno(&reno);
 
+}
+
+void
+xqc_test_reno_loss_ssthresh()
+{
+#ifndef XQC_ENABLE_RENO
+    return;
+#endif
+    xqc_new_reno_t  reno;
+    xqc_cc_params_t params = {0};
+    uint32_t        expected_ssthresh;
+
+    xqc_reno_cb.xqc_cong_ctl_init(&reno, NULL, params);
+    expected_ssthresh = reno.reno_congestion_window / 2;
+    xqc_reno_cb.xqc_cong_ctl_on_lost(&reno, 1);
+
+    CU_ASSERT_EQUAL(reno.reno_ssthresh, expected_ssthresh);
+    CU_ASSERT_EQUAL(reno.reno_congestion_window, expected_ssthresh);
+}
+
+void
+xqc_test_reno_loss_ssthresh_min_clamp()
+{
+#ifndef XQC_ENABLE_RENO
+    return;
+#endif
+    xqc_new_reno_t  reno;
+    xqc_cc_params_t params = {0};
+    uint32_t        expected_ssthresh;
+
+    xqc_reno_cb.xqc_cong_ctl_init(&reno, NULL, params);
+    reno.reno_congestion_window = 3 * XQC_RENO_TEST_MSS;
+    expected_ssthresh = reno.reno_congestion_window / 2;
+    xqc_reno_cb.xqc_cong_ctl_on_lost(&reno, 1);
+
+    CU_ASSERT_EQUAL(reno.reno_ssthresh, expected_ssthresh);
+    CU_ASSERT_EQUAL(reno.reno_congestion_window, XQC_RENO_TEST_MIN_WIN);
+    CU_ASSERT_TRUE(reno.reno_congestion_window > reno.reno_ssthresh);
 }
 
 /*
@@ -215,4 +254,69 @@ xqc_test_reno_init_cwnd_override()
     params.init_cwnd = 0;
     xqc_reno_cb.xqc_cong_ctl_init(&reno, NULL, params);
     CU_ASSERT_EQUAL(reno.reno_congestion_window, default_iw);
+}
+
+void
+xqc_test_reno_recovery_exit()
+{
+#ifndef XQC_ENABLE_RENO
+    return;
+#endif
+    xqc_new_reno_t  reno;
+    xqc_cc_params_t params = {0};
+    xqc_packet_out_t po;
+    xqc_usec_t      recovery_start;
+    uint64_t        recovery_cwnd;
+
+    memset(&po, 0, sizeof(po));
+    xqc_reno_cb.xqc_cong_ctl_init(&reno, NULL, params);
+    xqc_reno_cb.xqc_cong_ctl_on_lost(&reno, 1);
+
+    recovery_start = reno.reno_recovery_start_time;
+    recovery_cwnd = reno.reno_congestion_window;
+    CU_ASSERT_TRUE(recovery_start > 0);
+    CU_ASSERT_TRUE(xqc_reno_cb.xqc_cong_ctl_in_recovery(&reno));
+
+    po.po_sent_time = recovery_start + 1;
+    po.po_used_size = 1000;
+    xqc_reno_cb.xqc_cong_ctl_on_ack(&reno, &po, po.po_sent_time + 1);
+
+    CU_ASSERT_TRUE(reno.reno_congestion_window > recovery_cwnd);
+    CU_ASSERT_FALSE(xqc_reno_cb.xqc_cong_ctl_in_recovery(&reno));
+
+    /* RFC 9002 Appendix B.5 keeps this boundary for reordered ACKs. */
+    CU_ASSERT_EQUAL(reno.reno_recovery_start_time, recovery_start);
+
+    recovery_cwnd = reno.reno_congestion_window;
+    xqc_reno_cb.xqc_cong_ctl_on_lost(&reno, recovery_start + 1);
+    CU_ASSERT_TRUE(reno.reno_congestion_window < recovery_cwnd);
+    CU_ASSERT_TRUE(xqc_reno_cb.xqc_cong_ctl_in_recovery(&reno));
+}
+
+void
+xqc_test_reno_reordered_ack()
+{
+#ifndef XQC_ENABLE_RENO
+    return;
+#endif
+    xqc_new_reno_t  reno;
+    xqc_cc_params_t params = {0};
+    xqc_packet_out_t po;
+    xqc_usec_t      recovery_start;
+    uint64_t        post_recovery_cwnd;
+
+    memset(&po, 0, sizeof(po));
+    xqc_reno_cb.xqc_cong_ctl_init(&reno, NULL, params);
+    xqc_reno_cb.xqc_cong_ctl_on_lost(&reno, 1);
+    recovery_start = reno.reno_recovery_start_time;
+
+    po.po_sent_time = recovery_start + 1;
+    po.po_used_size = 1000;
+    xqc_reno_cb.xqc_cong_ctl_on_ack(&reno, &po, po.po_sent_time + 1);
+    post_recovery_cwnd = reno.reno_congestion_window;
+
+    po.po_sent_time = recovery_start;
+    xqc_reno_cb.xqc_cong_ctl_on_ack(&reno, &po, po.po_sent_time + 1);
+
+    CU_ASSERT_EQUAL(reno.reno_congestion_window, post_recovery_cwnd);
 }

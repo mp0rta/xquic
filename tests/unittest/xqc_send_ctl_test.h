@@ -13,6 +13,11 @@
 void xqc_test_pto_uses_remote_max_ack_delay(void);
 void xqc_test_pto_remote_default_when_unset(void);
 
+/* RFC 9000 Section 8.2.4 path-validation timeout behavior. */
+void xqc_test_path_validation_timeout_current_pto_dominates(void);
+void xqc_test_path_validation_timeout_new_path_pto_dominates(void);
+void xqc_test_path_validation_timer_not_extended_by_packet(void);
+
 /*
  * Regression test for issue #724 (RFC 9002 5.3):
  * xqc_send_ctl_update_rtt must cap ack_delay by max_ack_delay
@@ -20,6 +25,20 @@ void xqc_test_pto_remote_default_when_unset(void);
  * cap until the handshake is confirmed.
  */
 void xqc_test_send_ctl_update_rtt_ack_delay_cap(void);
+
+/*
+ * RFC 9002 Section 5.3 permits subtracting ack_delay when the result is
+ * exactly min_rtt, but forbids subtraction when the result is smaller.
+ */
+void xqc_test_send_ctl_update_rtt_subtracts_at_min_rtt(void);
+void xqc_test_send_ctl_update_rtt_rejects_below_min_rtt(void);
+
+/*
+ * RFC 9002 Section 6.1.2 recommends a 1 ms timer granularity. Verify that
+ * time-threshold loss detection fires at that boundary, but not before it.
+ */
+void xqc_test_send_ctl_granularity_marks_at_boundary(void);
+void xqc_test_send_ctl_granularity_defers_before_boundary(void);
 
 /*
  * Regression tests for issue #739 (RFC 9002 5.2):

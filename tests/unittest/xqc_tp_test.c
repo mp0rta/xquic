@@ -135,6 +135,145 @@ xqc_test_transport_params()
     xqc_test_encrypted_extensions();
 }
 
+/* RFC 9000 Section 18.2: retry_source_connection_id is server-only. */
+void
+xqc_test_retry_scid_decode_role(void)
+{
+    uint8_t tp[] = {
+        XQC_TRANSPORT_PARAM_RETRY_SOURCE_CONNECTION_ID, 0x01, 0xab
+    };
+    xqc_transport_params_t params;
+    xqc_int_t              ret;
+
+    memset(&params, 0, sizeof(params));
+    ret = xqc_decode_transport_params(&params,
+                                      XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
+                                      tp, sizeof(tp));
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(params.retry_source_connection_id_present, 1);
+    CU_ASSERT_EQUAL(params.retry_source_connection_id.cid_len, 1);
+
+    memset(&params, 0, sizeof(params));
+    ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_CLIENT_HELLO,
+                                      tp, sizeof(tp));
+    CU_ASSERT_EQUAL(ret, -XQC_TLS_MALFORMED_TRANSPORT_PARAM);
+}
+
+/* RFC 9000 Section 18.2: absent max_ack_delay defaults to 25 milliseconds. */
+void
+xqc_test_max_ack_delay_default_when_absent(void)
+{
+    uint8_t tp[] = {
+        XQC_TRANSPORT_PARAM_DISABLE_ACTIVE_MIGRATION, 0x00
+    };
+    xqc_transport_params_t params;
+    xqc_int_t              ret;
+
+    memset(&params, 0, sizeof(params));
+    ret = xqc_decode_transport_params(&params,
+                                      XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
+                                      tp, sizeof(tp));
+
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(params.disable_active_migration, 1);
+    CU_ASSERT_EQUAL(params.max_ack_delay, XQC_DEFAULT_MAX_ACK_DELAY);
+}
+
+/* RFC 9000 Section 18.2: max_ack_delay values below 2^14 are valid. */
+void
+xqc_test_max_ack_delay_valid_boundary(void)
+{
+    uint8_t tp[] = {
+        XQC_TRANSPORT_PARAM_MAX_ACK_DELAY, 0x02, 0x7f, 0xff
+    };
+    xqc_transport_params_t params;
+    xqc_int_t              ret;
+
+    memset(&params, 0, sizeof(params));
+    ret = xqc_decode_transport_params(&params,
+                                      XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
+                                      tp, sizeof(tp));
+
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(params.max_ack_delay, 16383);
+}
+
+/* RFC 9000 Section 18.2: max_ack_delay values of 2^14 or more are invalid. */
+void
+xqc_test_max_ack_delay_invalid_boundary(void)
+{
+    uint8_t tp[] = {
+        XQC_TRANSPORT_PARAM_MAX_ACK_DELAY, 0x04,
+        0x80, 0x00, 0x40, 0x00
+    };
+    xqc_transport_params_t params;
+    xqc_int_t              ret;
+
+    memset(&params, 0, sizeof(params));
+    ret = xqc_decode_transport_params(&params,
+                                      XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
+                                      tp, sizeof(tp));
+
+    CU_ASSERT_EQUAL(ret, -XQC_TLS_MALFORMED_TRANSPORT_PARAM);
+}
+
+/* RFC 9000 Section 18.2: max_udp_payload_size is at least 1200. */
+void
+xqc_test_max_udp_payload_size_valid_boundary(void)
+{
+    uint8_t tp_absent[] = {
+        XQC_TRANSPORT_PARAM_DISABLE_ACTIVE_MIGRATION, 0x00
+    };
+    uint8_t tp_minimum[] = {
+        XQC_TRANSPORT_PARAM_MAX_UDP_PAYLOAD_SIZE, 0x02, 0x44, 0xb0
+    };
+    xqc_transport_params_t params;
+    xqc_int_t              ret;
+
+    memset(&params, 0, sizeof(params));
+    ret = xqc_decode_transport_params(&params,
+                                      XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
+                                      tp_absent, sizeof(tp_absent));
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(params.max_udp_payload_size,
+                    XQC_DEFAULT_MAX_UDP_PAYLOAD_SIZE);
+
+    memset(&params, 0, sizeof(params));
+    ret = xqc_decode_transport_params(&params,
+                                      XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
+                                      tp_minimum, sizeof(tp_minimum));
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(params.max_udp_payload_size,
+                    XQC_MIN_UDP_PAYLOAD_SIZE);
+}
+
+/* RFC 9000 Section 18.2: max_udp_payload_size below 1200 is invalid. */
+void
+xqc_test_max_udp_payload_size_invalid_boundary(void)
+{
+    uint8_t tp_below_minimum[] = {
+        XQC_TRANSPORT_PARAM_MAX_UDP_PAYLOAD_SIZE, 0x02, 0x44, 0xaf
+    };
+    uint8_t tp_zero[] = {
+        XQC_TRANSPORT_PARAM_MAX_UDP_PAYLOAD_SIZE, 0x01, 0x00
+    };
+    xqc_transport_params_t params;
+    xqc_int_t              ret;
+
+    memset(&params, 0, sizeof(params));
+    ret = xqc_decode_transport_params(&params,
+                                      XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
+                                      tp_below_minimum,
+                                      sizeof(tp_below_minimum));
+    CU_ASSERT_EQUAL(ret, -XQC_TLS_MALFORMED_TRANSPORT_PARAM);
+
+    memset(&params, 0, sizeof(params));
+    ret = xqc_decode_transport_params(&params,
+                                      XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
+                                      tp_zero, sizeof(tp_zero));
+    CU_ASSERT_EQUAL(ret, -XQC_TLS_MALFORMED_TRANSPORT_PARAM);
+}
+
 /*
  * ============================================================================
  * Tests for xqc_conn_check_transport_params (RFC 9000 Section 7.3)
@@ -558,6 +697,60 @@ xqc_test_tp_cid_overflow(void)
                                       tp_iscid_boundary, sizeof(tp_iscid_boundary));
     CU_ASSERT(ret == XQC_OK);
     CU_ASSERT(params.initial_source_connection_id.cid_len == 20);
+}
+
+/*
+ * RFC 9000 §18.2: active_connection_id_limit MUST be at least 2.
+ * Verify that decoding a value of 0 or 1 returns an error.
+ */
+void
+xqc_test_active_cid_limit_minimum(void)
+{
+    xqc_transport_params_t params;
+    xqc_int_t ret;
+
+    /*
+     * Construct a minimal ENCRYPTED_EXTENSIONS transport parameter buffer
+     * containing only active_connection_id_limit = 1 (varint encoded).
+     *   param_type  = 0x0e (XQC_TRANSPORT_PARAM_ACTIVE_CONNECTION_ID_LIMIT)
+     *   param_len   = 0x01
+     *   param_value = 0x01 (varint for 1)
+     */
+    uint8_t tp_acl_one[] = {
+        0x0e,   /* param_type = active_connection_id_limit */
+        0x01,   /* param_len = 1 */
+        0x01    /* value = 1 */
+    };
+
+    memset(&params, 0, sizeof(params));
+    ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
+                                      tp_acl_one, sizeof(tp_acl_one));
+    CU_ASSERT(ret != XQC_OK);
+
+    /* Also verify value = 0 is rejected */
+    uint8_t tp_acl_zero[] = {
+        0x0e,   /* param_type = active_connection_id_limit */
+        0x01,   /* param_len = 1 */
+        0x00    /* value = 0 */
+    };
+
+    memset(&params, 0, sizeof(params));
+    ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
+                                      tp_acl_zero, sizeof(tp_acl_zero));
+    CU_ASSERT(ret != XQC_OK);
+
+    /* Boundary: value = 2 should succeed */
+    uint8_t tp_acl_two[] = {
+        0x0e,   /* param_type = active_connection_id_limit */
+        0x01,   /* param_len = 1 */
+        0x02    /* value = 2 */
+    };
+
+    memset(&params, 0, sizeof(params));
+    ret = xqc_decode_transport_params(&params, XQC_TP_TYPE_ENCRYPTED_EXTENSIONS,
+                                      tp_acl_two, sizeof(tp_acl_two));
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(params.active_connection_id_limit == 2);
 }
 
 void

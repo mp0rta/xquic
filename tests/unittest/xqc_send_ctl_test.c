@@ -107,6 +107,147 @@ xqc_test_pto_remote_default_when_unset(void)
 }
 
 
+static xqc_path_ctx_t *
+xqc_test_path_validation_create_path(xqc_connection_t *conn)
+{
+    xqc_path_ctx_t *path = xqc_calloc(1, sizeof(xqc_path_ctx_t));
+    if (path == NULL) {
+        return NULL;
+    }
+
+    path->parent_conn = conn;
+    path->path_id = 1;
+    path->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+    path->path_send_ctl = xqc_send_ctl_create(path);
+    if (path->path_send_ctl == NULL) {
+        xqc_free(path);
+        return NULL;
+    }
+
+    return path;
+}
+
+
+static void
+xqc_test_path_validation_destroy_path(xqc_path_ctx_t *path)
+{
+    xqc_send_ctl_destroy(path->path_send_ctl);
+    xqc_free(path);
+}
+
+
+void
+xqc_test_path_validation_timeout_current_pto_dominates(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+
+    conn->enable_multipath = XQC_TRUE;
+    conn->remote_settings.max_ack_delay = 25;
+    conn->conn_settings.initial_rtt = 100000;
+
+    xqc_send_ctl_t *current = conn->conn_initial_path->path_send_ctl;
+    current->ctl_srtt = 400000;
+    current->ctl_rttvar = 50000;
+
+    xqc_path_ctx_t *path = xqc_test_path_validation_create_path(conn);
+    CU_ASSERT_FATAL(path != NULL);
+
+    xqc_usec_t current_pto = 400000 + 4 * 50000 + 25 * 1000;
+    xqc_usec_t new_path_pto = 100000 + 4 * 50000 + 25 * 1000;
+    CU_ASSERT(current_pto > new_path_pto);
+
+    xqc_usec_t before = xqc_monotonic_timestamp();
+    xqc_int_t ret = xqc_path_init(path, conn);
+    xqc_usec_t after = xqc_monotonic_timestamp();
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+
+    xqc_timer_t *timer = &path->path_send_ctl->path_timer_manager
+                          .timer[XQC_TIMER_PATH_IDLE];
+    xqc_usec_t expected = 3 * current_pto;
+    CU_ASSERT(timer->timer_is_set);
+    CU_ASSERT(timer->expire_time >= before + expected);
+    CU_ASSERT(timer->expire_time <= after + expected);
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_VALIDATING);
+
+    xqc_test_path_validation_destroy_path(path);
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_path_validation_timeout_new_path_pto_dominates(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+
+    conn->enable_multipath = XQC_TRUE;
+    conn->remote_settings.max_ack_delay = 25;
+    conn->conn_settings.initial_rtt = 400000;
+
+    xqc_send_ctl_t *current = conn->conn_initial_path->path_send_ctl;
+    current->ctl_srtt = 10000;
+    current->ctl_rttvar = 0;
+
+    xqc_path_ctx_t *path = xqc_test_path_validation_create_path(conn);
+    CU_ASSERT_FATAL(path != NULL);
+
+    xqc_usec_t current_pto = 10000 + XQC_kGranularity * 1000
+                             + 25 * 1000;
+    xqc_usec_t new_path_pto = 400000 + 4 * 200000 + 25 * 1000;
+    CU_ASSERT(new_path_pto > current_pto);
+
+    xqc_usec_t before = xqc_monotonic_timestamp();
+    xqc_int_t ret = xqc_path_init(path, conn);
+    xqc_usec_t after = xqc_monotonic_timestamp();
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+
+    xqc_timer_t *timer = &path->path_send_ctl->path_timer_manager
+                          .timer[XQC_TIMER_PATH_IDLE];
+    xqc_usec_t expected = 3 * new_path_pto;
+    CU_ASSERT(timer->timer_is_set);
+    CU_ASSERT(timer->expire_time >= before + expected);
+    CU_ASSERT(timer->expire_time <= after + expected);
+
+    xqc_test_path_validation_destroy_path(path);
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_path_validation_timer_not_extended_by_packet(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+    CU_ASSERT_FATAL(conn->conn_initial_path != NULL);
+
+    conn->enable_multipath = XQC_TRUE;
+    xqc_path_ctx_t *path = conn->conn_initial_path;
+    CU_ASSERT_FATAL(xqc_conn_find_path_by_scid(conn, &path->path_scid)
+                    == path);
+
+    path->path_state = XQC_PATH_STATE_VALIDATING;
+    xqc_timer_t *timer = &path->path_send_ctl->path_timer_manager
+                          .timer[XQC_TIMER_PATH_IDLE];
+    timer->timer_is_set = XQC_TRUE;
+    timer->expire_time = 123456789;
+
+    xqc_conn_process_packet_recved_path(conn, &path->path_scid, 1200,
+                                        200000000);
+    CU_ASSERT_EQUAL(timer->expire_time, 123456789);
+
+    xqc_usec_t before = xqc_monotonic_timestamp();
+    xqc_path_validate(path);
+    xqc_usec_t after = xqc_monotonic_timestamp();
+    xqc_usec_t idle = xqc_path_get_idle_timeout(path) * 1000;
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_ACTIVE);
+    CU_ASSERT(timer->expire_time >= before + idle);
+    CU_ASSERT(timer->expire_time <= after + idle);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
 typedef struct xqc_rtt_case_s {
     const char     *name;
     xqc_bool_t      hsk_confirmed;
@@ -165,6 +306,60 @@ xqc_test_send_ctl_run_rtt_case(xqc_connection_t *conn, xqc_path_ctx_t *path,
     CU_ASSERT(send_ctl->ctl_srtt == tc->expected_srtt);
     CU_ASSERT(send_ctl->ctl_rttvar == tc->expected_rttvar);
     CU_ASSERT(send_ctl->ctl_minrtt == tc->expected_minrtt);
+}
+
+
+void
+xqc_test_send_ctl_update_rtt_subtracts_at_min_rtt(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+    CU_ASSERT_FATAL(conn->conn_initial_path != NULL);
+
+    xqc_rtt_case_t tc = {
+        .name = "subtracts_at_min_rtt",
+        .hsk_confirmed = XQC_FALSE,
+        .first_sample  = XQC_FALSE,
+        .remote_max_ack_delay_ms = 100,
+        .input_ack_delay = 10000,
+        .latest_rtt      = 20000,
+        .pre_minrtt      = 10000,
+        .pre_srtt        = 20000,
+        .pre_rttvar      = 1000,
+        .expected_srtt   = 18750,
+        .expected_rttvar = 3250,
+        .expected_minrtt = 10000,
+    };
+
+    xqc_test_send_ctl_run_rtt_case(conn, conn->conn_initial_path, &tc);
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_send_ctl_update_rtt_rejects_below_min_rtt(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+    CU_ASSERT_FATAL(conn->conn_initial_path != NULL);
+
+    xqc_rtt_case_t tc = {
+        .name = "rejects_below_min_rtt",
+        .hsk_confirmed = XQC_FALSE,
+        .first_sample  = XQC_FALSE,
+        .remote_max_ack_delay_ms = 100,
+        .input_ack_delay = 10000,
+        .latest_rtt      = 19999,
+        .pre_minrtt      = 10000,
+        .pre_srtt        = 20000,
+        .pre_rttvar      = 1000,
+        .expected_srtt   = 19999,
+        .expected_rttvar = 750,
+        .expected_minrtt = 10000,
+    };
+
+    xqc_test_send_ctl_run_rtt_case(conn, conn->conn_initial_path, &tc);
+    xqc_engine_destroy(conn->engine);
 }
 
 
@@ -289,8 +484,8 @@ xqc_test_send_ctl_update_rtt_ack_delay_cap(void)
             .pre_srtt        = 12000,
             .pre_rttvar      = 1000,
             /*
-             * adjusted_rtt + 1000us = 13000us, minrtt + ack_delay = 21000us;
-             * plausibility check fails, ack_delay not subtracted.
+             * latest_rtt = 12000us is below minrtt + ack_delay = 21000us,
+             * so ack_delay is not subtracted.
              */
             .expected_srtt   = 12000,
             .expected_rttvar = 750,
@@ -380,6 +575,63 @@ xqc_test_send_ctl_seed_lost_packet(xqc_connection_t *conn,
 
     xqc_send_queue_insert_unacked(po, &sq->sndq_unacked_packets[XQC_PNS_APP_DATA], sq);
     return po;
+}
+
+
+void
+xqc_test_send_ctl_granularity_marks_at_boundary(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+    CU_ASSERT_FATAL(conn->conn_initial_path != NULL);
+
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+    CU_ASSERT_FATAL(send_ctl != NULL);
+
+    send_ctl->ctl_srtt = 0;
+    send_ctl->ctl_latest_rtt = 0;
+    send_ctl->ctl_largest_acked[XQC_PNS_APP_DATA] = 100;
+    send_ctl->ctl_reordering_packet_threshold = XQC_kPacketThreshold;
+
+    xqc_packet_out_t *po = xqc_test_send_ctl_seed_lost_packet(conn, 99, 1);
+    CU_ASSERT_FATAL(po != NULL);
+
+    xqc_send_ctl_detect_lost(send_ctl, conn->conn_send_queue,
+                             XQC_PNS_APP_DATA, 1001);
+
+    CU_ASSERT_EQUAL(conn->detected_loss_cnt, 1);
+    CU_ASSERT_EQUAL(send_ctl->sampler.loss, 1);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_send_ctl_granularity_defers_before_boundary(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+    CU_ASSERT_FATAL(conn->conn_initial_path != NULL);
+
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+    CU_ASSERT_FATAL(send_ctl != NULL);
+
+    send_ctl->ctl_srtt = 0;
+    send_ctl->ctl_latest_rtt = 0;
+    send_ctl->ctl_largest_acked[XQC_PNS_APP_DATA] = 100;
+    send_ctl->ctl_reordering_packet_threshold = XQC_kPacketThreshold;
+
+    xqc_packet_out_t *po = xqc_test_send_ctl_seed_lost_packet(conn, 99, 1);
+    CU_ASSERT_FATAL(po != NULL);
+
+    xqc_send_ctl_detect_lost(send_ctl, conn->conn_send_queue,
+                             XQC_PNS_APP_DATA, 1000);
+
+    CU_ASSERT_EQUAL(conn->detected_loss_cnt, 0);
+    CU_ASSERT_EQUAL(send_ctl->sampler.loss, 0);
+    CU_ASSERT_EQUAL(send_ctl->ctl_loss_time[XQC_PNS_APP_DATA], 1001);
+
+    xqc_engine_destroy(conn->engine);
 }
 
 

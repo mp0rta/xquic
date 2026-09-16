@@ -17,6 +17,13 @@ void xqc_test_h3_reserved_uni_stream_accepted();
 void xqc_test_h3_push_stream_error_codes();
 void xqc_test_h3_max_push_id_valid();
 void xqc_test_h3_max_push_id_errors();
+void xqc_test_h3_goaway_id_valid();
+void xqc_test_h3_goaway_id_increase_rejected();
+void xqc_test_h3_settings_accepted();
+void xqc_test_h3_reserved_h2_settings_rejected();
+void xqc_test_h3_reserved_control_frame_accepted();
+void xqc_test_h3_h2_reserved_frames_rejected();
+void xqc_test_h3_cancel_push_rejected();
 void xqc_test_h3_uncompressed_fields_size();
 void xqc_test_h3_recv_header_field_section_size();
 
@@ -31,6 +38,10 @@ void xqc_test_h3_missing_settings();
 
 /* issue #609: RFC 9114 §7.2 control-only frames on request stream */
 void xqc_test_h3_request_frame_unexpected();
+
+/* issue #742: RFC 9114 §4.1 request-stream frame sequence */
+void xqc_test_h3_data_after_headers_accepted();
+void xqc_test_h3_data_before_headers_rejected();
 
 /* issue #849: RFC 9114 §7.2.5 PUSH_PROMISE sender role */
 void xqc_test_h3_server_reserved_request_frame_accepted();
@@ -62,5 +73,14 @@ void xqc_test_h3_request_frame_unexpected();
 void xqc_test_h3_blocked_stream_limit_uses_local();
 /* ALIBABA-2026-42073004: SETTINGS frame size limit */
 void xqc_test_h3_settings_frame_size_limit();
+
+/* issue #748: RFC 9114 §4.2 uppercase field name rejection */
+void xqc_test_h3_field_name_uppercase_rejection();
+void xqc_test_h3_lowercase_field_name_stream_accepted();
+void xqc_test_h3_uppercase_field_name_stream_rejected();
+
+/* RFC 9114 §4.3 pseudo-header field ordering */
+void xqc_test_h3_pseudo_header_order_accepted();
+void xqc_test_h3_pseudo_header_after_regular_rejected();
 
 #endif // XQUIC_XQC_H3_TEST_H

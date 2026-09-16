@@ -212,11 +212,17 @@ _Static_assert(XQC_FRAME_PATH_FROZEN < 31,
 /*
  * PING and PADDING frames contain no information, so lost PING or
  *     PADDING frames do not require repair
+ *
+ * RFC 9000 Section 13.3 / Section 8.2.2: responses to path validation using
+ *     PATH_RESPONSE frames are sent just once and MUST NOT be retransmitted on
+ *     loss; the peer sends additional PATH_CHALLENGE frames to elicit new
+ *     PATH_RESPONSE frames, so PATH_RESPONSE is excluded from repair here.
  */
 #define XQC_NEED_REPAIR(types)                                                    \
     ((types) & ~(XQC_FRAME_BIT_ACK | XQC_FRAME_BIT_PADDING | XQC_FRAME_BIT_PING | \
                  XQC_FRAME_BIT_CONNECTION_CLOSE | XQC_FRAME_BIT_DATAGRAM |        \
-                 XQC_FRAME_BIT_SID | XQC_FRAME_BIT_REPAIR_SYMBOL))
+                 XQC_FRAME_BIT_SID | XQC_FRAME_BIT_REPAIR_SYMBOL |                \
+                 XQC_FRAME_BIT_PATH_RESPONSE))
 
 
 const char *xqc_frame_type_2_str(xqc_engine_t *engine, xqc_frame_type_bit_t type_bit);
@@ -236,6 +242,10 @@ xqc_int_t xqc_process_padding_frame(xqc_connection_t *conn, xqc_packet_in_t *pac
 xqc_int_t xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in);
 
 xqc_int_t xqc_insert_crypto_frame(xqc_connection_t *conn, xqc_stream_t *stream, xqc_stream_frame_t *stream_frame);
+
+xqc_int_t xqc_check_crypto_frame_level(xqc_connection_t *conn,
+    xqc_stream_t *stream, xqc_stream_frame_t *stream_frame,
+    xqc_encrypt_level_t current_level);
 
 xqc_int_t xqc_process_crypto_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in);
 

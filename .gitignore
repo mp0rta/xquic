@@ -6,6 +6,10 @@ third_party/*
 !third_party/boringssl
 .idea/
 .agents/
+.claude/
+.ai-context/
+.worktrees/
+harness/private/
 cmake-build-debug/
 *.log
 *.pcap

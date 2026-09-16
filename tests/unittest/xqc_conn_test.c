@@ -4,12 +4,14 @@
 
 #include <CUnit/CUnit.h>
 #include <stdint.h>
+#include <string.h>
 #include "xquic/xquic.h"
 #include "xquic/xqc_errno.h"
 #include "src/transport/xqc_conn.h"
 #include "src/transport/xqc_client.h"
 #include "src/transport/xqc_defs.h"
 #include "src/transport/xqc_stream.h"
+#include "src/transport/xqc_timer.h"
 #include "xquic/xquic_typedef.h"
 #include "src/common/xqc_str.h"
 #include "src/common/xqc_list.h"
@@ -21,13 +23,123 @@
 #include "src/transport/xqc_send_ctl.h"
 #include "src/transport/xqc_frame_parser.h"
 #include "src/transport/xqc_packet_in.h"
+#include "src/transport/xqc_packet_out.h"
+#include "src/transport/xqc_send_queue.h"
 #include "src/transport/xqc_recv_record.h"
+#include "src/common/utils/vint/xqc_variable_len_int.h"
 
 extern void xqc_conn_tls_error_cb(xqc_int_t tls_err, void *user_data);
+extern xqc_int_t xqc_conn_set_remote_transport_params(
+    xqc_connection_t *conn, const xqc_transport_params_t *params,
+    xqc_transport_params_type_t exttype);
 
 /* forward-declare: defined in xqc_conn.c, exposed via xqc_conn_tls_cbs */
 xqc_int_t xqc_conn_tls_alpn_select_cb(const char *alpn,
     size_t alpn_len, void *user_data);
+
+static xqc_packet_out_t *xqc_test_get_conn_close_packet(
+    xqc_connection_t *conn);
+static void xqc_test_conn_close_packet_value(xqc_connection_t *conn,
+    xqc_pkt_type_t pkt_type, unsigned char frame_type, uint64_t err_code);
+static void xqc_test_conn_close_packet_reason(xqc_connection_t *conn,
+    unsigned char frame_type, const unsigned char *expected,
+    size_t expected_len);
+
+
+static xqc_packet_out_t *
+xqc_test_get_conn_close_packet(xqc_connection_t *conn)
+{
+    xqc_list_head_t *head;
+
+    head = &conn->conn_send_queue->sndq_send_packets_high_pri;
+    if (xqc_list_empty(head)) {
+        return NULL;
+    }
+
+    return xqc_list_entry(head->prev, xqc_packet_out_t, po_list);
+}
+
+
+static void
+xqc_test_conn_close_packet_value(xqc_connection_t *conn,
+    xqc_pkt_type_t pkt_type, unsigned char frame_type, uint64_t err_code)
+{
+    xqc_packet_out_t *packet_out;
+    unsigned char *pos;
+    uint64_t parsed_err_code;
+    ssize_t len;
+
+    packet_out = xqc_test_get_conn_close_packet(conn);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(packet_out);
+    CU_ASSERT_EQUAL(packet_out->po_pkt.pkt_type, pkt_type);
+
+    pos = packet_out->po_payload;
+    CU_ASSERT_FATAL(pos < packet_out->po_buf + packet_out->po_used_size);
+    CU_ASSERT_EQUAL(*pos, frame_type);
+
+    len = xqc_vint_read(pos + 1,
+                        packet_out->po_buf + packet_out->po_used_size,
+                        &parsed_err_code);
+    CU_ASSERT(len > 0);
+    if (len > 0) {
+        CU_ASSERT_EQUAL(parsed_err_code, err_code);
+    }
+}
+
+
+static void
+xqc_test_conn_close_packet_reason(xqc_connection_t *conn,
+    unsigned char frame_type, const unsigned char *expected,
+    size_t expected_len)
+{
+    xqc_packet_out_t *packet_out;
+    unsigned char *pos;
+    const unsigned char *end;
+    uint64_t value;
+    ssize_t len;
+
+    packet_out = xqc_test_get_conn_close_packet(conn);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(packet_out);
+
+    pos = packet_out->po_payload;
+    end = packet_out->po_buf + packet_out->po_used_size;
+    CU_ASSERT_FATAL(pos < end);
+    CU_ASSERT_EQUAL(*pos++, frame_type);
+
+    len = xqc_vint_read(pos, end, &value);
+    CU_ASSERT(len > 0);
+    if (len <= 0) {
+        return;
+    }
+    pos += len;
+
+    if (frame_type == 0x1c) {
+        len = xqc_vint_read(pos, end, &value);
+        CU_ASSERT(len > 0);
+        if (len <= 0) {
+            return;
+        }
+        pos += len;
+    }
+
+    len = xqc_vint_read(pos, end, &value);
+    CU_ASSERT(len > 0);
+    if (len <= 0) {
+        return;
+    }
+    pos += len;
+
+    CU_ASSERT_EQUAL(value, expected_len);
+    CU_ASSERT((uint64_t) (end - pos) >= value);
+    if ((uint64_t) (end - pos) < value) {
+        return;
+    }
+
+    if (expected_len > 0) {
+        CU_ASSERT_PTR_NOT_NULL_FATAL(expected);
+        CU_ASSERT_EQUAL(memcmp(pos, expected, expected_len), 0);
+    }
+}
 
 void
 xqc_test_conn_create()
@@ -39,6 +151,68 @@ xqc_test_conn_create()
     CU_ASSERT_NOT_EQUAL(cid, NULL);
 
     xqc_engine_destroy(engine);
+}
+
+
+void
+xqc_test_datagram_transport_param_65536(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_transport_params_t params;
+    xqc_init_transport_params(&params);
+    params.max_datagram_frame_size = 65536;
+
+    CU_ASSERT_EQUAL(xqc_conn_set_remote_transport_params(
+                        conn, &params, XQC_TP_TYPE_ENCRYPTED_EXTENSIONS),
+                    XQC_OK);
+    CU_ASSERT_EQUAL(conn->remote_settings.max_datagram_frame_size, 65536);
+
+    xqc_conn_public_remote_trans_settings_t public_settings;
+    public_settings = xqc_conn_get_public_remote_trans_settings(conn);
+    CU_ASSERT_EQUAL(public_settings.max_datagram_frame_size, 65536);
+
+    xqc_engine_destroy(conn->engine);
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    CU_ASSERT_EQUAL(
+        xqc_conn_set_early_remote_transport_params(conn, &params), XQC_OK);
+    CU_ASSERT_EQUAL(conn->remote_settings.max_datagram_frame_size, 65536);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_datagram_transport_param_varint_max(void)
+{
+    const uint64_t varint_max = (1ULL << 62) - 1;
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_transport_params_t remote_params;
+    xqc_init_transport_params(&remote_params);
+    remote_params.max_datagram_frame_size = varint_max;
+
+    CU_ASSERT_EQUAL(
+        xqc_conn_set_early_remote_transport_params(conn, &remote_params),
+        XQC_OK);
+    CU_ASSERT_EQUAL(conn->remote_settings.max_datagram_frame_size,
+                    varint_max);
+
+    xqc_conn_public_local_trans_settings_t public_settings = {0};
+    public_settings.max_datagram_frame_size = varint_max;
+    xqc_conn_set_public_local_trans_settings(conn, &public_settings);
+
+    xqc_transport_params_t local_params;
+    xqc_init_transport_params(&local_params);
+    CU_ASSERT_EQUAL(xqc_conn_get_local_transport_params(conn, &local_params),
+                    XQC_OK);
+    CU_ASSERT_EQUAL(local_params.max_datagram_frame_size, varint_max);
+
+    xqc_engine_destroy(conn->engine);
 }
 
 /* -------------------------------------------------------------------------
@@ -141,6 +315,163 @@ xqc_test_conn_idle_timeout()
     xqc_idle_to_set(conn, XQC_CONN_TYPE_SERVER, 30000, 5000, 1, 0);
     got = xqc_conn_get_idle_timeout(conn);
     CU_ASSERT(got == 5000);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+static void
+xqc_pmtud_case_set(xqc_connection_t *conn, xqc_conn_type_t role,
+    uint64_t local_flags, uint64_t remote_flags)
+{
+    conn->conn_type = role;
+    conn->local_settings.enable_pmtud = local_flags;
+    conn->remote_settings.enable_pmtud = remote_flags;
+    conn->enable_pmtud = 0;
+    xqc_timer_unset(&conn->conn_timer_manager, XQC_TIMER_PMTUD_PROBING);
+}
+
+void
+xqc_test_conn_pmtud_deferred_until_handshake()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+
+    xqc_pmtud_case_set(conn, XQC_CONN_TYPE_CLIENT,
+                       XQC_PMTUD_FORCE_ENABLE, XQC_PMTUD_DISABLE);
+    CU_ASSERT(!(conn->conn_flag & XQC_CONN_FLAG_HANDSHAKE_COMPLETED));
+
+    xqc_conn_try_to_enable_pmtud(conn);
+
+    CU_ASSERT(conn->enable_pmtud == 1);
+    CU_ASSERT(!xqc_timer_is_set(&conn->conn_timer_manager,
+                                XQC_TIMER_PMTUD_PROBING));
+
+    conn->conn_flag |= XQC_CONN_FLAG_CAN_SEND_1RTT;
+    xqc_conn_ptmud_probing(conn);
+    CU_ASSERT(conn->probing_cnt == 0);
+    CU_ASSERT(!(conn->conn_flag & XQC_CONN_FLAG_HAS_0RTT));
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_conn_pmtud_starts_after_handshake()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    xqc_packet_out_t *packet_out;
+    xqc_list_head_t *head;
+    CU_ASSERT_FATAL(conn != NULL);
+
+    xqc_pmtud_case_set(conn, XQC_CONN_TYPE_SERVER,
+                       XQC_PMTUD_FORCE_ENABLE, XQC_PMTUD_DISABLE);
+    conn->conn_flag |= XQC_CONN_FLAG_TOKEN_OK;
+    xqc_conn_try_to_enable_pmtud(conn);
+    CU_ASSERT(!xqc_timer_is_set(&conn->conn_timer_manager,
+                                XQC_TIMER_PMTUD_PROBING));
+
+    CU_ASSERT(xqc_conn_handshake_complete(conn) == XQC_OK);
+    CU_ASSERT(conn->conn_flag & XQC_CONN_FLAG_HANDSHAKE_COMPLETED);
+    CU_ASSERT(xqc_timer_is_set(&conn->conn_timer_manager,
+                               XQC_TIMER_PMTUD_PROBING));
+
+    conn->conn_flag |= XQC_CONN_FLAG_CAN_SEND_1RTT;
+    xqc_conn_ptmud_probing(conn);
+    head = &conn->conn_send_queue->sndq_send_packets_high_pri;
+    CU_ASSERT(!xqc_list_empty(head));
+    packet_out = xqc_list_entry(head->prev, xqc_packet_out_t, po_list);
+    CU_ASSERT(packet_out->po_pkt.pkt_type == XQC_PTYPE_SHORT_HEADER);
+    CU_ASSERT(packet_out->po_flag & XQC_POF_PMTUD_PROBING);
+    CU_ASSERT(!(conn->conn_flag & XQC_CONN_FLAG_HAS_0RTT));
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_conn_pmtud_force_enable()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    xqc_transport_params_t params = {0};
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_COMPLETED;
+
+    xqc_pmtud_case_set(conn, XQC_CONN_TYPE_CLIENT,
+                       XQC_PMTUD_FORCE_ENABLE, XQC_PMTUD_DISABLE);
+    xqc_conn_try_to_enable_pmtud(conn);
+    CU_ASSERT(conn->enable_pmtud == 1);
+    CU_ASSERT(xqc_timer_is_set(&conn->conn_timer_manager,
+                               XQC_TIMER_PMTUD_PROBING));
+
+    xqc_pmtud_case_set(conn, XQC_CONN_TYPE_SERVER,
+                       XQC_PMTUD_FORCE_ENABLE, XQC_PMTUD_DISABLE);
+    xqc_conn_try_to_enable_pmtud(conn);
+    CU_ASSERT(conn->enable_pmtud == 1);
+    CU_ASSERT(xqc_timer_is_set(&conn->conn_timer_manager,
+                               XQC_TIMER_PMTUD_PROBING));
+
+    conn->local_settings.enable_pmtud = XQC_PMTUD_FORCE_ENABLE
+                                        | XQC_PMTUD_ENABLE_SERVER;
+    CU_ASSERT(xqc_conn_get_local_transport_params(conn, &params) == XQC_OK);
+    CU_ASSERT(params.enable_pmtud == XQC_PMTUD_ENABLE_SERVER);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_conn_pmtud_legacy_compatibility()
+{
+    static const xqc_conn_type_t roles[] = {
+        XQC_CONN_TYPE_CLIENT,
+        XQC_CONN_TYPE_SERVER,
+    };
+    static const uint8_t role_bits[] = {
+        XQC_PMTUD_ENABLE_CLIENT,
+        XQC_PMTUD_ENABLE_SERVER,
+    };
+    xqc_connection_t *conn = test_engine_connect();
+    xqc_transport_params_t params;
+    size_t role_idx;
+    uint8_t local_flags, remote_flags, expected;
+
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_COMPLETED;
+
+    CU_ASSERT_EQUAL(XQC_PMTUD_DISABLE, 0x0);
+    CU_ASSERT_EQUAL(XQC_PMTUD_ENABLE_CLIENT, 0x1);
+    CU_ASSERT_EQUAL(XQC_PMTUD_ENABLE_SERVER, 0x2);
+    CU_ASSERT_EQUAL(XQC_PMTUD_ENABLE_MASK, 0x3);
+
+    for (role_idx = 0; role_idx < sizeof(roles) / sizeof(roles[0]);
+         role_idx++)
+    {
+        for (local_flags = XQC_PMTUD_DISABLE;
+             local_flags <= XQC_PMTUD_ENABLE_MASK; local_flags++)
+        {
+            for (remote_flags = XQC_PMTUD_DISABLE;
+                 remote_flags <= XQC_PMTUD_ENABLE_MASK; remote_flags++)
+            {
+                expected = (local_flags & remote_flags
+                            & role_bits[role_idx]) != 0;
+                xqc_pmtud_case_set(conn, roles[role_idx], local_flags,
+                                   remote_flags);
+                xqc_conn_try_to_enable_pmtud(conn);
+                CU_ASSERT_EQUAL(conn->enable_pmtud, expected);
+                CU_ASSERT_EQUAL(xqc_timer_is_set(&conn->conn_timer_manager,
+                                                 XQC_TIMER_PMTUD_PROBING),
+                                expected);
+            }
+        }
+    }
+
+    for (local_flags = XQC_PMTUD_DISABLE;
+         local_flags <= XQC_PMTUD_ENABLE_MASK; local_flags++)
+    {
+        xqc_memzero(&params, sizeof(params));
+        conn->local_settings.enable_pmtud = local_flags;
+        CU_ASSERT_EQUAL(xqc_conn_get_local_transport_params(conn, &params),
+                        XQC_OK);
+        CU_ASSERT_EQUAL(params.enable_pmtud, local_flags);
+    }
 
     xqc_engine_destroy(conn->engine);
 }
@@ -487,10 +818,15 @@ xqc_0rtt_test_fire(xqc_connection_t *conn, xqc_transport_params_t *params)
         || params->initial_max_stream_data_uni < remembered->max_stream_data_uni
         || params->initial_max_streams_bidi < remembered->max_streams_bidi
         || params->initial_max_streams_uni < remembered->max_streams_uni
-        || params->active_connection_id_limit < remembered->active_connection_id_limit
-        || params->max_datagram_frame_size < remembered->max_datagram_frame_size)
+        || params->active_connection_id_limit
+           < remembered->active_connection_id_limit)
     {
         XQC_CONN_ERR(conn, TRA_0RTT_TRANS_PARAMS_ERROR);
+
+    } else if (params->max_datagram_frame_size
+               < remembered->max_datagram_frame_size)
+    {
+        XQC_CONN_ERR(conn, TRA_0RTT_DGRAM_PARAMS_ERROR);
     }
 
     return conn->conn_err;
@@ -526,6 +862,243 @@ xqc_test_conn_crypto_error_base_value()
      */
     CU_ASSERT(TRA_CRYPTO_ERROR_BASE == 0x100);
     CU_ASSERT(TRA_INTERNAL_ERROR == 0x1);
+}
+
+
+void
+xqc_test_transport_error_code_passthrough(void)
+{
+    /* RFC 9000 Section 20.1 fixes these transport-error codepoints. */
+    CU_ASSERT_EQUAL(TRA_KEY_UPDATE_ERROR, 0x0e);
+    CU_ASSERT_EQUAL(TRA_NO_VIABLE_PATH, 0x10);
+
+    CU_ASSERT_EQUAL(xqc_conn_close_wire_error_code(TRA_KEY_UPDATE_ERROR),
+                    TRA_KEY_UPDATE_ERROR);
+    CU_ASSERT_EQUAL(xqc_conn_close_wire_error_code(TRA_NO_VIABLE_PATH),
+                    TRA_NO_VIABLE_PATH);
+
+    CU_ASSERT_FALSE(
+        xqc_conn_should_clear_0rtt_ticket(TRA_KEY_UPDATE_ERROR));
+}
+
+
+void
+xqc_test_0rtt_error_wire_codes(void)
+{
+    CU_ASSERT_NOT_EQUAL(TRA_0RTT_TRANS_PARAMS_ERROR,
+                        TRA_KEY_UPDATE_ERROR);
+    CU_ASSERT_NOT_EQUAL(TRA_0RTT_DGRAM_PARAMS_ERROR,
+                        TRA_KEY_UPDATE_ERROR);
+
+    CU_ASSERT_TRUE(xqc_conn_should_clear_0rtt_ticket(
+        TRA_0RTT_TRANS_PARAMS_ERROR));
+    CU_ASSERT_TRUE(xqc_conn_should_clear_0rtt_ticket(
+        TRA_0RTT_DGRAM_PARAMS_ERROR));
+
+    CU_ASSERT_EQUAL(
+        xqc_conn_close_wire_error_code(TRA_0RTT_TRANS_PARAMS_ERROR),
+        TRA_TRANSPORT_PARAMETER_ERROR);
+    CU_ASSERT_EQUAL(
+        xqc_conn_close_wire_error_code(TRA_0RTT_DGRAM_PARAMS_ERROR),
+        TRA_PROTOCOL_VIOLATION);
+}
+
+
+void
+xqc_test_conn_close_transport_crypto_namespace(void)
+{
+    xqc_connection_t *conn;
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_conn_tls_error_cb(120, conn);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_NO_APPLICATION_PROTOCOL);
+    CU_ASSERT_FALSE(XQC_CONN_ERR_IS_APPLICATION(conn->conn_err));
+    CU_ASSERT_EQUAL(xqc_conn_get_errno(conn),
+                    TRA_NO_APPLICATION_PROTOCOL);
+    CU_ASSERT_EQUAL(xqc_conn_get_err_type(conn),
+                    XQC_CONN_ERR_TYPE_UNKNOWN);
+    CU_ASSERT_EQUAL(xqc_write_conn_close_to_packet(conn, conn->conn_err),
+                    XQC_OK);
+
+    /*
+     * RFC 9000 Section 11.1: CRYPTO_ERROR is a transport error and uses
+     * CONNECTION_CLOSE type 0x1c even though its value overlaps HTTP/3.
+     */
+    xqc_test_conn_close_packet_value(conn, XQC_PTYPE_INIT, 0x1c,
+                                     TRA_NO_APPLICATION_PROTOCOL);
+
+    xqc_engine_destroy(conn->engine);
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(xqc_conn_tls_cbs.transport_error_cb);
+
+    xqc_conn_tls_cbs.transport_error_cb(TRA_PROTOCOL_VIOLATION, conn);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
+    CU_ASSERT_FALSE(XQC_CONN_ERR_IS_APPLICATION(conn->conn_err));
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_conn_close_application_namespace(void)
+{
+    xqc_connection_t *conn;
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_COMPLETED
+                       | XQC_CONN_FLAG_HSK_ACKED;
+
+    /*
+     * Use the same numeric value as the transport CRYPTO_ERROR test above.
+     * conn_err must preserve the namespace without changing the code exposed
+     * by xqc_conn_get_errno or the peer-error-only conn_err_type API.
+     */
+    xqc_conn_close_with_error(conn, TRA_NO_APPLICATION_PROTOCOL);
+    CU_ASSERT_TRUE(XQC_CONN_ERR_IS_APPLICATION(conn->conn_err));
+    CU_ASSERT_EQUAL(xqc_conn_get_errno(conn),
+                    TRA_NO_APPLICATION_PROTOCOL);
+    CU_ASSERT_EQUAL(xqc_conn_get_err_type(conn),
+                    XQC_CONN_ERR_TYPE_UNKNOWN);
+    CU_ASSERT_EQUAL(xqc_write_conn_close_to_packet(conn, conn->conn_err),
+                    XQC_OK);
+    xqc_test_conn_close_packet_value(conn, XQC_PTYPE_SHORT_HEADER, 0x1d,
+                                     TRA_NO_APPLICATION_PROTOCOL);
+    xqc_engine_destroy(conn->engine);
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_conn_close_with_error(conn, H3_GENERAL_PROTOCOL_ERROR);
+    CU_ASSERT_TRUE(XQC_CONN_ERR_IS_APPLICATION(conn->conn_err));
+    CU_ASSERT_EQUAL(xqc_conn_get_errno(conn),
+                    H3_GENERAL_PROTOCOL_ERROR);
+    CU_ASSERT_EQUAL(xqc_write_conn_close_to_packet(conn, conn->conn_err),
+                    XQC_OK);
+
+    /*
+     * RFC 9000 Section 10.2.3: replace an application close in an Initial
+     * or Handshake packet with transport APPLICATION_ERROR.
+     */
+    xqc_test_conn_close_packet_value(conn, XQC_PTYPE_INIT, 0x1c,
+                                     TRA_APPLICATION_ERROR);
+    xqc_test_conn_close_packet_reason(conn, 0x1c, NULL, 0);
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_conn_close_reason_phrase(void)
+{
+    static const unsigned char reason[] = "local error";
+    xqc_connection_t *conn;
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->conn_close_msg = (const char *) reason;
+    CU_ASSERT_EQUAL(
+        xqc_write_conn_close_to_packet(conn, TRA_PROTOCOL_VIOLATION),
+        XQC_OK);
+    xqc_test_conn_close_packet_reason(conn, 0x1c, reason,
+                                      sizeof(reason) - 1);
+    xqc_engine_destroy(conn->engine);
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_COMPLETED
+                       | XQC_CONN_FLAG_HSK_ACKED;
+    conn->conn_close_msg = (const char *) reason;
+    CU_ASSERT_EQUAL(
+        xqc_write_conn_close_to_packet(
+            conn, XQC_CONN_ERR_ENCODE_APPLICATION(
+                H3_GENERAL_PROTOCOL_ERROR)),
+        XQC_OK);
+    xqc_test_conn_close_packet_reason(conn, 0x1d, reason,
+                                      sizeof(reason) - 1);
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_conn_close_reason_no_space(void)
+{
+    static const unsigned char reason[] = "reason";
+    xqc_packet_out_t *packet_out;
+    ssize_t written;
+
+    packet_out = xqc_packet_out_create(4);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(packet_out);
+
+    written = xqc_gen_conn_close_frame(packet_out,
+                                       TRA_PROTOCOL_VIOLATION, 0, 0,
+                                       NULL, 0);
+    CU_ASSERT_EQUAL(written, 4);
+    CU_ASSERT_EQUAL(packet_out->po_buf[3], 0);
+
+    xqc_packet_out_destroy(packet_out);
+
+    packet_out = xqc_packet_out_create(4);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(packet_out);
+
+    written = xqc_gen_conn_close_frame(packet_out,
+                                       TRA_PROTOCOL_VIOLATION, 0, 0,
+                                       reason, sizeof(reason) - 1);
+    CU_ASSERT_EQUAL(written, 4);
+    CU_ASSERT_EQUAL(packet_out->po_buf[0], 0x1c);
+    CU_ASSERT_EQUAL(packet_out->po_buf[1], TRA_PROTOCOL_VIOLATION);
+    CU_ASSERT_EQUAL(packet_out->po_buf[2], 0);
+    CU_ASSERT_EQUAL(packet_out->po_buf[3], 0);
+
+    xqc_packet_out_destroy(packet_out);
+}
+
+
+void
+xqc_test_conn_close_reason_too_long(void)
+{
+    unsigned char reason[XQC_MAX_CONN_CLOSE_REASON_LEN + 1];
+    xqc_connection_t *conn;
+    xqc_packet_out_t *packet_out;
+    ssize_t written;
+
+    memset(reason, 'x', sizeof(reason));
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->conn_close_msg = (const char *) reason;
+    CU_ASSERT_EQUAL(
+        xqc_write_conn_close_to_packet(conn, TRA_PROTOCOL_VIOLATION),
+        XQC_OK);
+    xqc_test_conn_close_packet_reason(conn, 0x1c, NULL, 0);
+    xqc_engine_destroy(conn->engine);
+
+    packet_out = xqc_packet_out_create(sizeof(reason) + 4);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(packet_out);
+
+    written = xqc_gen_conn_close_frame(
+        packet_out, TRA_PROTOCOL_VIOLATION, 0, 0,
+        reason, XQC_MAX_CONN_CLOSE_REASON_LEN);
+    CU_ASSERT_EQUAL(written, sizeof(reason) + 4);
+    CU_ASSERT_EQUAL(
+        memcmp(packet_out->po_buf + 5, reason,
+               XQC_MAX_CONN_CLOSE_REASON_LEN), 0);
+
+    xqc_packet_out_destroy(packet_out);
+
+    packet_out = xqc_packet_out_create(sizeof(reason) + 4);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(packet_out);
+
+    written = xqc_gen_conn_close_frame(packet_out,
+                                       TRA_PROTOCOL_VIOLATION, 0, 0,
+                                       reason, sizeof(reason));
+    CU_ASSERT_EQUAL(written, 4);
+    CU_ASSERT_EQUAL(packet_out->po_buf[3], 0);
+
+    xqc_packet_out_destroy(packet_out);
 }
 
 
@@ -603,34 +1176,34 @@ void
 xqc_test_0rtt_params_each_reduced(void)
 {
     /*
-     * Reduce each RFC 9000 7.4.1 MUST parameter individually and verify
-     * that every branch of xqc_conn_check_0rtt_reduced_params rejects it.
-     *
-     * The check is called directly rather than through
-     * xqc_conn_tls_transport_params_cb: the callback gates it on
-     * xqc_tls_is_early_data_accepted(), which requires a real accepted
-     * 0-RTT handshake that this harness (boringssl, no session ticket)
-     * cannot produce.  The gate wiring is covered end-to-end by the 0-RTT
-     * cases in scripts/case_test.sh.
+     * RFC 9000 Section 7.4.1 requires TRANSPORT_PARAMETER_ERROR for core
+     * parameters; RFC 9221 Section 3 requires PROTOCOL_VIOLATION for the
+     * DATAGRAM parameter. Local reasons keep both paths distinguishable.
      */
     struct {
-        size_t   tp_offset;       /* offset into xqc_transport_params_t */
+        size_t   tp_offset;
         uint64_t remembered_val;
+        xqc_int_t expected_err;
     } cases[] = {
         { offsetof(xqc_transport_params_t, initial_max_data),
-          REMEMBERED_MAX_DATA },
+          REMEMBERED_MAX_DATA, TRA_0RTT_TRANS_PARAMS_ERROR },
         { offsetof(xqc_transport_params_t, initial_max_stream_data_bidi_local),
-          REMEMBERED_MAX_STREAM_DATA_BIDI_LOCAL },
+          REMEMBERED_MAX_STREAM_DATA_BIDI_LOCAL,
+          TRA_0RTT_TRANS_PARAMS_ERROR },
         { offsetof(xqc_transport_params_t, initial_max_stream_data_bidi_remote),
-          REMEMBERED_MAX_STREAM_DATA_BIDI_REMOTE },
+          REMEMBERED_MAX_STREAM_DATA_BIDI_REMOTE,
+          TRA_0RTT_TRANS_PARAMS_ERROR },
         { offsetof(xqc_transport_params_t, initial_max_stream_data_uni),
-          REMEMBERED_MAX_STREAM_DATA_UNI },
+          REMEMBERED_MAX_STREAM_DATA_UNI, TRA_0RTT_TRANS_PARAMS_ERROR },
         { offsetof(xqc_transport_params_t, initial_max_streams_bidi),
-          REMEMBERED_MAX_STREAMS_BIDI },
+          REMEMBERED_MAX_STREAMS_BIDI, TRA_0RTT_TRANS_PARAMS_ERROR },
         { offsetof(xqc_transport_params_t, initial_max_streams_uni),
-          REMEMBERED_MAX_STREAMS_UNI },
+          REMEMBERED_MAX_STREAMS_UNI, TRA_0RTT_TRANS_PARAMS_ERROR },
         { offsetof(xqc_transport_params_t, active_connection_id_limit),
-          REMEMBERED_ACTIVE_CID_LIMIT },
+          REMEMBERED_ACTIVE_CID_LIMIT, TRA_0RTT_TRANS_PARAMS_ERROR },
+        { offsetof(xqc_transport_params_t, max_datagram_frame_size),
+          REMEMBERED_MAX_DGRAM_FRAME_SIZE,
+          TRA_0RTT_DGRAM_PARAMS_ERROR },
     };
     size_t n = sizeof(cases) / sizeof(cases[0]);
 
@@ -641,31 +1214,12 @@ xqc_test_0rtt_params_each_reduced(void)
         xqc_transport_params_t params;
         xqc_0rtt_test_init_params(&params, conn, &server_scid);
 
-        /* baseline: nothing reduced -- must pass */
-        CU_ASSERT_EQUAL(xqc_conn_check_0rtt_reduced_params(conn, &params),
-                        XQC_OK);
-
         /* reduce exactly one field below remembered */
         uint64_t *field = (uint64_t *)((char *)&params + cases[i].tp_offset);
         *field = cases[i].remembered_val - 1;
 
-        CU_ASSERT(xqc_conn_check_0rtt_reduced_params(conn, &params) != XQC_OK);
-
-        xqc_engine_destroy(conn->engine);
-    }
-
-    /* max_datagram_frame_size is checked unconditionally (not gated on
-     * early-data-accepted), so exercise it through the real TP callback. */
-    {
-        xqc_cid_t server_scid;
-        xqc_connection_t *conn = xqc_0rtt_test_make_conn(&server_scid);
-
-        xqc_transport_params_t params;
-        xqc_0rtt_test_init_params(&params, conn, &server_scid);
-        params.max_datagram_frame_size = REMEMBERED_MAX_DGRAM_FRAME_SIZE - 1;
-
         xqc_int_t err = xqc_0rtt_test_fire(conn, &params);
-        CU_ASSERT_EQUAL(err, TRA_0RTT_TRANS_PARAMS_ERROR);
+        CU_ASSERT_EQUAL(err, cases[i].expected_err);
 
         xqc_engine_destroy(conn->engine);
     }
