@@ -1,4 +1,13 @@
 build/
+# Out-of-tree build dirs the iOS/macOS/test toolchains create at the repo
+# root. Without these, a routine `git add` sweeps thousands of .o files and
+# CMakeCache into a source commit -- which is exactly how two commits in the
+# WLB series arrived carrying whole build trees.
+build-ios/
+build-macos/
+build-host-tests/
+build-ut/
+build-wlbtest/
 bss/
 *.swp
 third_party/*

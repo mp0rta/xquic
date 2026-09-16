@@ -72,6 +72,7 @@ xqc_gen_datagram_frame(xqc_packet_out_t *packet_out, const unsigned char *payloa
 
     packet_out->po_frame_types |= XQC_FRAME_BIT_DATAGRAM;
     packet_out->po_used_size += p - dst_buf;
+    packet_out->po_dgram_payload_size += size;
 
     return XQC_OK;
 }

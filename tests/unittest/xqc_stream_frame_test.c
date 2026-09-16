@@ -576,3 +576,179 @@ xqc_test_stream_frame_cap_setting()
 
     xqc_engine_destroy(conn->engine);
 }
+
+/**
+ * A full-size receive window can legitimately contain more than 8192 packet-sized
+ * STREAM frames while the application is backpressured or a multipath gap is being
+ * repaired.  The sparse-fragment guard must keep rejecting tiny-frame amplification,
+ * but it must not close a healthy connection whose buffered nodes carry substantial
+ * payload.
+ */
+void
+xqc_test_stream_frame_dense_buffer_budget()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_stream_t *stream = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+
+    stream->stream_data_in.buffered_frame_count = XQC_MAX_STREAM_FRAME_BUFFERED_COUNT;
+    stream->stream_data_in.buffered_data_bytes =
+        XQC_MAX_STREAM_FRAME_BUFFERED_COUNT * 1024;
+
+    xqc_stream_frame_t *frame = xqc_calloc(1, sizeof(*frame));
+    CU_ASSERT_PTR_NOT_NULL_FATAL(frame);
+    frame->data_length = 1024;
+    frame->data_offset = stream->stream_data_in.buffered_data_bytes + 4096;
+    frame->data = xqc_malloc(frame->data_length);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(frame->data);
+
+    CU_ASSERT_EQUAL(xqc_insert_stream_frame(conn, stream, frame), XQC_OK);
+    CU_ASSERT_EQUAL(stream->stream_data_in.buffered_data_bytes,
+                    (XQC_MAX_STREAM_FRAME_BUFFERED_COUNT + 1) * 1024);
+
+    xqc_stream_frame_t *hard_frame = xqc_calloc(1, sizeof(*hard_frame));
+    CU_ASSERT_PTR_NOT_NULL_FATAL(hard_frame);
+    hard_frame->data_length = 1024;
+    hard_frame->data_offset = frame->data_offset + frame->data_length + 4096;
+    hard_frame->data = xqc_malloc(hard_frame->data_length);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(hard_frame->data);
+
+    stream->stream_data_in.buffered_frame_count =
+        XQC_MAX_STREAM_FRAME_BUFFERED_COUNT_HARD;
+    stream->stream_data_in.buffered_data_bytes =
+        XQC_MAX_STREAM_FRAME_BUFFERED_COUNT_HARD * 1024;
+    CU_ASSERT_EQUAL(xqc_insert_stream_frame(conn, stream, hard_frame), -XQC_ELIMIT);
+    xqc_destroy_stream_frame(hard_frame);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/**
+ * The reserved prefix slot has to survive the sparse-density tier as well as
+ * the node-count tier. A stream at the sparse threshold with exactly the
+ * minimum density would otherwise reject the one small frame that fills the
+ * leftmost hole, because charging the density budget at the real post-insert
+ * count makes that node drop the average below the minimum. Nothing about
+ * the stream changes on rejection, so the retransmission is refused forever
+ * and the stream livelocks.
+ *
+ * The exemption is reusable but not farmable, and this pins why: admission
+ * under the density tier requires B + L >= C*m, so after insertion
+ * B' >= (C'-1)*m always holds. The average may sit one reserved node below
+ * the minimum and no lower, however many prefix frames arrive, and the
+ * application never has to drain for that bound to hold (reclamation happens
+ * in xqc_stream_recv, not here).
+ */
+void
+xqc_test_stream_frame_dense_prefix_liveness()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_stream_t *stream = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+
+    const uint64_t m = XQC_MIN_STREAM_BUFFERED_BYTES_PER_FRAME;
+    const uint64_t c0 = XQC_MAX_STREAM_FRAME_BUFFERED_COUNT;
+
+    stream->stream_data_in.merged_offset_end = 0;
+    stream->stream_data_in.buffered_frame_count = c0;
+    stream->stream_data_in.buffered_data_bytes = c0 * m;
+
+    /* Beyond-hole first, so the state it sees is the pristine one and no
+     * accepted node is left in the list behind a reset counter. */
+    xqc_stream_frame_t *beyond = xqc_calloc(1, sizeof(*beyond));
+    CU_ASSERT_PTR_NOT_NULL_FATAL(beyond);
+    beyond->data_offset = 1ULL << 20;
+    beyond->data_length = 1;
+    beyond->data = xqc_malloc(beyond->data_length);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(beyond->data);
+    CU_ASSERT_EQUAL(xqc_insert_stream_frame(conn, stream, beyond), -XQC_ELIMIT);
+    CU_ASSERT_EQUAL(stream->stream_data_in.buffered_frame_count, c0);
+    CU_ASSERT_EQUAL(stream->stream_data_in.buffered_data_bytes, c0 * m);
+    xqc_destroy_stream_frame(beyond);
+
+    /* The prefix-extender takes the reserved node. */
+    xqc_stream_frame_t *prefix = xqc_calloc(1, sizeof(*prefix));
+    CU_ASSERT_PTR_NOT_NULL_FATAL(prefix);
+    prefix->data_offset = 0;
+    prefix->data_length = 1;
+    prefix->data = xqc_malloc(prefix->data_length);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(prefix->data);
+    CU_ASSERT_EQUAL(xqc_insert_stream_frame(conn, stream, prefix), XQC_OK);
+    CU_ASSERT_EQUAL(stream->stream_data_in.buffered_frame_count, c0 + 1);
+    CU_ASSERT_EQUAL(stream->stream_data_in.buffered_data_bytes, c0 * m + 1);
+    CU_ASSERT_EQUAL(stream->stream_data_in.merged_offset_end, 1);
+
+    /* Reusing it immediately, with no drain, buys nothing: the credit is
+     * spent and a second one-byte prefix cannot pay for its own node. */
+    xqc_stream_frame_t *again = xqc_calloc(1, sizeof(*again));
+    CU_ASSERT_PTR_NOT_NULL_FATAL(again);
+    again->data_offset = 1;
+    again->data_length = 1;
+    again->data = xqc_malloc(again->data_length);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(again->data);
+    CU_ASSERT_EQUAL(xqc_insert_stream_frame(conn, stream, again), -XQC_ELIMIT);
+    CU_ASSERT_EQUAL(stream->stream_data_in.buffered_frame_count, c0 + 1);
+    CU_ASSERT_EQUAL(stream->stream_data_in.buffered_data_bytes, c0 * m + 1);
+    xqc_destroy_stream_frame(again);
+
+    /* One that does pay for its node is admitted, and the invariant holds. */
+    xqc_stream_frame_t *paid = xqc_calloc(1, sizeof(*paid));
+    CU_ASSERT_PTR_NOT_NULL_FATAL(paid);
+    paid->data_offset = 1;
+    paid->data_length = (unsigned)(m - 1);
+    paid->data = xqc_malloc(paid->data_length);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(paid->data);
+    CU_ASSERT_EQUAL(xqc_insert_stream_frame(conn, stream, paid), XQC_OK);
+    CU_ASSERT_EQUAL(stream->stream_data_in.buffered_frame_count, c0 + 2);
+    CU_ASSERT_EQUAL(stream->stream_data_in.buffered_data_bytes, (c0 + 1) * m);
+    CU_ASSERT_TRUE(stream->stream_data_in.buffered_data_bytes
+                   >= (stream->stream_data_in.buffered_frame_count - 1) * m);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/**
+ * The reserved node is exempt from density, never from the hard ceiling: a
+ * prefix-extender may reach exactly the hard cap and no frame may pass it.
+ */
+void
+xqc_test_stream_frame_prefix_respects_hard_cap()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_stream_t *stream = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+
+    const uint64_t m = XQC_MIN_STREAM_BUFFERED_BYTES_PER_FRAME;
+    const uint64_t hard = XQC_MAX_STREAM_FRAME_BUFFERED_COUNT_HARD;
+
+    stream->stream_data_in.merged_offset_end = 0;
+    stream->stream_data_in.buffered_frame_count = hard - 1;
+    stream->stream_data_in.buffered_data_bytes = (hard - 1) * m;
+
+    xqc_stream_frame_t *last = xqc_calloc(1, sizeof(*last));
+    CU_ASSERT_PTR_NOT_NULL_FATAL(last);
+    last->data_offset = 0;
+    last->data_length = (unsigned)m;
+    last->data = xqc_malloc(last->data_length);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(last->data);
+    CU_ASSERT_EQUAL(xqc_insert_stream_frame(conn, stream, last), XQC_OK);
+    CU_ASSERT_EQUAL(stream->stream_data_in.buffered_frame_count, hard);
+
+    xqc_stream_frame_t *over = xqc_calloc(1, sizeof(*over));
+    CU_ASSERT_PTR_NOT_NULL_FATAL(over);
+    over->data_offset = m;
+    over->data_length = (unsigned)m;
+    over->data = xqc_malloc(over->data_length);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(over->data);
+    CU_ASSERT_EQUAL(xqc_insert_stream_frame(conn, stream, over), -XQC_ELIMIT);
+    CU_ASSERT_EQUAL(stream->stream_data_in.buffered_frame_count, hard);
+    xqc_destroy_stream_frame(over);
+
+    xqc_engine_destroy(conn->engine);
+}

@@ -1,3 +1,6 @@
 [submodule "third_party/boringssl"]
 	path = third_party/boringssl
 	url = https://github.com/google/boringssl.git
+	# Building inside the checkout otherwise makes `git status` report the
+	# submodule dirty forever, which hides real changes.
+	ignore = untracked

@@ -84,6 +84,13 @@ also follow the [`validate` skill](harness/skills/validate/SKILL.md).
   nearby implementation comment when it materially explains the invariant.
 - Follow the Nginx-derived C style in `CONTRIBUTING.md`, including 4-space
   indentation, no `//` comments, and an 80-column target.
+- The WLB scheduler is for QUIC datagrams. STREAM data takes its MinRTT
+  fallback by measurement, not by omission — the cwnd gate already allocates
+  a reliable stream across paths, and weighting it only moves bytes onto a
+  higher-RTT path that the near one had room for. Read the rationale at the
+  `po_flow_hash == 0` branch in
+  `src/transport/scheduler/xqc_scheduler_wlb.c` before routing streams
+  through weighted round robin, and bring measurements.
 
 ## Definition of Done
 
