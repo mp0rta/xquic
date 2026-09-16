@@ -1074,6 +1074,14 @@ xqc_test_conn_close_reason_too_long(void)
         xqc_write_conn_close_to_packet(conn, TRA_PROTOCOL_VIOLATION),
         XQC_OK);
     xqc_test_conn_close_packet_reason(conn, 0x1c, NULL, 0);
+    /*
+     * conn_close_msg still points at the unterminated stack buffer above;
+     * xqc_engine_destroy() logs it with %s, which would read past the end
+     * of `reason` (it has no NUL within XQC_MAX_CONN_CLOSE_REASON_LEN + 1
+     * bytes by design, to exercise the truncation path above). Clear it
+     * now that the truncation behavior has been verified.
+     */
+    conn->conn_close_msg = NULL;
     xqc_engine_destroy(conn->engine);
 
     packet_out = xqc_packet_out_create(sizeof(reason) + 4);

@@ -2462,7 +2462,7 @@ xqc_test_h3_blocked_buf_limit(void)
     xqc_int_t ret = xqc_h3_stream_process_in(h3s, frame, fl, XQC_TRUE);
 
     /* blocked-buffer cap must have fired */
-    CU_ASSERT(conn->conn_err == H3_EXCESSIVE_LOAD);
+    CU_ASSERT(XQC_CONN_ERR_CODE(conn->conn_err) == H3_EXCESSIVE_LOAD);
     CU_ASSERT(ret == -XQC_H3_EPROC_REQUEST);
 
     xqc_var_buf_free(fs);
