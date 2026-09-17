@@ -102,7 +102,7 @@ its case is retired so later changes cannot reuse it.
 | `[705, 799]` | QUIC Transport core | `705-728` |
 | `[800, 899]` | Recovery and congestion control | `800` |
 | `[900, 999]` | QUIC-TLS | `902-903` |
-| `[1000, 1099]` | HTTP/3 framing, streams, and settings | `1000-1021` |
+| `[1000, 1099]` | HTTP/3 framing, streams, and settings | `1000-1021`, `1098-1099` |
 | `[1100, 1149]` | QPACK | None |
 | `[1150, 1199]` | HTTP priority | None |
 | `[1200, 1299]` | QUIC DATAGRAM | `1201-1202` |
@@ -111,6 +111,10 @@ its case is retired so later changes cannot reuse it.
 | `[1500, 1599]` | LOC and MSF application protocols | None |
 | `[1600, 1699]` | FEC and experimental transport extensions | None |
 | `[1700, 1799]` | Common runtime, public API, and test harness | `1702-1703` |
+
+This fork allocates `1098-1099` to its MASQUE CONNECT-IP e2e cases
+(`tests/masque_interop.sh`), taken from the top of the range so that
+upstream's sequential allocation does not reach them.
 
 Apply these allocation rules before running a new case:
 

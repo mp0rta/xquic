@@ -225,7 +225,7 @@ typedef struct user_conn_s {
     uint64_t            black_hole_start_time;
     int                 tracked_pkt_cnt;
 
-    /* MASQUE client state (test case 800/801) */
+    /* MASQUE client state (XQC_TEST_CASE_MASQUE_*) */
     xqc_h3_request_t   *masque_request;
 } user_conn_t;
 
@@ -326,9 +326,9 @@ uint64_t g_last_sock_op_time;
  * 722/723 for RESET_STREAM final-size validation
  * 724-726 for stream close state and direction validation
  * 727/728 for stream reassembly cap validation
- * 8XX for MASQUE e2e testcases
  * 902/903 for AEAD confidentiality-limit validation
  * 1000-1021 for HTTP/3 protocol validation
+ * 1098/1099 for MASQUE CONNECT-IP e2e testcases (fork-local)
  */
 int g_test_case;
 int g_ipv6;
@@ -383,6 +383,8 @@ char test_long_value[XQC_TEST_LONG_HEADER_LEN] = {'\0'};
 int hsk_completed = 0;
 
 /* MASQUE client state */
+#define XQC_TEST_CASE_MASQUE_CONNECT_IP 1098
+#define XQC_TEST_CASE_MASQUE_CONNECT_IP_MP 1099
 int g_masque_mode = 0;
 int g_masque_send_count = 10;    /* total datagrams to echo */
 uint64_t g_masque_stream_id = 0;
@@ -6013,11 +6015,13 @@ int main(int argc, char *argv[]) {
     }
 
     /* MASQUE E2E test cases */
-    if (g_test_case == 800 || g_test_case == 801) {
+    if (g_test_case == XQC_TEST_CASE_MASQUE_CONNECT_IP
+        || g_test_case == XQC_TEST_CASE_MASQUE_CONNECT_IP_MP)
+    {
         g_masque_mode = 1;
         g_max_dgram_size = 65535;
         g_send_dgram = 0;  /* we handle datagram send ourselves */
-        if (g_test_case == 801) {
+        if (g_test_case == XQC_TEST_CASE_MASQUE_CONNECT_IP_MP) {
             g_enable_multipath = 1;
         }
         printf("[masque-e2e] test_case=%d masque_mode=%d multipath=%d\n",

@@ -148,7 +148,7 @@ typedef struct user_conn_s {
     xqc_connection_t *quic_conn;
     xqc_h3_conn_t *h3_conn;
 
-    /* MASQUE proxy state (test case 800/801) */
+    /* MASQUE proxy state (XQC_TEST_CASE_MASQUE_*) */
     uint64_t masque_stream_id;
 } user_conn_t;
 
@@ -204,6 +204,8 @@ double g_copa_ai = 1.0;
 double g_copa_delta = 0.05;
 int g_enable_h3_ext = 1;
 int g_mp_backup_mode = 0;
+#define XQC_TEST_CASE_MASQUE_CONNECT_IP 1098
+#define XQC_TEST_CASE_MASQUE_CONNECT_IP_MP 1099
 int g_masque_mode = 0; /* 0=off, 1=connect-ip proxy */
 char g_write_file[256];
 char g_read_file[256];
@@ -3385,13 +3387,15 @@ main(int argc, char *argv[])
     }
 
     /* MASQUE E2E test cases */
-    if (g_test_case == 800 || g_test_case == 801) {
+    if (g_test_case == XQC_TEST_CASE_MASQUE_CONNECT_IP
+        || g_test_case == XQC_TEST_CASE_MASQUE_CONNECT_IP_MP)
+    {
         g_masque_mode = 1;
         g_echo = 1;
         g_send_dgram = 1;
         g_max_dgram_size = 65535;
         conn_settings.max_datagram_frame_size = 65535;
-        if (g_test_case == 801) {
+        if (g_test_case == XQC_TEST_CASE_MASQUE_CONNECT_IP_MP) {
             g_enable_multipath = 1;
             conn_settings.enable_multipath = 1;
         }
