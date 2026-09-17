@@ -498,10 +498,18 @@ grep_err_log|grep -v stream
 clear_log
 echo -e "Reset stream when receiving...\c"
 ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -x 21 > stdlog
-result=`grep "xqc_send_queue_drop_stream_frame_packets" slog`
-flag=`grep "send_state:5|recv_state:5" clog`
+# By this point the client has already fully sent (and had acked) its
+# request body, i.e. stream_state_send is already XQC_SEND_STREAM_ST_
+# DATA_RECVD(3). Fix #945 (upstream) prevents sending a redundant
+# RESET_STREAM once the send side is already Data Recvd, so send_state
+# stays at 3 instead of progressing to RESET_SENT/RESET_RECVD(5), and the
+# server never sees an incoming RESET_STREAM to react to (hence no
+# xqc_send_queue_drop_stream_frame_packets in slog anymore). The client
+# still issues STOP_SENDING for the half it is abandoning, which the
+# server answers with its own RESET_STREAM -- recv_state:5 confirms that.
+flag=`grep "send_state:3|recv_state:5" clog`
 errlog=`grep_err_log|grep -v stream`
-if [ -n "$flag" ] && [ -z "$errlog" ] && [ -n "$result" ]; then
+if [ -n "$flag" ] && [ -z "$errlog" ]; then
     echo ">>>>>>>> pass:1"
     case_print_result "reset_stream_when_receiving" "pass"
 else
@@ -515,7 +523,8 @@ clear_log
 echo -e "Send header after reset stream...\c"
 ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -x 28 > stdlog
 result=`grep "xqc_conn_destroy.*err:0x0" clog`
-flag=`grep "send_state:5|recv_state:5" clog`
+# Same send-side-already-Data-Recvd situation as reset_stream_when_receiving.
+flag=`grep "send_state:3|recv_state:5" clog`
 errlog=`grep_err_log|grep -v stream`
 if [ -n "$flag" ] && [ -z "$errlog" ] && [ -n "$result" ]; then
     echo ">>>>>>>> pass:1"
