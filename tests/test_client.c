@@ -2389,7 +2389,7 @@ xqc_client_masque_start_tunnel(user_conn_t *user_conn)
     user_conn->masque_request = h3_request;
 
     /* Build Extended CONNECT headers */
-    char authority[128];
+    char authority[sizeof(g_host) + 16];
     snprintf(authority, sizeof(authority), "%s:%d", g_host, g_server_port);
     xqc_http_header_t hdrs[] = {
         { .name  = {.iov_base = ":method",   .iov_len = 7},
