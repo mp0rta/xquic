@@ -1326,6 +1326,14 @@ typedef enum {
     XQC_RED_SET_CLOSE = 1,
 } xqc_dgram_red_setting_e;
 
+typedef enum {
+    XQC_PMTUD_DISABLE = 0,
+    XQC_PMTUD_ENABLE_CLIENT = 1 << 0,
+    XQC_PMTUD_ENABLE_SERVER = 1 << 1,
+    XQC_PMTUD_ENABLE_MASK = XQC_PMTUD_ENABLE_CLIENT | XQC_PMTUD_ENABLE_SERVER,
+    XQC_PMTUD_FORCE_ENABLE = 1 << 2,
+} xqc_pmtud_flag_e;
+
 typedef enum { XQC_FEC_CONN_LEVEL = 0, XQC_FEC_STREAM_LEVEL = 1 } xqc_fec_level_e;
 
 /**
@@ -1422,19 +1430,23 @@ typedef struct xqc_conn_settings_s {
     int32_t spurious_loss_detect_on;
     /** limit of anti-amplification, default 5 */
     uint32_t anti_amplification_limit;
-    /** packet limit of a single 1-rtt key, 0 for unlimited */
+    /**
+     * Optional early key-update threshold for one 1-RTT key phase. Zero
+     * disables the early trigger; the selected AEAD's mandatory usage limit
+     * still applies.
+     */
     uint64_t keyupdate_pkt_threshold;
     size_t max_pkt_out_size;
     size_t probing_pkt_out_size;
 
     /**
-     * datgram option
-     * 0: no support for datagram mode (default)
-     * >0: the max size of datagrams that the local end is willing to receive
-     * 65535: the local end is willing to receive a datagram with any length as long as it
-     * fits in a QUIC packet
+     * RFC 9221 Section 3 DATAGRAM transport parameter.
+     * 0: no support for DATAGRAM frames (default)
+     * >0: maximum DATAGRAM frame size the local endpoint accepts
+     * 65535: recommended when any DATAGRAM fitting in a QUIC packet is
+     * accepted
      */
-    uint16_t max_datagram_frame_size;
+    uint64_t max_datagram_frame_size;
 
     /**
      * multipath option:
@@ -1510,15 +1522,21 @@ typedef struct xqc_conn_settings_s {
     uint64_t datagram_redundant_probe;
 
     /**
-     * enable PMTUD:
-     * 0x0 disbale,
-     * 0x1 enable client probing,
-     * 0x2 enable server probing,
-     * 0x3 enable both ends probing
-     * NOTE: This option needs to be negotiated by both ends. The final decision
-     * is made by the logic AND operation of both ends' options, e.g. client:
-     * 0x3, server: 0x1 --> 0x1 (only enable client probing).
-     **/
+     * PMTUD flags:
+     * Values 0x0 through 0x3 retain their negotiated behavior and transport
+     * parameter encoding. Applications that keep those values unchanged do
+     * not change whether PMTUD is enabled.
+     * XQC_PMTUD_DISABLE disables PMTUD.
+     * XQC_PMTUD_ENABLE_CLIENT and XQC_PMTUD_ENABLE_SERVER are negotiated
+     * role bits. Both endpoints need to advertise a role bit to enable
+     * probing for that role.
+     * XQC_PMTUD_FORCE_ENABLE enables probing on this endpoint without peer
+     * negotiation. It can be combined with the negotiated role bits and is
+     * not sent in the transport parameter. This local mode follows the
+     * sender-side behavior in RFC 9000 Section 14.3.1.
+     * Values outside XQC_PMTUD_ENABLE_MASK were previously undefined;
+     * XQC_PMTUD_FORCE_ENABLE assigns bit 0x4 as a local-only opt-in.
+     */
     uint8_t enable_pmtud;
     /** probing interval (us), default: 500000 */
     uint64_t pmtud_probing_interval;
@@ -2106,7 +2124,7 @@ XQC_EXPORT_PUBLIC_API
 xqc_int_t xqc_conn_close(xqc_engine_t *engine, const xqc_cid_t *cid);
 
 /**
- * @brief close connection with error code
+ * @brief close connection with an application error code
  */
 XQC_EXPORT_PUBLIC_API
 xqc_int_t xqc_conn_close_with_error(xqc_connection_t *conn, uint64_t err_code);
@@ -2281,7 +2299,8 @@ XQC_EXPORT_PUBLIC_API
 xqc_stream_id_t xqc_stream_id(xqc_stream_t *stream);
 
 /**
- * Send RESET_STREAM to peer, stream_close_notify will callback when stream destroyed
+ * Close the applicable stream directions with RESET_STREAM or STOP_SENDING.
+ * stream_close_notify will callback when stream destroyed.
  * @retval XQC_OK for success, others for failure
  */
 XQC_EXPORT_PUBLIC_API

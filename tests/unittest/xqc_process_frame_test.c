@@ -9,6 +9,9 @@
 #include "src/transport/xqc_frame_parser.h"
 #include "src/transport/xqc_packet.h"
 #include "src/transport/xqc_packet_in.h"
+#include "src/transport/xqc_packet_out.h"
+#include "src/transport/xqc_send_queue.h"
+#include "src/transport/xqc_stream.h"
 #include "src/common/utils/vint/xqc_variable_len_int.h"
 #include "src/transport/xqc_conn.h"
 #include "xquic/xqc_errno.h"
@@ -19,6 +22,12 @@ char XQC_TEST_STREAM_FRAME[] = {0x0a, 0x00, 0x01, 0x00};
 
 static void xqc_test_conn_close_error_type(unsigned char *frame,
     size_t frame_len, xqc_conn_err_type_t expected_type);
+static void xqc_test_conn_close_frame_accepted(unsigned char *frame,
+    size_t frame_len, xqc_pkt_type_t pkt_type, xqc_conn_type_t conn_type,
+    xqc_conn_err_type_t expected_type);
+static void xqc_test_conn_close_app_error_rejected(xqc_pkt_type_t pkt_type);
+static void xqc_test_ack_range_rejected(unsigned char *frame,
+    size_t frame_len);
 
 
 static xqc_int_t
@@ -100,6 +109,98 @@ xqc_test_parse_padding_frame()
 
     xqc_engine_destroy(conn->engine);
 }
+
+
+#ifdef XQC_PING_ATTACK_PROTECT
+static xqc_connection_t *xqc_test_server_initial_connection(void);
+
+
+static xqc_connection_t *
+xqc_test_server_initial_connection(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+
+    CU_ASSERT(conn != NULL);
+    if (conn == NULL) {
+        return NULL;
+    }
+
+    conn->conn_type = XQC_CONN_TYPE_SERVER;
+    conn->conn_state = XQC_CONN_STATE_SERVER_INIT;
+    conn->conn_flag &= ~XQC_CONN_FLAG_INIT_RECVD;
+
+    return conn;
+}
+
+
+void
+xqc_test_initial_ping_before_crypto_accepted(void)
+{
+    unsigned char frames[] = {
+        0x00,                   /* PADDING */
+        0x01,                   /* PING */
+        0x00,                   /* PADDING */
+        0x06, 0x00, 0x00       /* CRYPTO, offset 0, length 0 */
+    };
+    xqc_connection_t *conn;
+    xqc_packet_in_t packet_in;
+    xqc_int_t ret;
+
+    conn = xqc_test_server_initial_connection();
+    if (conn == NULL) {
+        return;
+    }
+
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.pi_pkt.pkt_type = XQC_PTYPE_INIT;
+    packet_in.pos = frames;
+    packet_in.last = frames + sizeof(frames);
+
+    ret = xqc_process_frames(conn, &packet_in);
+
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(packet_in.pos == packet_in.last);
+    CU_ASSERT((packet_in.pi_frame_types & XQC_FRAME_BIT_PING) != 0);
+    CU_ASSERT((packet_in.pi_frame_types & XQC_FRAME_BIT_CRYPTO) != 0);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_INIT_RECVD) != 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_initial_ping_without_crypto_rejected(void)
+{
+    unsigned char frames[] = {
+        0x00,                   /* PADDING */
+        0x01,                   /* PING */
+        0x00                    /* PADDING */
+    };
+    xqc_connection_t *conn;
+    xqc_packet_in_t packet_in;
+    xqc_int_t ret;
+
+    conn = xqc_test_server_initial_connection();
+    if (conn == NULL) {
+        return;
+    }
+
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.pi_pkt.pkt_type = XQC_PTYPE_INIT;
+    packet_in.pos = frames;
+    packet_in.last = frames + sizeof(frames);
+
+    ret = xqc_process_frames(conn, &packet_in);
+
+    CU_ASSERT(ret == XQC_ERROR);
+    CU_ASSERT(packet_in.pos == packet_in.last);
+    CU_ASSERT((packet_in.pi_frame_types & XQC_FRAME_BIT_PING) != 0);
+    CU_ASSERT((packet_in.pi_frame_types & XQC_FRAME_BIT_CRYPTO) == 0);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_INIT_RECVD) == 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+#endif
 
 static void
 xqc_test_conn_close_error_type(unsigned char *frame, size_t frame_len,
@@ -189,6 +290,159 @@ xqc_test_conn_close_transport_error_type_overlap(void)
 
 
 void
+xqc_test_conn_close_reason_truncated(void)
+{
+    unsigned char frame[] = {
+        0x1c, 0x0a, 0x00, 0x03, 'b', 'a'
+    };
+    xqc_connection_t *conn;
+    xqc_packet_in_t packet_in;
+    uint64_t err_code;
+    xqc_int_t ret;
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.pos = frame;
+    packet_in.last = frame + sizeof(frame);
+
+    ret = xqc_parse_conn_close_frame(&packet_in, &err_code, conn);
+
+    CU_ASSERT_EQUAL(ret, -XQC_EILLEGAL_FRAME);
+    CU_ASSERT(packet_in.pos == frame);
+    CU_ASSERT_EQUAL(xqc_conn_get_err_type(conn),
+                    XQC_CONN_ERR_TYPE_UNKNOWN);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+static void
+xqc_test_conn_close_frame_accepted(unsigned char *frame, size_t frame_len,
+    xqc_pkt_type_t pkt_type, xqc_conn_type_t conn_type,
+    xqc_conn_err_type_t expected_type)
+{
+    xqc_connection_t *conn;
+    xqc_packet_in_t packet_in;
+    xqc_int_t ret;
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->conn_type = conn_type;
+
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.pi_pkt.pkt_type = pkt_type;
+    packet_in.pos = frame;
+    packet_in.last = frame + frame_len;
+
+    ret = xqc_process_frames(conn, &packet_in);
+
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT(packet_in.pos == packet_in.last);
+    CU_ASSERT_EQUAL(packet_in.pi_frame_types,
+                    XQC_FRAME_BIT_CONNECTION_CLOSE);
+    CU_ASSERT_EQUAL(xqc_conn_get_err_type(conn), expected_type);
+    CU_ASSERT_EQUAL(conn->conn_state, XQC_CONN_STATE_DRAINING);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_conn_close_valid_packet_types(void)
+{
+    unsigned char transport_frame[] = {0x1c, 0x00, 0x00, 0x00};
+    unsigned char application_frame[] = {0x1d, 0x00, 0x00};
+    unsigned char reason_frame[] = {
+        0x1c, 0x00, 0x00, 0x03, 'b', 'y', 'e'
+    };
+
+    xqc_test_conn_close_frame_accepted(transport_frame,
+        sizeof(transport_frame), XQC_PTYPE_INIT, XQC_CONN_TYPE_CLIENT,
+        XQC_CONN_ERR_TYPE_TRANSPORT);
+    xqc_test_conn_close_frame_accepted(transport_frame,
+        sizeof(transport_frame), XQC_PTYPE_HSK, XQC_CONN_TYPE_CLIENT,
+        XQC_CONN_ERR_TYPE_TRANSPORT);
+    xqc_test_conn_close_frame_accepted(application_frame,
+        sizeof(application_frame), XQC_PTYPE_0RTT, XQC_CONN_TYPE_SERVER,
+        XQC_CONN_ERR_TYPE_APPLICATION);
+    xqc_test_conn_close_frame_accepted(application_frame,
+        sizeof(application_frame), XQC_PTYPE_SHORT_HEADER,
+        XQC_CONN_TYPE_CLIENT, XQC_CONN_ERR_TYPE_APPLICATION);
+    xqc_test_conn_close_frame_accepted(reason_frame,
+        sizeof(reason_frame), XQC_PTYPE_SHORT_HEADER,
+        XQC_CONN_TYPE_CLIENT, XQC_CONN_ERR_TYPE_TRANSPORT);
+}
+
+
+static void
+xqc_test_conn_close_app_error_rejected(xqc_pkt_type_t pkt_type)
+{
+    unsigned char frame[] = {0x1d, 0x00, 0x00};
+    xqc_connection_t *conn;
+    xqc_packet_in_t packet_in;
+    xqc_int_t ret;
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.pi_pkt.pkt_type = pkt_type;
+    packet_in.pos = frame;
+    packet_in.last = frame + sizeof(frame);
+
+    ret = xqc_process_frames(conn, &packet_in);
+
+    CU_ASSERT_EQUAL(ret, -XQC_EPROTO);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+    CU_ASSERT_EQUAL(xqc_conn_get_err_type(conn), XQC_CONN_ERR_TYPE_UNKNOWN);
+    CU_ASSERT_EQUAL(packet_in.pi_frame_types, 0);
+    CU_ASSERT(packet_in.pos == frame);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_conn_close_app_error_in_handshake_rejected(void)
+{
+    xqc_test_conn_close_app_error_rejected(XQC_PTYPE_INIT);
+    xqc_test_conn_close_app_error_rejected(XQC_PTYPE_HSK);
+}
+
+
+void
+xqc_test_peer_key_update_error_not_0rtt(void)
+{
+    unsigned char frame[] = {
+        0x1c, 0x0e, 0x00, 0x00
+    };
+    xqc_connection_t *conn;
+    xqc_packet_in_t packet_in;
+    xqc_int_t ret;
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.pos = frame;
+    packet_in.last = frame + sizeof(frame);
+
+    ret = xqc_process_conn_close_frame(conn, &packet_in);
+
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_KEY_UPDATE_ERROR);
+    CU_ASSERT_EQUAL(xqc_conn_get_err_type(conn),
+                    XQC_CONN_ERR_TYPE_TRANSPORT);
+    CU_ASSERT_FALSE(xqc_conn_should_clear_0rtt_ticket(conn->conn_err));
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
 xqc_test_large_ack_frame()
 {
     xqc_connection_t *conn = test_engine_connect();
@@ -224,6 +478,114 @@ xqc_test_large_ack_frame()
     CU_ASSERT(pi_ack.pi_frame_types == XQC_FRAME_BIT_ACK);
 
     xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_ack_range_zero_boundary()
+{
+    unsigned char frame[] = {
+        0x02,       /* ACK */
+        0x0a,       /* largest acknowledged = 10 */
+        0x00,       /* ACK delay */
+        0x02,       /* ACK range count = 2 */
+        0x02,       /* first ACK range: 10..8 */
+        0x01, 0x02, /* gap = 1, ACK range: 5..3 */
+        0x01, 0x00  /* gap = 1, ACK range: 0..0 */
+    };
+    xqc_connection_t *conn;
+    xqc_packet_in_t packet_in;
+    xqc_ack_info_t ack_info;
+    xqc_int_t ret;
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    memset(&packet_in, 0, sizeof(packet_in));
+    memset(&ack_info, 0, sizeof(ack_info));
+    packet_in.pos = frame;
+    packet_in.last = frame + sizeof(frame);
+
+    ret = xqc_parse_ack_frame(&packet_in, conn, &ack_info);
+
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(ack_info.n_ranges, 3);
+    CU_ASSERT_EQUAL(ack_info.ranges[0].high, 10);
+    CU_ASSERT_EQUAL(ack_info.ranges[0].low, 8);
+    CU_ASSERT_EQUAL(ack_info.ranges[1].high, 5);
+    CU_ASSERT_EQUAL(ack_info.ranges[1].low, 3);
+    CU_ASSERT_EQUAL(ack_info.ranges[2].high, 0);
+    CU_ASSERT_EQUAL(ack_info.ranges[2].low, 0);
+    CU_ASSERT(packet_in.pos == packet_in.last);
+    CU_ASSERT((packet_in.pi_frame_types & XQC_FRAME_BIT_ACK) != 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+static void
+xqc_test_ack_range_rejected(unsigned char *frame, size_t frame_len)
+{
+    xqc_connection_t *conn;
+    xqc_packet_in_t packet_in;
+    xqc_ack_info_t ack_info;
+    xqc_int_t ret;
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    memset(&packet_in, 0, sizeof(packet_in));
+    memset(&ack_info, 0, sizeof(ack_info));
+    packet_in.pos = frame;
+    packet_in.last = frame + frame_len;
+
+    ret = xqc_parse_ack_frame(&packet_in, conn, &ack_info);
+
+    CU_ASSERT_EQUAL(ret, -XQC_EILLEGAL_FRAME);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_FRAME_ENCODING_ERROR);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+    CU_ASSERT_EQUAL(packet_in.pi_frame_types & XQC_FRAME_BIT_ACK, 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_ack_range_negative_rejected()
+{
+    unsigned char first_range[] = {
+        0x02, 0x00, 0x00, 0x00, 0x01
+    };
+    unsigned char gap[] = {
+        0x02, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00
+    };
+    unsigned char range[] = {
+        0x02, 0x03, 0x00, 0x01, 0x00, 0x00, 0x02
+    };
+    unsigned char after_storage_limit[135];
+    unsigned char *p;
+
+    xqc_test_ack_range_rejected(first_range, sizeof(first_range));
+    xqc_test_ack_range_rejected(gap, sizeof(gap));
+    xqc_test_ack_range_rejected(range, sizeof(range));
+
+    p = after_storage_limit;
+    *p++ = 0x02;       /* ACK */
+    *p++ = 0x40;
+    *p++ = 0x7f;       /* largest acknowledged = 127 */
+    *p++ = 0x00;       /* ACK delay */
+    *p++ = 0x40;
+    *p++ = 0x40;       /* ACK range count = 64 */
+    *p++ = 0x00;       /* first ACK range */
+    for (int i = 0; i < 64; ++i) {
+        *p++ = 0x00;   /* gap */
+        *p++ = 0x00;   /* ACK range length */
+    }
+
+    CU_ASSERT_EQUAL(p - after_storage_limit,
+                    sizeof(after_storage_limit));
+    xqc_test_ack_range_rejected(after_storage_limit,
+                                sizeof(after_storage_limit));
 }
 
 
@@ -358,6 +720,186 @@ xqc_test_crypto_frame_setup(xqc_connection_t **conn, xqc_packet_in_t *pi,
     pi->pi_pkt.pkt_type = pkt_type;
     pi->pos = XQC_TEST_CRYPTO_FRAME_EMPTY;
     pi->last = pi->pos + sizeof(XQC_TEST_CRYPTO_FRAME_EMPTY);
+}
+
+
+void
+xqc_test_crypto_frame_previous_level_boundary()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_stream_t *stream = xqc_create_crypto_stream(
+        conn, XQC_ENC_LEV_INIT, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+    stream->stream_max_recv_offset = 64;
+
+    xqc_stream_frame_t frame;
+    memset(&frame, 0, sizeof(frame));
+    frame.data_offset = 32;
+    frame.data_length = 32;
+
+    xqc_int_t ret = xqc_check_crypto_frame_level(
+        conn, stream, &frame, XQC_ENC_LEV_HSK);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+
+    /* An empty frame contains no data and cannot extend the old flow. */
+    frame.data_offset = 128;
+    frame.data_length = 0;
+    ret = xqc_check_crypto_frame_level(
+        conn, stream, &frame, XQC_ENC_LEV_HSK);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+
+    /* The current receiving level remains free to extend its own flow. */
+    frame.data_offset = 64;
+    frame.data_length = 1;
+    ret = xqc_check_crypto_frame_level(
+        conn, stream, &frame, XQC_ENC_LEV_INIT);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_crypto_frame_previous_level_extension()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_stream_t *stream = xqc_create_crypto_stream(
+        conn, XQC_ENC_LEV_HSK, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+    stream->stream_max_recv_offset = 64;
+
+    xqc_stream_frame_t frame;
+    memset(&frame, 0, sizeof(frame));
+    frame.data_offset = 64;
+    frame.data_length = 1;
+
+    xqc_int_t ret = xqc_check_crypto_frame_level(
+        conn, stream, &frame, XQC_ENC_LEV_1RTT);
+    CU_ASSERT(ret == -XQC_EPROTO);
+    CU_ASSERT(conn->conn_err == TRA_PROTOCOL_VIOLATION);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_crypto_frame_initial_at_0rtt_boundary()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_stream_t *stream = xqc_create_crypto_stream(
+        conn, XQC_ENC_LEV_INIT, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+    stream->stream_max_recv_offset = 64;
+
+    xqc_stream_frame_t frame;
+    memset(&frame, 0, sizeof(frame));
+    frame.data_offset = 32;
+    frame.data_length = 32;
+
+    xqc_int_t ret = xqc_check_crypto_frame_level(
+        conn, stream, &frame, XQC_ENC_LEV_0RTT);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+
+    /* Earlier duplicate data also stays within the received Initial flow. */
+    frame.data_offset = 0;
+    frame.data_length = 16;
+    ret = xqc_check_crypto_frame_level(
+        conn, stream, &frame, XQC_ENC_LEV_0RTT);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+
+    /* An empty frame cannot extend the old Initial flow. */
+    frame.data_offset = 128;
+    frame.data_length = 0;
+    ret = xqc_check_crypto_frame_level(
+        conn, stream, &frame, XQC_ENC_LEV_0RTT);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_crypto_frame_initial_0rtt_reordering()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    /*
+     * Receive the tail of the Initial CRYPTO flow first while Initial is the
+     * current TLS read level. The gap keeps the data from reaching TLS, but
+     * the receive boundary must still include all bytes already received.
+     */
+    unsigned char frame_buf[35] = {0x06, 0x20, 0x20};
+    xqc_packet_in_t packet_in;
+    memset(&packet_in, 0, sizeof(packet_in));
+    packet_in.pi_pkt.pkt_type = XQC_PTYPE_INIT;
+    packet_in.pos = frame_buf;
+    packet_in.last = frame_buf + sizeof(frame_buf);
+
+    xqc_int_t ret = xqc_process_crypto_frame(conn, &packet_in);
+    CU_ASSERT(ret == XQC_OK);
+
+    xqc_stream_t *stream = conn->crypto_stream[XQC_ENC_LEV_INIT];
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+    CU_ASSERT(stream->stream_max_recv_offset == 64);
+    CU_ASSERT(stream->stream_data_in.next_read_offset == 0);
+
+    /*
+     * Model 0-RTT becoming the TLS read level before the missing leading
+     * Initial fragment arrives. Filling the earlier gap does not extend the
+     * previously received Initial flow and therefore remains valid.
+     */
+    xqc_stream_frame_t delayed_frame;
+    memset(&delayed_frame, 0, sizeof(delayed_frame));
+    delayed_frame.data_offset = 0;
+    delayed_frame.data_length = 32;
+
+    ret = xqc_check_crypto_frame_level(conn, stream, &delayed_frame,
+                                       XQC_ENC_LEV_0RTT);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) == 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_crypto_frame_initial_at_0rtt_extension()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_stream_t *stream = xqc_create_crypto_stream(
+        conn, XQC_ENC_LEV_INIT, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+    stream->stream_max_recv_offset = 64;
+
+    xqc_stream_frame_t frame;
+    memset(&frame, 0, sizeof(frame));
+    frame.data_offset = 64;
+    frame.data_length = 1;
+
+    xqc_int_t ret = xqc_check_crypto_frame_level(
+        conn, stream, &frame, XQC_ENC_LEV_0RTT);
+    CU_ASSERT(ret == -XQC_EPROTO);
+    CU_ASSERT(conn->conn_err == TRA_PROTOCOL_VIOLATION);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_ERROR) != 0);
+
+    xqc_engine_destroy(conn->engine);
 }
 
 
@@ -805,6 +1347,68 @@ xqc_test_new_conn_id_zero_len_cid(void)
     xqc_engine_destroy(conn->engine);
 }
 
+
+void
+xqc_test_gen_new_conn_id_frame_min_cid(void)
+{
+    xqc_packet_out_t *packet_out;
+    xqc_cid_t cid;
+    uint8_t sr_token[XQC_STATELESS_RESET_TOKENLEN] = {0};
+    ssize_t ret;
+
+    packet_out = xqc_packet_out_create(XQC_QUIC_MAX_MSS);
+    CU_ASSERT(packet_out != NULL);
+    if (packet_out == NULL) {
+        return;
+    }
+
+    memset(&cid, 0, sizeof(cid));
+    cid.cid_len = 1;
+    cid.cid_seq_num = 1;
+    cid.cid_buf[0] = 0xa5;
+
+    ret = xqc_gen_new_conn_id_frame(packet_out, &cid, 0, sr_token);
+
+    CU_ASSERT(ret == 5 + XQC_STATELESS_RESET_TOKENLEN);
+    CU_ASSERT(packet_out->po_buf[0] == 0x18);
+    CU_ASSERT(packet_out->po_buf[1] == 0x01);
+    CU_ASSERT(packet_out->po_buf[2] == 0x00);
+    CU_ASSERT(packet_out->po_buf[3] == 0x01);
+    CU_ASSERT(packet_out->po_buf[4] == 0xa5);
+    CU_ASSERT(packet_out->po_frame_types
+              == XQC_FRAME_BIT_NEW_CONNECTION_ID);
+
+    xqc_packet_out_destroy(packet_out);
+}
+
+
+void
+xqc_test_gen_new_conn_id_frame_zero_cid(void)
+{
+    xqc_packet_out_t *packet_out;
+    xqc_cid_t cid;
+    uint8_t sr_token[XQC_STATELESS_RESET_TOKENLEN] = {0};
+    ssize_t ret;
+
+    packet_out = xqc_packet_out_create(XQC_QUIC_MAX_MSS);
+    CU_ASSERT(packet_out != NULL);
+    if (packet_out == NULL) {
+        return;
+    }
+
+    memset(&cid, 0, sizeof(cid));
+    packet_out->po_buf[0] = 0xa5;
+    packet_out->po_frame_types = XQC_FRAME_BIT_PING;
+
+    ret = xqc_gen_new_conn_id_frame(packet_out, &cid, 0, sr_token);
+
+    CU_ASSERT(ret == -XQC_EPARAM);
+    CU_ASSERT(packet_out->po_buf[0] == 0xa5);
+    CU_ASSERT(packet_out->po_frame_types == XQC_FRAME_BIT_PING);
+
+    xqc_packet_out_destroy(packet_out);
+}
+
 static size_t
 xqc_test_build_new_conn_id_frame(unsigned char *frame_buf, uint64_t seq_num)
 {
@@ -901,6 +1505,726 @@ xqc_test_new_conn_id_active_limit_exceeded(void)
     if (inner_set != NULL) {
         CU_ASSERT(xqc_cid_set_countable_cnt(inner_set) == 2);
     }
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+/* ---- RFC 9000 stream directionality checks (issues #565 / #566 / #567) ----
+ *
+ * RFC 9000 section 2.1: the two low bits of a stream ID carry the initiator and
+ * the directionality, so with test_engine_connect() building a CLIENT
+ * connection:
+ *   stream_id 0 -> XQC_CLI_BID  client initiated, bidirectional
+ *   stream_id 2 -> XQC_CLI_UNI  client initiated, unidirectional: send-only
+ *                               for the client, recv-only for the server
+ *   stream_id 3 -> XQC_SVR_UNI  server initiated, unidirectional: send-only
+ *                               for the server, recv-only for the client
+ *
+ * The parser only reads conn->conn_type, so the server side of each check is
+ * exercised by flipping that field rather than by building a server engine.
+ */
+
+static xqc_connection_t *
+xqc_test_dir_make_conn(xqc_conn_type_t conn_type)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    if (conn == NULL) {
+        return NULL;
+    }
+
+    conn->conn_type = conn_type;
+    conn->conn_err = 0;
+    return conn;
+}
+
+static void
+xqc_test_dir_init_pi(xqc_packet_in_t *pi, unsigned char *buf, size_t len)
+{
+    memset(pi, 0, sizeof(*pi));
+    pi->pos = buf;
+    pi->last = buf + len;
+    pi->pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+}
+
+
+/* ---- issue #566: RESET_STREAM on a send-only stream ---- */
+
+void
+xqc_test_reset_stream_on_send_only_stream(void)
+{
+    /* client + CLI_UNI: the client is the sender, so RESET_STREAM is illegal */
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    /* type(0x04) + stream_id(2) + err_code(0) + final_size(0) */
+    unsigned char frame_buf[] = {0x04, 0x02, 0x00, 0x00};
+    xqc_stream_id_t stream_id;
+    uint64_t err_code, final_size;
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_parse_reset_stream_frame(&pi, &stream_id, &err_code, &final_size, conn);
+    CU_ASSERT(ret == -XQC_EPROTO);
+    CU_ASSERT(conn->conn_err == TRA_STREAM_STATE_ERROR);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_reset_stream_on_send_only_stream_server(void)
+{
+    /* server + SVR_UNI: the server is the sender, so RESET_STREAM is illegal */
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_SERVER);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    unsigned char frame_buf[] = {0x04, 0x03, 0x00, 0x00};
+    xqc_stream_id_t stream_id;
+    uint64_t err_code, final_size;
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_parse_reset_stream_frame(&pi, &stream_id, &err_code, &final_size, conn);
+    CU_ASSERT(ret == -XQC_EPROTO);
+    CU_ASSERT(conn->conn_err == TRA_STREAM_STATE_ERROR);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_reset_stream_on_recv_only_stream_accepted(void)
+{
+    /*
+     * Control case: client + SVR_UNI is recv-only for the client, so the peer
+     * resetting its own sending side is legal and MUST still be accepted.
+     * Without this a check that rejected every unidirectional stream
+     * regardless of conn_type would go unnoticed.
+     */
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    /* err_code 10 and final_size 5 so the parsed values can be asserted */
+    unsigned char frame_buf[] = {0x04, 0x03, 0x0a, 0x05};
+    xqc_stream_id_t stream_id;
+    uint64_t err_code, final_size;
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_parse_reset_stream_frame(&pi, &stream_id, &err_code, &final_size, conn);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+    CU_ASSERT(stream_id == 3);
+    CU_ASSERT(err_code == 10);
+    CU_ASSERT(final_size == 5);
+    CU_ASSERT(pi.pi_frame_types & XQC_FRAME_BIT_RESET_STREAM);
+    CU_ASSERT(pi.pos == frame_buf + sizeof(frame_buf));
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+static void
+xqc_test_process_reset_stream_direction(xqc_stream_id_t stream_id,
+    xqc_bool_t expect_local_reset)
+{
+    unsigned char frame_buf[] = {0x04, (unsigned char)stream_id, 0x00, 0x00};
+    xqc_packet_in_t pi;
+    xqc_connection_t *conn;
+    xqc_stream_t *stream;
+    uint64_t packets_used;
+    xqc_int_t ret;
+
+    conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    packets_used = conn->conn_send_queue->sndq_packets_used;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    ret = xqc_process_reset_stream_frame(conn, &pi);
+    CU_ASSERT(ret == XQC_OK);
+
+    stream = xqc_find_stream_by_id(stream_id, conn->streams_hash);
+    CU_ASSERT_FATAL(stream != NULL);
+    CU_ASSERT(stream->stream_state_recv == XQC_RECV_STREAM_ST_RESET_RECVD);
+
+    if (expect_local_reset) {
+        CU_ASSERT(conn->conn_send_queue->sndq_packets_used
+                  == packets_used + 1);
+        CU_ASSERT(stream->stream_state_send == XQC_SEND_STREAM_ST_RESET_SENT);
+
+    } else {
+        CU_ASSERT(conn->conn_send_queue->sndq_packets_used == packets_used);
+        CU_ASSERT(stream->stream_state_send == XQC_SEND_STREAM_ST_READY);
+    }
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_process_reset_stream_on_bidirectional_stream(void)
+{
+    /* Server-initiated bidirectional stream: the client has a sending part. */
+    xqc_test_process_reset_stream_direction(1, XQC_TRUE);
+}
+
+void
+xqc_test_process_reset_stream_on_recv_only_stream(void)
+{
+    /* RFC 9000 Section 3.3: the receiver cannot send RESET_STREAM. */
+    xqc_test_process_reset_stream_direction(3, XQC_FALSE);
+}
+
+
+static int
+xqc_test_count_frame_in_list(xqc_list_head_t *head,
+    xqc_frame_type_bit_t frame_bit)
+{
+    xqc_list_head_t *pos;
+    xqc_packet_out_t *packet_out;
+    int count = 0;
+
+    xqc_list_for_each(pos, head) {
+        packet_out = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+        if (packet_out->po_frame_types & frame_bit) {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+
+static int
+xqc_test_count_queued_frame(xqc_connection_t *conn,
+    xqc_frame_type_bit_t frame_bit)
+{
+    xqc_send_queue_t *send_queue = conn->conn_send_queue;
+    int count = 0;
+    int i;
+
+    count += xqc_test_count_frame_in_list(&send_queue->sndq_send_packets,
+                                          frame_bit);
+    count += xqc_test_count_frame_in_list(
+        &send_queue->sndq_send_packets_high_pri, frame_bit);
+    count += xqc_test_count_frame_in_list(&send_queue->sndq_lost_packets,
+                                          frame_bit);
+    count += xqc_test_count_frame_in_list(
+        &send_queue->sndq_buff_1rtt_packets, frame_bit);
+    count += xqc_test_count_frame_in_list(&send_queue->sndq_pto_probe_packets,
+                                          frame_bit);
+    for (i = 0; i < XQC_PNS_N; i++) {
+        count += xqc_test_count_frame_in_list(
+            &send_queue->sndq_unacked_packets[i], frame_bit);
+    }
+
+    return count;
+}
+
+
+static void
+xqc_test_stream_close_direction(xqc_conn_type_t conn_type,
+    xqc_bool_t local_initiated, xqc_bool_t expect_reset,
+    xqc_bool_t expect_stop)
+{
+    xqc_connection_t *conn;
+    xqc_stream_t *stream;
+    xqc_stream_id_t stream_id;
+    int reset_before, reset_after;
+    int stop_before, stop_after;
+    xqc_int_t ret;
+
+    conn = xqc_test_dir_make_conn(conn_type);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    if (local_initiated) {
+        stream = xqc_stream_create_with_direction(conn, XQC_STREAM_UNI,
+                                                  NULL);
+
+    } else {
+        stream_id = conn_type == XQC_CONN_TYPE_CLIENT ? 3 : 2;
+        stream = xqc_passive_create_stream(conn, stream_id, NULL);
+    }
+    CU_ASSERT_FATAL(stream != NULL);
+
+    reset_before = xqc_test_count_queued_frame(
+        conn, XQC_FRAME_BIT_RESET_STREAM);
+    stop_before = xqc_test_count_queued_frame(
+        conn, XQC_FRAME_BIT_STOP_SENDING);
+
+    ret = xqc_stream_close(stream);
+    CU_ASSERT(ret == XQC_OK);
+
+    reset_after = xqc_test_count_queued_frame(
+        conn, XQC_FRAME_BIT_RESET_STREAM);
+    stop_after = xqc_test_count_queued_frame(
+        conn, XQC_FRAME_BIT_STOP_SENDING);
+    CU_ASSERT(reset_after - reset_before == expect_reset);
+    CU_ASSERT(stop_after - stop_before == expect_stop);
+
+    ret = xqc_stream_close(stream);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(xqc_test_count_queued_frame(
+                  conn, XQC_FRAME_BIT_RESET_STREAM) == reset_after);
+    CU_ASSERT(xqc_test_count_queued_frame(
+                  conn, XQC_FRAME_BIT_STOP_SENDING) == stop_after);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_stream_close_send_only(void)
+{
+    xqc_test_stream_close_direction(XQC_CONN_TYPE_CLIENT, XQC_TRUE,
+                                    XQC_TRUE, XQC_FALSE);
+    xqc_test_stream_close_direction(XQC_CONN_TYPE_SERVER, XQC_TRUE,
+                                    XQC_TRUE, XQC_FALSE);
+}
+
+
+void
+xqc_test_stream_close_recv_only(void)
+{
+    xqc_test_stream_close_direction(XQC_CONN_TYPE_CLIENT, XQC_FALSE,
+                                    XQC_FALSE, XQC_TRUE);
+    xqc_test_stream_close_direction(XQC_CONN_TYPE_SERVER, XQC_FALSE,
+                                    XQC_FALSE, XQC_TRUE);
+}
+
+
+void
+xqc_test_stream_close_bidirectional(void)
+{
+    xqc_connection_t *conn;
+    xqc_stream_t *stream;
+    int reset_before, stop_before;
+    xqc_int_t ret;
+
+    conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+    stream = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_FATAL(stream != NULL);
+
+    reset_before = xqc_test_count_queued_frame(
+        conn, XQC_FRAME_BIT_RESET_STREAM);
+    stop_before = xqc_test_count_queued_frame(
+        conn, XQC_FRAME_BIT_STOP_SENDING);
+
+    ret = xqc_stream_close(stream);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(xqc_test_count_queued_frame(
+                  conn, XQC_FRAME_BIT_RESET_STREAM) == reset_before + 1);
+    CU_ASSERT(xqc_test_count_queued_frame(
+                  conn, XQC_FRAME_BIT_STOP_SENDING) == stop_before + 1);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_stream_close_after_data_recvd(void)
+{
+    xqc_connection_t *conn;
+    xqc_stream_t *stream;
+    int reset_before, stop_before;
+    xqc_int_t ret;
+
+    conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+    stream = xqc_stream_create_with_direction(conn, XQC_STREAM_UNI, NULL);
+    CU_ASSERT_FATAL(stream != NULL);
+
+    xqc_stream_send_state_update(stream, XQC_SEND_STREAM_ST_DATA_RECVD);
+    reset_before = xqc_test_count_queued_frame(
+        conn, XQC_FRAME_BIT_RESET_STREAM);
+    stop_before = xqc_test_count_queued_frame(
+        conn, XQC_FRAME_BIT_STOP_SENDING);
+
+    ret = xqc_write_reset_stream_to_packet(
+        conn, stream, H3_REQUEST_CANCELLED, stream->stream_send_offset);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(xqc_test_count_queued_frame(
+                  conn, XQC_FRAME_BIT_RESET_STREAM) == reset_before);
+
+    ret = xqc_stream_close(stream);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(stream->stream_state_send == XQC_SEND_STREAM_ST_DATA_RECVD);
+    CU_ASSERT(stream->stream_err == H3_REQUEST_CANCELLED);
+    CU_ASSERT(xqc_test_count_queued_frame(
+                  conn, XQC_FRAME_BIT_RESET_STREAM) == reset_before);
+    CU_ASSERT(xqc_test_count_queued_frame(
+                  conn, XQC_FRAME_BIT_STOP_SENDING) == stop_before);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_stream_close_data_recvd_bidirectional(void)
+{
+    xqc_connection_t *conn;
+    xqc_stream_t *stream;
+    int reset_before, stop_before, stop_after;
+    xqc_int_t ret;
+
+    conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+    stream = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_FATAL(stream != NULL);
+
+    xqc_stream_send_state_update(stream, XQC_SEND_STREAM_ST_DATA_RECVD);
+    reset_before = xqc_test_count_queued_frame(
+        conn, XQC_FRAME_BIT_RESET_STREAM);
+    stop_before = xqc_test_count_queued_frame(
+        conn, XQC_FRAME_BIT_STOP_SENDING);
+
+    ret = xqc_stream_close(stream);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(stream->stream_state_send == XQC_SEND_STREAM_ST_DATA_RECVD);
+    CU_ASSERT(stream->stream_err == H3_REQUEST_CANCELLED);
+    CU_ASSERT(xqc_test_count_queued_frame(
+                  conn, XQC_FRAME_BIT_RESET_STREAM) == reset_before);
+    stop_after = xqc_test_count_queued_frame(
+        conn, XQC_FRAME_BIT_STOP_SENDING);
+    CU_ASSERT(stop_after == stop_before + 1);
+
+    ret = xqc_stream_close(stream);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(xqc_test_count_queued_frame(
+                  conn, XQC_FRAME_BIT_RESET_STREAM) == reset_before);
+    CU_ASSERT(xqc_test_count_queued_frame(
+                  conn, XQC_FRAME_BIT_STOP_SENDING) == stop_after);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+static xqc_connection_t *
+xqc_test_reset_stream_final_size_setup(xqc_stream_t **stream)
+{
+    xqc_connection_t *conn;
+
+    conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    if (conn == NULL) {
+        return NULL;
+    }
+
+    *stream = xqc_passive_create_stream(conn, 3, NULL);
+    if (*stream == NULL) {
+        xqc_engine_destroy(conn->engine);
+        return NULL;
+    }
+
+    (*stream)->stream_max_recv_offset = 5;
+    (*stream)->stream_data_in.next_read_offset = 2;
+    conn->conn_flow_ctl.fc_data_recved = 5;
+    conn->conn_flow_ctl.fc_data_read = 2;
+    return conn;
+}
+
+
+void
+xqc_test_reset_stream_final_size_accepted(void)
+{
+    unsigned char frame_buf[] = {0x04, 0x03, 0x00, 0x07};
+    xqc_packet_in_t pi;
+    xqc_connection_t *conn;
+    xqc_stream_t *stream = NULL;
+    xqc_int_t ret;
+
+    conn = xqc_test_reset_stream_final_size_setup(&stream);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    ret = xqc_process_reset_stream_frame(conn, &pi);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+    CU_ASSERT(stream->stream_state_recv == XQC_RECV_STREAM_ST_RESET_RECVD);
+    CU_ASSERT(conn->conn_flow_ctl.fc_data_recved == 7);
+    CU_ASSERT(conn->conn_flow_ctl.fc_data_read == 7);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+void
+xqc_test_reset_stream_final_size_too_small(void)
+{
+    unsigned char frame_buf[] = {0x04, 0x03, 0x00, 0x04};
+    xqc_packet_in_t pi;
+    xqc_connection_t *conn;
+    xqc_stream_t *stream = NULL;
+    xqc_int_t ret;
+
+    conn = xqc_test_reset_stream_final_size_setup(&stream);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    ret = xqc_process_reset_stream_frame(conn, &pi);
+    CU_ASSERT(ret == -XQC_EPROTO);
+    CU_ASSERT(conn->conn_err == TRA_FINAL_SIZE_ERROR);
+    CU_ASSERT(stream->stream_state_recv == XQC_RECV_STREAM_ST_RECV);
+    CU_ASSERT(conn->conn_flow_ctl.fc_data_recved == 5);
+    CU_ASSERT(conn->conn_flow_ctl.fc_data_read == 2);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+/* ---- issue #567: STOP_SENDING on a recv-only stream ---- */
+
+void
+xqc_test_stop_sending_on_recv_only_stream(void)
+{
+    /* client + SVR_UNI: the client only receives, so STOP_SENDING is illegal */
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    /* type(0x05) + stream_id(3) + err_code(0) */
+    unsigned char frame_buf[] = {0x05, 0x03, 0x00};
+    xqc_stream_id_t stream_id;
+    uint64_t err_code;
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_parse_stop_sending_frame(&pi, &stream_id, &err_code, conn);
+    CU_ASSERT(ret == -XQC_EPROTO);
+    CU_ASSERT(conn->conn_err == TRA_STREAM_STATE_ERROR);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_stop_sending_on_recv_only_stream_server(void)
+{
+    /* server + CLI_UNI: the server only receives, so STOP_SENDING is illegal */
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_SERVER);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    unsigned char frame_buf[] = {0x05, 0x02, 0x00};
+    xqc_stream_id_t stream_id;
+    uint64_t err_code;
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_parse_stop_sending_frame(&pi, &stream_id, &err_code, conn);
+    CU_ASSERT(ret == -XQC_EPROTO);
+    CU_ASSERT(conn->conn_err == TRA_STREAM_STATE_ERROR);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_stop_sending_on_send_only_stream_accepted(void)
+{
+    /*
+     * Control case: client + CLI_UNI is send-only for the client, so the peer
+     * asking it to stop sending is legal and MUST still be accepted.  This is
+     * the normal case for an HTTP/3 client control stream.
+     */
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    /* err_code 7 so the parsed value can be asserted */
+    unsigned char frame_buf[] = {0x05, 0x02, 0x07};
+    xqc_stream_id_t stream_id;
+    uint64_t err_code;
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_parse_stop_sending_frame(&pi, &stream_id, &err_code, conn);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+    CU_ASSERT(stream_id == 2);
+    CU_ASSERT(err_code == 7);
+    CU_ASSERT(pi.pi_frame_types & XQC_FRAME_BIT_STOP_SENDING);
+    CU_ASSERT(pi.pos == frame_buf + sizeof(frame_buf));
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+/* ---- RFC 9000 Section 19.10 MAX_STREAM_DATA direction ---- */
+
+void
+xqc_test_max_stream_data_on_recv_only_stream(void)
+{
+    /* client + SVR_UNI: the client has no sending side on stream 3 */
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    unsigned char frame_buf[] = {0x11, 0x03, 0x10};
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_process_max_stream_data_frame(conn, &pi);
+    CU_ASSERT(ret == -XQC_EPROTO);
+    CU_ASSERT(conn->conn_err == TRA_STREAM_STATE_ERROR);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_max_stream_data_on_recv_only_stream_server(void)
+{
+    /* server + CLI_UNI: the server has no sending side on stream 2 */
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_SERVER);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    unsigned char frame_buf[] = {0x11, 0x02, 0x10};
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_process_max_stream_data_frame(conn, &pi);
+    CU_ASSERT(ret == -XQC_EPROTO);
+    CU_ASSERT(conn->conn_err == TRA_STREAM_STATE_ERROR);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_max_stream_data_on_send_only_stream(void)
+{
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    xqc_stream_t *stream = xqc_stream_create_with_direction(
+        conn, XQC_STREAM_UNI, NULL);
+    CU_ASSERT_FATAL(stream != NULL);
+    CU_ASSERT(stream->stream_id == 2);
+
+    stream->stream_flow_ctl.fc_max_stream_data_can_send = 0;
+    stream->stream_flag |= XQC_STREAM_FLAG_DATA_BLOCKED;
+
+    unsigned char frame_buf[] = {0x11, 0x02, 0x10};
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_process_max_stream_data_frame(conn, &pi);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+    CU_ASSERT(stream->stream_flow_ctl.fc_max_stream_data_can_send == 16);
+    CU_ASSERT(!(stream->stream_flag & XQC_STREAM_FLAG_DATA_BLOCKED));
+    CU_ASSERT(pi.pi_frame_types & XQC_FRAME_BIT_MAX_STREAM_DATA);
+    CU_ASSERT(pi.pos == frame_buf + sizeof(frame_buf));
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+/* ---- issue #565: STREAM frame direction and locally initiated stream ---- */
+
+void
+xqc_test_stream_frame_on_send_only_stream(void)
+{
+    /*
+     * RFC 9000 section 19.8 first MUST: client + CLI_UNI is send-only for the
+     * client, so carrying stream data towards it is illegal.
+     * xqc_process_stream_frame() expects pos at the type byte.
+     */
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    /* type(0x0a = STREAM|LEN) + stream_id(2) + len(1) + data */
+    unsigned char frame_buf[] = {0x0a, 0x02, 0x01, 0x00};
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_process_stream_frame(conn, &pi);
+    CU_ASSERT(ret == -XQC_EPROTO);
+    CU_ASSERT(conn->conn_err == TRA_STREAM_STATE_ERROR);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_stream_frame_on_send_only_stream_server(void)
+{
+    /* server + SVR_UNI is send-only for the server */
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_SERVER);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    unsigned char frame_buf[] = {0x0a, 0x03, 0x01, 0x00};
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_process_stream_frame(conn, &pi);
+    CU_ASSERT(ret == -XQC_EPROTO);
+    CU_ASSERT(conn->conn_err == TRA_STREAM_STATE_ERROR);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_stream_frame_on_recv_only_stream_accepted(void)
+{
+    /*
+     * Control case: client + SVR_UNI is recv-only for the client, so stream
+     * data on it is legal.  The stream does not exist yet, so it must be
+     * created passively rather than rejected.
+     */
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    unsigned char frame_buf[] = {0x0a, 0x03, 0x01, 0x00};
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_process_stream_frame(conn, &pi);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+    CU_ASSERT(xqc_find_stream_by_id(3, conn->streams_hash) != NULL);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_stream_frame_on_local_uncreated_stream(void)
+{
+    /*
+     * RFC 9000 section 19.8 second MUST: a STREAM frame for a locally
+     * initiated stream that has not yet been created must be rejected.
+     *
+     * client + CLI_BID stream_id 4 -> index 1.  With the local counter at 1 no
+     * stream of index 1 has ever been created, so the frame is illegal.
+     */
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    conn->cur_stream_id_bidi_local = 1;
+
+    unsigned char frame_buf[] = {0x0a, 0x04, 0x01, 0x00};
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_process_stream_frame(conn, &pi);
+    CU_ASSERT(ret == -XQC_EPROTO);
+    CU_ASSERT(conn->conn_err == TRA_STREAM_STATE_ERROR);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_stream_frame_on_local_closed_stream_tolerated(void)
+{
+    /*
+     * Control case for the above: same frame, same stream id, only the local
+     * counter differs.  With the counter at 2 index 1 was created earlier and
+     * has since been closed, so this is a retransmission and must still be
+     * tolerated instead of killing the connection.
+     */
+    xqc_connection_t *conn = xqc_test_dir_make_conn(XQC_CONN_TYPE_CLIENT);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    conn->cur_stream_id_bidi_local = 2;
+
+    unsigned char frame_buf[] = {0x0a, 0x04, 0x01, 0x00};
+    xqc_packet_in_t pi;
+    xqc_test_dir_init_pi(&pi, frame_buf, sizeof(frame_buf));
+
+    xqc_int_t ret = xqc_process_stream_frame(conn, &pi);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
 
     xqc_engine_destroy(conn->engine);
 }

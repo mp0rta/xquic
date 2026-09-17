@@ -1,6 +1,5 @@
-# Copyright (c) 2022, Alibaba Group Holding Limited
-
 #!/bin/bash
+# Copyright (c) 2022, Alibaba Group Holding Limited
 
 #macOS
 #export EVENT_NOKQUEUE=1
@@ -498,10 +497,18 @@ grep_err_log|grep -v stream
 clear_log
 echo -e "Reset stream when receiving...\c"
 ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -x 21 > stdlog
-result=`grep "xqc_send_queue_drop_stream_frame_packets" slog`
-flag=`grep "send_state:5|recv_state:5" clog`
+# By this point the client has already fully sent (and had acked) its
+# request body, i.e. stream_state_send is already XQC_SEND_STREAM_ST_
+# DATA_RECVD(3). Fix #945 (upstream) prevents sending a redundant
+# RESET_STREAM once the send side is already Data Recvd, so send_state
+# stays at 3 instead of progressing to RESET_SENT/RESET_RECVD(5), and the
+# server never sees an incoming RESET_STREAM to react to (hence no
+# xqc_send_queue_drop_stream_frame_packets in slog anymore). The client
+# still issues STOP_SENDING for the half it is abandoning, which the
+# server answers with its own RESET_STREAM -- recv_state:5 confirms that.
+flag=`grep "send_state:3|recv_state:5" clog`
 errlog=`grep_err_log|grep -v stream`
-if [ -n "$flag" ] && [ -z "$errlog" ] && [ -n "$result" ]; then
+if [ -n "$flag" ] && [ -z "$errlog" ]; then
     echo ">>>>>>>> pass:1"
     case_print_result "reset_stream_when_receiving" "pass"
 else
@@ -515,7 +522,8 @@ clear_log
 echo -e "Send header after reset stream...\c"
 ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -x 28 > stdlog
 result=`grep "xqc_conn_destroy.*err:0x0" clog`
-flag=`grep "send_state:5|recv_state:5" clog`
+# Same send-side-already-Data-Recvd situation as reset_stream_when_receiving.
+flag=`grep "send_state:3|recv_state:5" clog`
 errlog=`grep_err_log|grep -v stream`
 if [ -n "$flag" ] && [ -z "$errlog" ] && [ -n "$result" ]; then
     echo ">>>>>>>> pass:1"
@@ -2015,8 +2023,12 @@ clear_log
 echo -e "0RTT max_datagram_frame_size is invalid...\c"
 ${CLIENT_BIN} -l d >> stdlog
 cli_result=`grep "|0RTT_transport_params|max_datagram_frame_size:9000|" clog`
-cli_err=`grep "[error].*err:0xe" clog`
-svr_err=`grep "[error].*err:0xe" slog`
+# Client raises the library-internal TRA_0RTT_DGRAM_PARAMS_ERROR (0x55)
+# locally, but xqc_conn_close_wire_error_code() translates it to the real
+# RFC 9000 wire code (PROTOCOL_VIOLATION, 0xa) before it goes out in
+# CONNECTION_CLOSE, so the server sees 0xa, not 0x55.
+cli_err=`grep "[error].*err:0x55" clog`
+svr_err=`grep "[error].*err:0xa" slog`
 if [ -n "$cli_result" ] && [ -n "$cli_err" ] && [ -n "$svr_err" ]; then
     echo ">>>>>>>> pass:1"
     case_print_result "0rtt_max_datagram_frame_size_is_invalid" "pass"
@@ -3997,7 +4009,7 @@ sleep 1
 clear_log
 echo -e "check_clear_0rtt_ticket_flag_in_close_notify...\c"
 ${CLIENT_BIN} -l d -T 1 -s 4800 -U 1 -Q 65535 -E > stdlog
-cli_res2=`grep "should_clear_0rtt_ticket, conn_err:14, clear_0rtt_ticket:1" stdlog`
+cli_res2=`grep "should_clear_0rtt_ticket, conn_err:85, clear_0rtt_ticket:1" stdlog`
 errlog=`grep_err_log`
 if [ -n "$cli_res2" ] && [ -n "$errlog" ]; then
     echo ">>>>>>>> pass:1"
@@ -4019,7 +4031,7 @@ sleep 1
 clear_log
 echo -e "check_clear_0rtt_ticket_flag_in_h3_close_notify...\c"
 ${CLIENT_BIN} -l d -s 4800 -Q 65535 -E > stdlog
-cli_res2=`grep "should_clear_0rtt_ticket, conn_err:14, clear_0rtt_ticket:1" stdlog`
+cli_res2=`grep "should_clear_0rtt_ticket, conn_err:85, clear_0rtt_ticket:1" stdlog`
 errlog=`grep_err_log`
 if [ -n "$cli_res2" ] && [ -n "$errlog" ]; then
     echo ">>>>>>>> pass:1"
@@ -4041,7 +4053,7 @@ sleep 1
 clear_log
 echo -e "check_clear_0rtt_ticket_flag_in_h3_close_notify...\c"
 ${CLIENT_BIN} -l d -s 4800 -Q 65535 -E > stdlog
-cli_res2=`grep "should_clear_0rtt_ticket, conn_err:14, clear_0rtt_ticket:1" stdlog`
+cli_res2=`grep "should_clear_0rtt_ticket, conn_err:85, clear_0rtt_ticket:1" stdlog`
 errlog=`grep_err_log`
 if [ -n "$cli_res2" ] && [ -n "$errlog" ]; then
     echo ">>>>>>>> pass:1"
@@ -5302,7 +5314,7 @@ fi
 
 # test 701: server reduces max_streams_bidi after first connection,
 # client detects reduction on 0-RTT resumption and closes with
-# TRANSPORT_PARAMETER_ERROR (0x0E = conn_err:14)
+# TRANSPORT_PARAMETER_ERROR (0x54 = conn_err:84)
 killall test_server 2> /dev/null
 clear_log
 rm -f test_session xqc_token tp_localhost
@@ -5313,7 +5325,7 @@ sleep 1
 ${CLIENT_BIN} -s 1024 -l d -t 1 -E > stdlog
 # second connection: 0-RTT with reduced max_streams_bidi on server
 ${CLIENT_BIN} -s 1024 -l d -t 1 -E > stdlog
-conn_err=`grep "conn_err:14" stdlog`
+conn_err=`grep "conn_err:84" stdlog`
 if [ -n "$conn_err" ]; then
     echo ">>>>>>>> pass:1"
     case_print_result "0RTT_param_reduction" "pass"
@@ -5608,15 +5620,15 @@ killall test_server 2> /dev/null
 rm -f h3_field_section_server.log
 
 
-# ── QUIC transport: stream reassembly cap (case IDs 705/706) ──────────────
-# 705 happy path: default cap, lossy echo transfer completes and the cap
+# ── QUIC transport: stream reassembly cap (case IDs 727/728) ──────────────
+# 727 happy path: default cap, lossy echo transfer completes and the cap
 # machinery stays quiet (no buffered-count rejections logged).
 killall test_server 2> /dev/null
 ${SERVER_BIN} -l d -e > /dev/null &
 sleep 1
 clear_log
 echo -e "stream reassembly cap happy path ...\c"
-result=`${CLIENT_BIN} -s 2048000 -l d -t 5 -E -d 300 -x 705|grep ">>>>>>>> pass:1"`
+result=`${CLIENT_BIN} -s 2048000 -l d -t 5 -E -d 300 -x 727|grep ">>>>>>>> pass:1"`
 cap_hit=`grep "stream frame buffered count exceed" slog`
 if [ -n "$result" ] && [ -z "$cap_hit" ]; then
     echo ">>>>>>>> pass:1"
@@ -5626,17 +5638,17 @@ else
     case_print_result "stream_reassembly_cap_happy" "fail"
 fi
 
-# 706 abnormal path: server shrinks the reassembly cap to 16 (-x 706), the
+# 728 abnormal path: server shrinks the reassembly cap to 16 (-x 728), the
 # client-side drop rate forces cap rejections; the transfer must STILL
 # complete byte-identically and the server engine must not report a packet
 # processing failure (the pre-fix behavior closed the whole connection with
 # FRAME_ENCODING_ERROR here).
 killall test_server 2> /dev/null
-${SERVER_BIN} -l d -e -x 706 > /dev/null &
+${SERVER_BIN} -l d -e -x 728 > /dev/null &
 sleep 1
 clear_log
 echo -e "stream reassembly cap pressure recovery ...\c"
-result=`${CLIENT_BIN} -s 65536 -l d -t 12 -E -d 150 -x 706|grep ">>>>>>>> pass:1"`
+result=`${CLIENT_BIN} -s 65536 -l d -t 12 -E -d 150 -x 728|grep ">>>>>>>> pass:1"`
 cap_hit=`grep "stream frame buffered count exceed" slog`
 fatal=`grep "fail to process packets" slog`
 if [ -n "$result" ] && [ -n "$cap_hit" ] && [ -z "$fatal" ]; then

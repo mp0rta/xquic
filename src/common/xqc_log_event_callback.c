@@ -79,12 +79,13 @@ xqc_log_CON_CONNECTION_CLOSED_callback(xqc_log_t *log, const char *func,
         }
         xqc_qlog_implement(
             log, CON_CONNECTION_CLOSED, func,
-            "|err_code:%d|mtu_updatad_count:%d|pkt_dropped:%d|recent_congestion:%s|",
-            conn->conn_err, conn->MTU_updated_count, conn->packet_dropped_count, log_buf);
+            "|err_code:%uL|mtu_updatad_count:%uD|pkt_dropped:%uL|recent_congestion:%s|",
+            XQC_CONN_ERR_CODE(conn->conn_err), conn->MTU_updated_count,
+            conn->packet_dropped_count, log_buf);
     } else {
         xqc_qlog_implement(log, CON_CONNECTION_CLOSED, func,
-                           "|err_code:%d|mtu_updatad_count:%d|pkt_dropped:%d|",
-                           conn->conn_err, conn->MTU_updated_count,
+                           "|err_code:%uL|mtu_updatad_count:%uD|pkt_dropped:%uL|",
+                           XQC_CONN_ERR_CODE(conn->conn_err), conn->MTU_updated_count,
                            conn->packet_dropped_count);
     }
 }
@@ -511,8 +512,10 @@ xqc_log_TRA_FRAMES_PROCESSED_callback(xqc_log_t *log, const char *func, ...)
 
     case XQC_FRAME_CONNECTION_CLOSE: {
         uint64_t err_code = va_arg(args, uint64_t);
-        xqc_qlog_implement(log, TRA_FRAMES_PROCESSED, func, "|type:%d|err_code:%ui|",
-                           frame_type, err_code);
+        uint64_t reason_len = va_arg(args, uint64_t);
+        xqc_qlog_implement(log, TRA_FRAMES_PROCESSED, func,
+                           "|type:%d|err_code:%ui|reason_len:%ui|",
+                           frame_type, err_code, reason_len);
         break;
     }
 

@@ -8,6 +8,7 @@
 #include "src/transport/xqc_engine.h"
 #include "src/http3/xqc_h3_conn.h"
 #include "src/http3/xqc_h3_ctx.h"
+#include "src/http3/qpack/xqc_qpack.h"
 #include "src/common/xqc_time.h"
 
 
@@ -400,7 +401,7 @@ xqc_h3_request_get_stats(xqc_h3_request_t *h3_request)
     /* try to update stats */
     xqc_h3_stream_update_stats(h3_request->h3_stream);
 
-    uint64_t conn_err = h3_request->h3_stream->h3c->conn->conn_err;
+    uint64_t conn_err = XQC_CONN_ERR_CODE(h3_request->h3_stream->h3c->conn->conn_err);
     stats.recv_body_size = h3_request->body_recvd;
     stats.send_body_size = h3_request->body_sent;
     stats.recv_header_size = h3_request->header_recvd;
@@ -830,7 +831,7 @@ xqc_h3_request_on_recv_header(xqc_h3_request_t *h3r)
     xqc_http_headers_t *headers;
     uint64_t fields_size;
 
-    if (h3r->current_header == 1) {
+    if (h3r->completed_header_count == 1) {
         /* notify data before trailer headers*/
         ret = xqc_h3_request_on_recv_body(h3r);
         if (ret != XQC_OK) {
@@ -840,7 +841,7 @@ xqc_h3_request_on_recv_header(xqc_h3_request_t *h3r)
     }
 
     /* header section and trailer section are all processed */
-    if (h3r->current_header >= XQC_H3_REQUEST_MAX_HEADERS_CNT) {
+    if (h3r->completed_header_count >= XQC_H3_REQUEST_MAX_HEADERS_CNT) {
         xqc_log(h3r->h3_stream->log, XQC_LOG_WARN,
                 "|headers count exceed 2|"
                 "stream_id:%ui|",
@@ -848,7 +849,7 @@ xqc_h3_request_on_recv_header(xqc_h3_request_t *h3r)
         return -XQC_H3_INVALID_HEADER;
     }
 
-    headers = &h3r->h3_header[h3r->current_header];
+    headers = &h3r->h3_header[h3r->completed_header_count];
 
     xqc_h3_request_header_end(h3r);
 
@@ -889,13 +890,50 @@ xqc_h3_request_on_recv_header(xqc_h3_request_t *h3r)
         }
     }
 
+    /*
+     * RFC 9114 Sections 4.2 and 4.3 define field-name and pseudo-header
+     * constraints at the HTTP layer. The QPACK layer is purposefully
+     * byte-transparent, so enforce those constraints at the H3 boundary.
+     */
+    xqc_bool_t regular_field_seen = XQC_FALSE;
+    for (size_t i = 0; i < headers->count; i++) {
+        xqc_http_header_t *hdr = &headers->headers[i];
+        xqc_bool_t is_pseudo = hdr->name.iov_len > 0
+            && *((unsigned char *)hdr->name.iov_base) == ':';
+
+        if (is_pseudo) {
+            if (regular_field_seen) {
+                xqc_log(h3r->h3_stream->log, XQC_LOG_ERROR,
+                        "|pseudo-header after regular field|conn:%p|"
+                        "stream_id:%ui|field_index:%uz|name_len:%uz|",
+                        h3r->h3_stream->h3c->conn,
+                        h3r->h3_stream->stream_id, i, hdr->name.iov_len);
+                return -XQC_H3_EMALFORMED_HEADER;
+            }
+
+        } else {
+            regular_field_seen = XQC_TRUE;
+        }
+
+        if (xqc_qpack_field_name_has_uppercase(hdr->name.iov_base,
+                                               hdr->name.iov_len))
+        {
+            xqc_log(h3r->h3_stream->log, XQC_LOG_ERROR,
+                    "|uppercase character in field name|conn:%p|"
+                    "stream_id:%ui|field_index:%uz|name_len:%uz|",
+                    h3r->h3_stream->h3c->conn, h3r->h3_stream->stream_id,
+                    i, hdr->name.iov_len);
+            return -XQC_H3_EMALFORMED_HEADER;
+        }
+    }
+
     /* set read flag */
-    h3r->read_flag |= hdr_type_2_flag[h3r->current_header];
+    h3r->read_flag |= hdr_type_2_flag[h3r->completed_header_count];
 
     h3r->header_recvd += headers->total_len;
 
     /* prepare to process next header */
-    h3r->current_header++;
+    h3r->completed_header_count++;
 
     /* header notify callback */
     if (h3r->request_if->h3_request_read_notify) {
@@ -993,12 +1031,12 @@ xqc_h3_stream_id(xqc_h3_request_t *h3_request)
 xqc_http_headers_t *
 xqc_h3_request_get_writing_headers(xqc_h3_request_t *h3r)
 {
-    if (h3r->current_header >= XQC_H3_REQUEST_MAX_HEADERS_CNT) {
+    if (h3r->completed_header_count >= XQC_H3_REQUEST_MAX_HEADERS_CNT) {
         return NULL;
     }
 
     xqc_h3_request_header_begin(h3r);
-    return &h3r->h3_header[h3r->current_header];
+    return &h3r->h3_header[h3r->completed_header_count];
 }
 
 #define XQC_H3_REQUEST_RECORD_TIME(a)    \

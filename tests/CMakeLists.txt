@@ -99,12 +99,15 @@ if(HAVE_CUNIT)
         ${UNIT_TEST_DIR}/xqc_recv_record_test.c
         ${UNIT_TEST_DIR}/xqc_reno_test.c
         ${UNIT_TEST_DIR}/xqc_cubic_test.c
+        ${UNIT_TEST_DIR}/xqc_bbr_test.c
         ${UNIT_TEST_DIR}/xqc_stream_frame_test.c
         ${UNIT_TEST_DIR}/xqc_process_frame_test.c
         ${UNIT_TEST_DIR}/xqc_tp_test.c
         ${UNIT_TEST_DIR}/xqc_tls_test.c
         ${UNIT_TEST_DIR}/xqc_crypto_test.c
         ${UNIT_TEST_DIR}/xqc_h3_test.c
+        ${UNIT_TEST_DIR}/xqc_hq_test.c
+        ${CMAKE_SOURCE_DIR}/demo/xqc_hq_request.c
         ${UNIT_TEST_DIR}/xqc_stable_test.c
         ${UNIT_TEST_DIR}/xqc_dtable_test.c
         ${UNIT_TEST_DIR}/utils/xqc_2d_hash_table_test.c
@@ -132,6 +135,7 @@ if(HAVE_CUNIT)
         ${UNIT_TEST_DIR}/xqc_send_ctl_test.c
         ${UNIT_TEST_DIR}/xqc_vn_test.c
         ${UNIT_TEST_DIR}/xqc_frame_type_bit_test.c
+        ${UNIT_TEST_DIR}/xqc_flow_ctl_test.c
     )
 
     if(XQC_ENABLE_FEC)

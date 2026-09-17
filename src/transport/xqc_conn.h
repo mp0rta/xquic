@@ -39,6 +39,16 @@
 
 #define XQC_MAX_RECV_WINDOW (16 * 1024 * 1024)
 
+/* RFC 9000: variable-length integer max value, used as flow control upper bound */
+#define XQC_MAX_FLOW_CONTROL_WINDOW (((uint64_t)1 << 62) - 1)
+
+/* clamp a flow control value to the RFC 9000 variable-length integer maximum */
+static inline uint64_t
+xqc_clamp_to_max_flow_ctl(uint64_t value)
+{
+    return value > XQC_MAX_FLOW_CONTROL_WINDOW ? XQC_MAX_FLOW_CONTROL_WINDOW : value;
+}
+
 #define XQC_MP_SETTINGS_STR_LEN (30)
 
 static const uint32_t MAX_RSP_CONN_CLOSE_CNT = 3;
@@ -57,18 +67,38 @@ static const uint32_t MAX_RSP_CONN_CLOSE_CNT = 3;
         }                                     \
     } while (0)
 
+/*
+ * RFC 9000 Section 16 limits QUIC variable-length integers to 62 bits.
+ * Reserve bit 63 internally so conn_err itself preserves whether the stored
+ * error belongs to the application namespace. Public and wire boundaries
+ * strip this bit before exposing the error code.
+ */
+#define XQC_CONN_ERR_APPLICATION_FLAG ((uint64_t) 1 << 63)
+#define XQC_CONN_ERR_CODE(err) \
+    ((uint64_t) (err) & ~XQC_CONN_ERR_APPLICATION_FLAG)
+#define XQC_CONN_ERR_IS_APPLICATION(err) \
+    (((uint64_t) (err) & XQC_CONN_ERR_APPLICATION_FLAG) != 0)
+#define XQC_CONN_ERR_ENCODE_APPLICATION(err) \
+    ((uint64_t) (err) | XQC_CONN_ERR_APPLICATION_FLAG)
+
 /* send CONNECTION_CLOSE with err */
-#define XQC_CONN_ERR(conn, err)                                                   \
+#define XQC_CONN_ERR_INTERNAL(conn, err)                                          \
     do {                                                                          \
-        if ((conn)->conn_err == 0) {                                              \
-            (conn)->conn_err = (err);                                             \
-            XQC_CONN_CLOSE_MSG(conn, "local error");                              \
-            (conn)->conn_flag |= XQC_CONN_FLAG_ERROR;                             \
-            xqc_conn_closing(conn);                                               \
+        if ((conn)->conn_err == 0) {                                             \
+            (conn)->conn_err = (err);                                            \
+            XQC_CONN_CLOSE_MSG(conn, "local error");                             \
+            (conn)->conn_flag |= XQC_CONN_FLAG_ERROR;                            \
+            xqc_conn_closing(conn);                                              \
             xqc_log((conn)->log, XQC_LOG_ERROR, "|conn:%p|err:0x%xi|%s|", (conn), \
-                    (uint64_t)(err), xqc_conn_addr_str(conn));                    \
+                    XQC_CONN_ERR_CODE(err), xqc_conn_addr_str(conn));            \
         }                                                                         \
     } while (0)
+
+#define XQC_CONN_ERR(conn, err)                     \
+    XQC_CONN_ERR_INTERNAL(conn, err)
+
+#define XQC_CONN_APP_ERR(conn, err)                 \
+    XQC_CONN_ERR_INTERNAL(conn, XQC_CONN_ERR_ENCODE_APPLICATION(err))
 
 extern xqc_conn_settings_t internal_default_conn_settings;
 extern const xqc_tls_callbacks_t xqc_conn_tls_cbs;
@@ -230,7 +260,7 @@ typedef struct {
     uint64_t no_crypto;
     uint64_t enable_multipath;
     xqc_multipath_version_t multipath_version;
-    uint16_t max_datagram_frame_size;
+    uint64_t max_datagram_frame_size;
     uint32_t conn_options[XQC_CO_MAX_NUM];
     uint8_t conn_option_num;
 
@@ -289,6 +319,8 @@ typedef struct {
     xqc_packet_number_t
         first_recv_pktno;           /* lowest packet number recv with each key phase */
     uint64_t enc_pkt_cnt;           /* number of packet encrypt with each key phase */
+    /* cached RFC 9001 Section 6.6 confidentiality limit */
+    uint64_t aead_confidentiality_limit;
     xqc_usec_t initiate_time_guard; /* time limit for initiating next key update */
 
 } xqc_key_update_ctx_t;
@@ -807,7 +839,7 @@ void xqc_conn_set_init_idle_timeout(xqc_connection_t *conn,
                                     xqc_msec_t init_idle_time_out);
 void xqc_conn_try_to_enable_pmtud(xqc_connection_t *conn);
 
-xqc_int_t xqc_conn_server_accept(xqc_connection_t *c);
+xqc_int_t xqc_conn_server_accept(xqc_connection_t *c, xqc_packet_in_t *packet_in);
 
 void xqc_conn_flush_or_defer(xqc_connection_t *conn);
 #endif /* _XQC_CONN_H_INCLUDED_ */
