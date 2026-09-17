@@ -192,5 +192,7 @@ jobs:
         SSL_LIB_PATH_STR="${PWD}/third_party/boringssl/build/libssl.a;${PWD}/third_party/boringssl/build/libcrypto.a"
         mkdir -p build
         cd build
-        cmake -DPLATFORM=mac -DSSL_TYPE=${SSL_TYPE_STR} -DSSL_PATH=${SSL_PATH_STR} -DSSL_INC_PATH=${SSL_INC_PATH_STR} -DSSL_LIB_PATH=${SSL_LIB_PATH_STR} ..
+        # -Wno-unknown-warning-option: CMakeLists.txt adds the GCC-only
+        # -Wno-dangling-pointer under -Werror, which clang rejects.
+        cmake -DPLATFORM=mac -DCMAKE_C_FLAGS="-Wno-unknown-warning-option" -DSSL_TYPE=${SSL_TYPE_STR} -DSSL_PATH=${SSL_PATH_STR} -DSSL_INC_PATH=${SSL_INC_PATH_STR} -DSSL_LIB_PATH=${SSL_LIB_PATH_STR} ..
         make -j
