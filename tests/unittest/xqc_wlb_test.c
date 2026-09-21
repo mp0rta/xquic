@@ -552,7 +552,7 @@ xqc_test_wlb_recovery_prefer_skips_initial_path_addition(void)
      * code finds in_recovery_grace=TRUE and pins this flow to path 1
      * unconditionally; the documented behaviour is that an initial path
      * addition is NOT a recovery event, so this flow should pin to the
-     * wide path (max LATE weight) via the normal WRR branch. */
+     * wide path (max weight) via the normal WRR branch. */
     uint32_t flow_new = 0xAAAA1111;
     uint64_t pin_new = wlb_test_invoke(&f, flow_new);
     CU_ASSERT_EQUAL(pin_new, 0 /* wide; spurious recovery_prefer ⇒ 1 */);

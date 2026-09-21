@@ -1728,9 +1728,8 @@ xqc_send_ctl_on_pmtud_ping_acked(xqc_send_ctl_t *send_ctl,
     }
 }
 
-/**
- * OnPacketAcked
- */
+/* Application payload bytes (DATAGRAM plus STREAM) carried by a packet; 0
+ * for a control-only packet. Saturates at UINT64_MAX. */
 static uint64_t
 xqc_send_ctl_app_payload_bytes(xqc_packet_out_t *packet_out)
 {
@@ -1757,6 +1756,9 @@ xqc_send_ctl_app_payload_bytes(xqc_packet_out_t *packet_out)
     return payload_bytes;
 }
 
+/**
+ * OnPacketAcked
+ */
 void
 xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl,
     xqc_packet_out_t *acked_packet, xqc_usec_t now, int do_cc)

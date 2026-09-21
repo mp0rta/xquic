@@ -3,17 +3,58 @@
  *
  * WLB (Weighted Load Balancing) multipath scheduler for QUIC Datagrams.
  *
- * Datagram packets belonging to the same inner flow
- * (identified by po_flow_hash) are pinned to the same QUIC path.  This
- * prevents TCP reordering inside VPN tunnels while still aggregating
- * bandwidth across paths via weighted round-robin of flows.
+ * WLB spreads DATAGRAM traffic across paths in proportion to what each
+ * path is measured to deliver, while keeping the datagrams of one inner TCP
+ * flow (identified by po_flow_hash) on one QUIC path.  This prevents TCP
+ * reordering inside VPN tunnels while still aggregating bandwidth across
+ * paths via weighted round-robin of flows.
+ *
+ * Packet classes (see xqc_wlb_scheduler_get_path):
+ *   - reinjected replica        -> MinRTT, origin path excluded.
+ *   - po_flow_hash == 0         -> MinRTT.  STREAM data and control
+ *     packets; for STREAM that is a measured choice, not an omission -- see
+ *     the rationale at that branch.
+ *   - po_flow_hash == UNPINNED  -> per-packet WRR, no flow table (inner
+ *     UDP/QUIC).
+ *   - any other po_flow_hash    -> flow table lookup; a miss is placed by
+ *     WRR and pinned (inner TCP).
  *
  * Algorithm:
- *   1. Learn acknowledged goodput for every eligible path.
- *   2. Normalize goodput with warm-up and exploration floors.
- *   3. Distribute packets with smooth weighted round robin.
- *   4. Pin inner flows to paths via hash table to prevent TCP reordering.
- *   5. If no path can send (all cwnd-blocked), fall back to MinRTT.
+ *   1. Learn acknowledged application goodput for every schedulable path,
+ *      sampled over wall clock (xqc_wlb_scheduler_on_app_packet_acked,
+ *      wlb_compute_goodput_weight).
+ *   2. Turn goodput into a raw weight: credit the congestion controller's
+ *      bandwidth estimate while the path is app-limited (under-fed, not
+ *      slow), then discount for recent loss and for a standing queue (srtt
+ *      well above min_rtt).
+ *   3. Normalize raw weights into quanta summing to WLB_QUANTUM_TOTAL, with
+ *      a floor per path -- WLB_WARMUP_FLOOR_PCT while warming up,
+ *      WLB_STEADY_FLOOR_PCT afterwards -- so a new or recovering path always
+ *      carries enough payload to be measured (wlb_normalize_weights).
+ *   4. Distribute packets with smooth weighted round robin (wlb_wrr_select).
+ *      Weights are recomputed at round boundaries (wlb_start_round) and
+ *      immediately when the set of schedulable paths changes.
+ *   5. Pin inner TCP flows to paths via hash table to prevent TCP
+ *      reordering.  The pin target comes from a second smooth WRR over the
+ *      same weights that ignores cwnd (wlb_pick_pin_path), so the packet
+ *      that creates a pin may itself leave on a different path.
+ *   6. If every schedulable path is cwnd-blocked, return no path and report
+ *      cc_blocked.  MinRTT is NOT the fallback for that case: it serves the
+ *      packet classes above, and hashed packets only when WRR has no
+ *      schedulable path at all.
+ *
+ * Path eviction and recovery:
+ *   A path that is not ACTIVE, is FROZEN, has a socket error, or has reached
+ *   WLB_PTO_EVICT_THRESH consecutive PTOs (blackholed) is not schedulable:
+ *   it leaves the WRR set and pins to it are dropped.  Flows are also moved
+ *   off a path whose recent loss reaches WLB_LOSS_EVICT_THRESH
+ *   (wlb_flow_expire).  A blackholed path is handed nothing that could be
+ *   ACKed, so one DATAGRAM per WLB_EVICTED_PROBE_INTERVAL_US is sent on it
+ *   as a probe (wlb_pick_evicted_probe).  When a path returns after a loss,
+ *   every pin is wiped and, for WLB_RECOVERY_UNPIN_GRACE_US, existing pins
+ *   are not honoured: each packet re-pins its flow, onto the returned path
+ *   when that path can send.  The wipe is gated on ever_lost_path so that a
+ *   secondary path coming up during initial setup does not trigger it.
  *
  * Soft pinning (cwnd-blocked spillover):
  *   When a flow's pinned path is temporarily cwnd-blocked, the packet is
@@ -32,13 +73,16 @@
  *       flowing during loss events where a path may be blocked for
  *       extended periods.
  *
- *   Measured impact: ~4% throughput overhead with 1 TCP stream over
- *   asymmetric paths (300Mbit/10ms + 80Mbit/30ms) vs single-path.
- *   With 8+ streams the overhead disappears and aggregation gains
- *   dominate (+15-23%).
+ *   Measured impact (2026-02, under the model-derived weights this
+ *   scheduler used before goodput learning; not re-measured since): ~4%
+ *   throughput overhead with 1 TCP stream over asymmetric paths
+ *   (300Mbit/10ms + 80Mbit/30ms) vs single-path.  With 8+ streams the
+ *   overhead disappears and aggregation gains dominate (+15-23%).
  *
  * References:
- *   - OLB: "Optimal Load Balancing", Computer Communications, 2017
+ *   - OLB: "Optimal Load Balancing", Computer Communications, 2017.
+ *     Origin of the round-based weighted distribution (weights held fixed
+ *     for a round); the weights themselves are now measured, not modelled.
  */
 
 #include "src/transport/scheduler/xqc_scheduler_wlb.h"
@@ -49,9 +93,10 @@
 
 /* ---------- constants ---------- */
 
-/* PR3 §4.3 Rev 4: WLB ceiling = defensive hard cap, not the legacy 8.
- * Embedded arrays in xqc_wlb_scheduler_t grow to ~8KB total — fine for the
- * heap-allocated scheduler struct, no longer relevant for stack frames. */
+/* WLB ceiling = the defensive hard cap on paths, not the legacy 8. Per-path
+ * state sized by it lives in the heap-allocated scheduler struct; anything
+ * of WLB_MAX_PATHS * sizeof(wlb_path_weight_t) must stay off the stack (see
+ * wlb_refresh_paths). */
 #define WLB_MAX_PATHS         XQC_PATH_HARD_CAP
 /* Flow table — open-addressing hash table for flow-to-path pinning */
 #define WLB_FLOW_TABLE_SIZE   4096
@@ -82,8 +127,9 @@
 
 /*
  * Tombstone marker for deleted flow table entries.
- * Using 0xFFFFFFFF which equals WLB_FLOW_HASH_UNPINNED — safe because
- * unpinned packets never enter the flow table (pin_flow == false).
+ * Using 0xFFFFFFFF which equals WLB_FLOW_HASH_UNPINNED (defined next to
+ * xqc_wlb_scheduler_get_path) — safe because unpinned packets never enter
+ * the flow table (pin_flow == false).
  *
  * Semantics:  hash == 0          → empty slot (end of probe chain)
  *             hash == TOMBSTONE  → deleted slot (continue probing)
@@ -126,7 +172,7 @@ typedef struct {
     int                  last_healthy_paths; /* for recovery-triggered rebalance */
     uint64_t             last_healthy_path_ids[WLB_MAX_PATHS];
     int                  last_healthy_path_ids_n;
-    int                  force_refresh_paths; /* refresh WRR cache on recovery */
+    int                  force_refresh_paths; /* path set changed: rebuild WRR cache */
     uint64_t             recovery_unpin_until_us; /* temporarily disable TCP pinning after recovery */
     uint64_t             recovery_prefer_path_id; /* newly recovered path to prefer for first re-pin */
     uint64_t             last_evicted_probe_us;
@@ -223,14 +269,23 @@ wlb_flow_insert(xqc_wlb_scheduler_t *s, uint32_t hash, uint64_t path_id, uint64_
 }
 
 /**
- * Expire idle flow entries and evict flows from lossy or dead paths.
+ * Once-a-second housekeeping for pinned traffic: detect path loss and
+ * recovery, then expire idle flow entries and evict flows from lossy or
+ * unusable paths.
  *
  * Scans the full table at most once per second to amortize cost.
  * Uses tombstones (not zero) to preserve open-addressing probe chains.
  *
+ * Recovery detection compares the healthy path set with the previous
+ * sweep's.  It only raises flags (force_refresh_paths, the recovery grace
+ * window and the preferred path); s->paths is rebuilt by the caller.
+ *
  * Eviction triggers:
+ *   0. A path returned after a loss (has_new_path): every entry is wiped so
+ *      flows can re-pin onto the restored capacity
  *   1. Idle for > 60 seconds
- *   2. Pinned path is no longer active (removed/frozen)
+ *   2. Pinned path is no longer schedulable: removed, not ACTIVE, frozen,
+ *      socket error, or blackholed (>= WLB_PTO_EVICT_THRESH PTOs)
  *   3. Pinned path loss >= 2% (BBR2+ loss_thresh)
  */
 static void
@@ -322,7 +377,8 @@ wlb_flow_expire(xqc_wlb_scheduler_t *s, uint64_t now_us, xqc_connection_t *conn)
     /* Detect path-count increase independently of ever_lost_path. We always
      * want s->paths to reflect the current active set so wlb_pick_pin_path's
      * RR distribution can include newly-added paths. The wipe/grace behavior
-     * (below) remains gated on ever_lost_path to preserve Fix A's intent. */
+     * (below) remains gated on ever_lost_path, so initial multi-path setup
+     * never wipes freshly-established pins. */
     xqc_bool_t path_count_increased =
         (s->last_healthy_paths > 0 && active_healthy_paths > s->last_healthy_paths);
 
@@ -337,14 +393,20 @@ wlb_flow_expire(xqc_wlb_scheduler_t *s, uint64_t now_us, xqc_connection_t *conn)
     }
 
     if (path_count_increased) {
-        /* Always refresh s->paths on new-path detection — required so
-         * wlb_pick_pin_path's max-deficit branch sees the new path
-         * (otherwise s->n_paths stays stale and the single-path fast
-         * path keeps firing). NOT gated on ever_lost_path. */
+        /* Always refresh s->paths on new-path detection, so wlb_pick_pin_path
+         * sees the new path and the single-path fast path stops firing. NOT
+         * gated on ever_lost_path. The per-packet
+         * wlb_active_paths_match_cache check in xqc_wlb_scheduler_get_path
+         * now catches the same change (and constant-count replacement,
+         * which this count test cannot), so this is no longer what keeps
+         * s->n_paths fresh; it stays as the explicit statement that a path
+         * addition always refreshes. */
         s->force_refresh_paths = 1;
     }
     if (has_new_path) {
-        /* Wipe + grace behavior unchanged: only on real recovery (Fix A). */
+        /* Wipe + grace only on real recovery, i.e. once ever_lost_path is
+         * set: a secondary path coming up during initial setup must not
+         * wipe fresh pins. */
         s->recovery_unpin_until_us = now_us + WLB_RECOVERY_UNPIN_GRACE_US;
     }
 
@@ -390,7 +452,8 @@ wlb_flow_expire(xqc_wlb_scheduler_t *s, uint64_t now_us, xqc_connection_t *conn)
         /* Check pinned path status */
         xqc_path_ctx_t *path = wlb_find_path_ctx(conn, e->path_id);
         if (!path) {
-            /* Path removed or frozen → evict immediately */
+            /* Path gone or no longer schedulable (wlb_path_schedulable)
+             * → evict immediately */
             e->hash = WLB_FLOW_TOMBSTONE;
             continue;
         }
@@ -405,16 +468,12 @@ wlb_flow_expire(xqc_wlb_scheduler_t *s, uint64_t now_us, xqc_connection_t *conn)
 
 /* ---------- path helpers ---------- */
 
-/** Find a schedulable path context by path_id.
- *
- * Treat repeated-PTO paths as temporarily unavailable for app-data scheduling.
- * A blackholed path can remain ACTIVE without socket error, which otherwise
- * causes WLB to keep selecting it and stall throughput after link-down.
- */
 /* Transport liveness only: the path exists and its socket works. Says
  * nothing about whether it is currently delivering. Both the scheduling
  * predicate and the recovery-probe picker build on this, so a new
- * disqualifier added here cannot be missed by one of them. */
+ * disqualifier added here cannot be missed by one of them. It CAN be missed
+ * by wlb_flow_expire's healthy-path scan and by wlb_minrtt_fallback, which
+ * still spell the same conditions out inline -- add it there as well. */
 static xqc_bool_t
 wlb_path_transport_ok(xqc_path_ctx_t *path)
 {
@@ -438,6 +497,14 @@ wlb_path_schedulable(xqc_path_ctx_t *path)
     return wlb_path_transport_ok(path) && !wlb_path_blackholed(path);
 }
 
+/**
+ * Find a schedulable path context by path_id; NULL if the path is gone or
+ * not schedulable.
+ *
+ * Treat repeated-PTO paths as temporarily unavailable for app-data scheduling.
+ * A blackholed path can remain ACTIVE without socket error, which otherwise
+ * causes WLB to keep selecting it and stall throughput after link-down.
+ */
 static xqc_path_ctx_t *
 wlb_find_path_ctx(xqc_connection_t *conn, uint64_t path_id)
 {
@@ -535,9 +602,9 @@ wlb_compute_goodput_weight(wlb_path_weight_t *entry, xqc_path_ctx_t *path,
          * closes the loop the plain goodput weight leaves open: less
          * traffic -> queue drains -> srtt recovers -> weight returns. The
          * steady floor keeps probing the path meanwhile. min_rtt == 0
-         * (zeroed test fixtures) and the pre-first-sample
-         * XQC_MAX_UINT32_VALUE sentinel both fail srtt > 2*min_rtt and skip
-         * the haircut. */
+         * (zeroed test fixtures) is excluded by the bloat_min > 0 guard and
+         * the pre-first-sample XQC_MAX_UINT32_VALUE sentinel fails
+         * srtt > 2*min_rtt, so both skip the haircut. */
         xqc_usec_t bloat_srtt = xqc_send_ctl_get_srtt(ctl);
         xqc_usec_t bloat_min = ctl->ctl_minrtt;
         if (bloat_min > 0 && bloat_srtt > 2 * bloat_min) {
@@ -577,7 +644,9 @@ wlb_compute_goodput_weight(wlb_path_weight_t *entry, xqc_path_ctx_t *path,
  *
  *  Smooth deficit-counter WRR. Each opportunity adds the normalized
  *  quantum to every sendable path. The selected path subtracts the total
- *  sendable quantum. Goodput weights are refreshed every 100 opportunities.
+ *  sendable quantum. Goodput weights are refreshed at round boundaries --
+ *  every max(WLB_QUANTUM_TOTAL, n_paths) payload opportunities, see
+ *  wlb_start_round -- and whenever the schedulable path set changes.
  * ================================================================ */
 
 /**
@@ -702,8 +771,8 @@ wlb_refresh_paths(xqc_wlb_scheduler_t *s, xqc_connection_t *conn)
     xqc_path_ctx_t  *path;
 
     /* Save old delivery and warm-up state for retained paths.
-     * PR3 §4.3 Rev 4: heap-alloc to keep stack frame small under HARD_CAP=256
-     * (would otherwise be ~6KB stack). */
+     * Heap-alloc the copy: at WLB_MAX_PATHS entries it is far too large for
+     * a stack frame. */
     int old_n = s->n_paths;
     wlb_path_weight_t *old = NULL;
     if (old_n > 0) {
@@ -754,7 +823,8 @@ wlb_refresh_paths(xqc_wlb_scheduler_t *s, xqc_connection_t *conn)
 }
 
 /**
- * Check if all paths have exhausted their deficit (round complete).
+ * True once the round's payload opportunities are used up (see
+ * wlb_start_round); the next hashed packet then refreshes the weights.
  */
 static xqc_bool_t
 wlb_needs_new_round(xqc_wlb_scheduler_t *s)
@@ -875,8 +945,9 @@ wlb_wrr_select(xqc_wlb_scheduler_t *s, xqc_connection_t *conn,
 /* ================================================================
  *  MinRTT fallback
  *
- *  Used for every packet without a flow hash -- STREAM data and control
- *  packets alike -- and when WRR has no active paths. Selects the path with
+ *  Used for reinjected replicas (origin path excluded), for every packet
+ *  without a flow hash -- STREAM data and control packets alike -- and when
+ *  WRR has no schedulable paths. Selects the path with
  *  the lowest SRTT that has cwnd headroom, spilling to the next one as each
  *  fills its cwnd. See xqc_wlb_scheduler_get_path for why STREAM belongs
  *  here.
@@ -1075,6 +1146,7 @@ wlb_pick_evicted_probe(xqc_wlb_scheduler_t *s, xqc_connection_t *conn,
 /**
  * Main scheduling entry point.
  *
+ * 0. reinject (any flow hash)                  → MinRTT, origin path excluded.
  * 1. po_flow_hash == 0 (STREAM data, control) → MinRTT fallback.
  * 2. po_flow_hash == UNPINNED (UDP/QUIC)      → WRR without flow table.
  * 3. Otherwise (TCP datagrams)                → flow table lookup + WRR with pinning.
@@ -1269,10 +1341,10 @@ xqc_wlb_scheduler_get_path(void *scheduler,
         if (path && xqc_scheduler_check_path_can_send(path, packet_out, check_cwnd)) {
             /* Single-path period: do NOT pin. Once the secondary path appears
              * in s->paths, the next packet of this flow misses the flow-table
-             * lookup and goes through wlb_pick_pin_path's max-deficit branch
-             * for proper distribution. Pinning here would lock all early
-             * flows to paths[0] permanently (Fix A prevents the wipe that
-             * would otherwise rescue them). */
+             * lookup and goes through wlb_pick_pin_path for weighted
+             * distribution. Pinning here would lock all early flows to
+             * paths[0] permanently (the ever_lost_path gate withholds the
+             * wipe that would otherwise rescue them). */
             wlb_note_payload_activity(s, path->path_id, now_us, XQC_TRUE);
             return path;
         }
