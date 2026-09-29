@@ -88,10 +88,10 @@ knowledge_base:
         mp0rta/mqvpn is this fork's primary consumer: a multipath QUIC VPN
         that pins this repo as submodule third_party/xquic at a commit on
         mqvpn-main and links libxquic as a shared library. Its default branch
-        is main; active work lands on dev, so the PR body names
-        mp0rta/mqvpn@dev (or a companion PR) as the baseline. mqvpn includes
-        only the public headers xquic/xquic.h, xquic/xqc_http3.h and
-        xquic/xquic_typedef.h, plus one private header:
+        is main, where fixes, features and xquic pin bumps land, so the PR
+        body names mp0rta/mqvpn@main (or a companion PR) as the baseline.
+        mqvpn includes only the public headers xquic/xquic.h,
+        xquic/xqc_http3.h and xquic/xquic_typedef.h, plus one private header:
         src/transport/xqc_multipath.h in tests/test_xquic_abi_pin.c, which
         pins every xqc_path_state_t enumerator by value. Grep mqvpn's src/
         and tests/ for any symbol this PR touches. Fork-only surface mqvpn
