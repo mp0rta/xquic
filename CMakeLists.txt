@@ -20,6 +20,7 @@ option (XQC_ENABLE_XOR "enable fec scheme xor" OFF)
 option (XQC_ENABLE_RSC "enable fec scheme reed-solomon code" OFF)
 option (XQC_ENABLE_PKM "enable fec scheme packet mask" OFF)
 option (XQC_PING_ATTACK_PROTECT "enable ping attack protection" OFF)
+option (XQC_ENABLE_TEST_HOOKS "compile test-only hooks such as xqc_stream_create_with_id" OFF)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
@@ -161,6 +162,11 @@ endif()
 # sendmmsg
 if(XQC_SUPPORT_SENDMMSG_BUILD)
     add_definitions(-DXQC_SUPPORT_SENDMMSG)
+endif()
+
+# test-only hooks (xqc_stream_create_with_id, xqc_conn_implicit_stream_count)
+if(XQC_ENABLE_TEST_HOOKS)
+    add_definitions(-DXQC_ENABLE_TEST_HOOKS)
 endif()
 
 # coverity

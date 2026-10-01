@@ -149,6 +149,7 @@ configure_project()
     local cmake_args=(
         "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}"
         "-DXQC_ENABLE_TESTING=ON"
+        "-DXQC_ENABLE_TEST_HOOKS=ON"
         "-DXQC_ENABLE_MOQ=OFF"
         "-DXQC_ENABLE_BBR2=ON"
         "-DXQC_ENABLE_COPA=ON"

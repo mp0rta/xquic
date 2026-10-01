@@ -350,6 +350,9 @@ struct xqc_connection_s {
     uint64_t cur_stream_id_uni_local;
     int64_t max_stream_id_bidi_remote;
     int64_t max_stream_id_uni_remote;
+    /* passive_streams_hash entries held for skipped peer ids that no stream
+     * was created for; bounded by conn_settings.max_implicit_streams */
+    uint64_t implicit_stream_count;
 
     xqc_trans_settings_t local_settings;
     xqc_trans_settings_t remote_settings;

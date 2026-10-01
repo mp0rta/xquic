@@ -318,6 +318,9 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
      * server that asked for deferral silently keeps flushing on every send.
      * tests/unittest/xqc_set_conn_settings_test.c pins it. */
     engine->default_conn_settings.defer_send_flush = settings->defer_send_flush;
+    /* same reason: 0 here becomes the default in xqc_conn_create() */
+    engine->default_conn_settings.max_implicit_streams =
+        settings->max_implicit_streams;
 
 #ifdef XQC_ENABLE_FEC
     engine->default_conn_settings.enable_encode_fec = settings->enable_encode_fec;
@@ -880,6 +883,10 @@ xqc_conn_create(xqc_engine_t *engine, xqc_cid_t *dcid, xqc_cid_t *scid,
 
     if (xc->conn_settings.max_ack_delay == 0) {
         xc->conn_settings.max_ack_delay = XQC_DEFAULT_MAX_ACK_DELAY;
+    }
+
+    if (xc->conn_settings.max_implicit_streams == 0) {
+        xc->conn_settings.max_implicit_streams = XQC_DEFAULT_MAX_IMPLICIT_STREAMS;
     }
     xc->conn_settings.max_ack_delay =
         xqc_min(xc->conn_settings.max_ack_delay, XQC_DEFAULT_MAX_ACK_DELAY);

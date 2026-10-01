@@ -10,6 +10,7 @@
 #include "src/transport/xqc_stream.h"
 #include "src/transport/xqc_defs.h"
 #include "src/transport/xqc_packet_in.h"
+#include "src/common/xqc_id_hash.h"
 #include <xquic/xqc_errno.h>
 #include "xqc_common_test.h"
 
@@ -752,3 +753,125 @@ xqc_test_stream_frame_prefix_respects_hard_cap()
 
     xqc_engine_destroy(conn->engine);
 }
+
+
+/* Implicit-stream cap (max_implicit_streams). A peer stream id inserts a
+ * passive-hash entry for every skipped id below it; the cap bounds the
+ * entries currently held for ids no stream was created for. These run on
+ * the client test connection, so the peer-initiated ids are server-bidi. */
+#define TEST_SVR_BID(sid) ((xqc_stream_id_t)(sid) << 2 | XQC_SVR_BID)
+
+static xqc_connection_t *
+test_implicit_conn(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    /* receive credit far above anything used here, so neither the
+     * MAX_STREAMS limit nor its auto-increase interferes */
+    conn->conn_flow_ctl.fc_max_streams_bidi_can_recv = (uint64_t)1 << 40;
+    return conn;
+}
+
+/* sparse ids: the cap is reached exactly, the next gap entry is refused with
+ * TRA_STREAM_LIMIT_ERROR before the max remote id advances */
+void
+xqc_test_stream_implicit_cap_sparse(void)
+{
+    xqc_connection_t *conn = test_implicit_conn();
+    CU_ASSERT_EQUAL(conn->conn_settings.max_implicit_streams, 16384);
+    CU_ASSERT_EQUAL(conn->implicit_stream_count, 0);
+
+    /* sid 16384 skips 0..16383: exactly the cap, accepted */
+    xqc_stream_t *s = xqc_passive_create_stream(conn, TEST_SVR_BID(16384), NULL);
+    CU_ASSERT_PTR_NOT_NULL(s);
+    CU_ASSERT_EQUAL(conn->implicit_stream_count, 16384);
+    CU_ASSERT_EQUAL(conn->max_stream_id_bidi_remote, 16384);
+
+    /* claiming a skipped id releases its entry from the count; destroying
+     * that stream later does not count it twice */
+    s = xqc_passive_create_stream(conn, TEST_SVR_BID(7), NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(s);
+    CU_ASSERT_EQUAL(conn->implicit_stream_count, 16383);
+    xqc_destroy_stream(s);
+    CU_ASSERT_EQUAL(conn->implicit_stream_count, 16383);
+
+    /* sid 16386 skips 16385 → 16384 live, still at the cap */
+    s = xqc_passive_create_stream(conn, TEST_SVR_BID(16386), NULL);
+    CU_ASSERT_PTR_NOT_NULL(s);
+    CU_ASSERT_EQUAL(conn->implicit_stream_count, 16384);
+
+    /* one more gap entry would exceed it */
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    s = xqc_passive_create_stream(conn, TEST_SVR_BID(16388), NULL);
+    CU_ASSERT_PTR_NULL(s);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_STREAM_LIMIT_ERROR);
+    CU_ASSERT_EQUAL(conn->max_stream_id_bidi_remote, 16386);
+    CU_ASSERT_EQUAL(conn->implicit_stream_count, 16384);
+    CU_ASSERT_PTR_NULL(xqc_find_stream_by_id(TEST_SVR_BID(16388), conn->streams_hash));
+    CU_ASSERT_PTR_NULL(xqc_id_hash_find(conn->passive_streams_hash, TEST_SVR_BID(16387)));
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* dense ids, opened slightly out of order and torn down: the count tracks
+ * live entries, not a cumulative total, so more than 16384 gap entries over
+ * the connection's life never trip it */
+void
+xqc_test_stream_implicit_cap_dense(void)
+{
+    xqc_connection_t *conn = test_implicit_conn();
+    const uint64_t triples = 8200; /* 24600 streams, 16400 gap entries in total */
+
+    for (uint64_t k = 0; k < triples; k++) {
+        xqc_stream_t *c = xqc_passive_create_stream(conn, TEST_SVR_BID(3 * k + 2), NULL);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(c);
+        CU_ASSERT_EQUAL(conn->implicit_stream_count, 2);
+        xqc_stream_t *a = xqc_passive_create_stream(conn, TEST_SVR_BID(3 * k), NULL);
+        xqc_stream_t *b = xqc_passive_create_stream(conn, TEST_SVR_BID(3 * k + 1), NULL);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(a);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(b);
+        CU_ASSERT_EQUAL(conn->implicit_stream_count, 0);
+        xqc_destroy_stream(a);
+        xqc_destroy_stream(b);
+        xqc_destroy_stream(c);
+    }
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    CU_ASSERT_EQUAL(conn->implicit_stream_count, 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+#ifdef XQC_ENABLE_TEST_HOOKS
+/* the test hooks: a client-bidi stream with a caller-chosen id, and the
+ * live implicit-entry count */
+void
+xqc_test_stream_create_with_id(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->conn_flow_ctl.fc_max_streams_bidi_can_send = 100000;
+    const xqc_cid_t *cid = &conn->scid_set.user_scid;
+
+    xqc_stream_t *s = xqc_stream_create_with_id(conn->engine, cid, 4000, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(s);
+    CU_ASSERT_EQUAL(s->stream_id, 4000);
+    CU_ASSERT_EQUAL(conn->cur_stream_id_bidi_local, 1001);
+
+    /* not client-bidi, below the next local id, beyond peer credit */
+    CU_ASSERT_PTR_NULL(xqc_stream_create_with_id(conn->engine, cid, 4005, NULL));
+    CU_ASSERT_PTR_NULL(xqc_stream_create_with_id(conn->engine, cid, 4000, NULL));
+    CU_ASSERT_PTR_NULL(xqc_stream_create_with_id(conn->engine, cid, 100000 * 4, NULL));
+    CU_ASSERT_EQUAL(conn->cur_stream_id_bidi_local, 1001);
+
+    /* ordinary numbering continues after the chosen id */
+    s = xqc_stream_create(conn->engine, cid, NULL, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(s);
+    CU_ASSERT_EQUAL(s->stream_id, 4004);
+
+    conn->implicit_stream_count = 42;
+    CU_ASSERT_EQUAL(xqc_conn_implicit_stream_count(conn->engine, cid), 42);
+    conn->implicit_stream_count = 0;
+
+    xqc_engine_destroy(conn->engine);
+}
+#endif

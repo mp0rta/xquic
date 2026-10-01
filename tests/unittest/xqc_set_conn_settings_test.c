@@ -63,6 +63,7 @@ xqc_test_server_set_conn_settings_propagation(void)
     in.init_max_path_id = 16;            /* non-zero → wins over default */
     in.max_path_id_grant_max_value = 32; /* direct copy */
     in.defer_send_flush = 1;             /* direct copy */
+    in.max_implicit_streams = 1000;      /* direct copy */
 
     /* mqvpn_build_conn_settings() runs mqvpn_apply_scheduler() and
      * mqvpn_apply_reinjection() unconditionally, so a server's input always
@@ -102,6 +103,7 @@ xqc_test_server_set_conn_settings_propagation(void)
      * — the client path assigns the whole struct so it cannot notice, and a
      * downstream builder test only proves the input side. */
     CU_ASSERT_EQUAL(e->default_conn_settings.defer_send_flush, 1);
+    CU_ASSERT_EQUAL(e->default_conn_settings.max_implicit_streams, 1000);
 
     /* Scheduler / reinjection: the copy lines these pin are the ones whose
      * silent loss costs the most (default scheduler instead of WLB). */

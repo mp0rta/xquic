@@ -148,6 +148,11 @@ main(int argc, char *argv[])
                 || !CU_add_test(pSuite, "xqc_test_stream_frame_cap_liveness_real", xqc_test_stream_frame_cap_liveness_real)
                 || !CU_add_test(pSuite, "xqc_test_stream_frame_fin_repair_skips_discarded", xqc_test_stream_frame_fin_repair_skips_discarded)
                 || !CU_add_test(pSuite, "xqc_test_stream_frame_cap_setting", xqc_test_stream_frame_cap_setting)
+        || !CU_add_test(pSuite, "xqc_test_stream_implicit_cap_sparse", xqc_test_stream_implicit_cap_sparse)
+        || !CU_add_test(pSuite, "xqc_test_stream_implicit_cap_dense", xqc_test_stream_implicit_cap_dense)
+#ifdef XQC_ENABLE_TEST_HOOKS
+        || !CU_add_test(pSuite, "xqc_test_stream_create_with_id", xqc_test_stream_create_with_id)
+#endif
         || !CU_add_test(pSuite, "xqc_test_process_frame", xqc_test_process_frame)
         || !CU_add_test(pSuite, "xqc_test_parse_padding_frame", xqc_test_parse_padding_frame)
         || !CU_add_test(pSuite, "xqc_test_large_ack_frame", xqc_test_large_ack_frame)

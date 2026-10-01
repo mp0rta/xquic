@@ -615,6 +615,38 @@ xqc_stream_create(xqc_engine_t *engine, const xqc_cid_t *cid,
     return stream;
 }
 
+#ifdef XQC_ENABLE_TEST_HOOKS
+xqc_stream_t *
+xqc_stream_create_with_id(xqc_engine_t *engine, const xqc_cid_t *cid,
+                          xqc_stream_id_t stream_id, void *user_data)
+{
+    xqc_connection_t *conn = xqc_engine_conns_hash_find(engine, cid, 's');
+    if (!conn || xqc_conn_get_type(conn) != XQC_CONN_TYPE_CLIENT
+        || xqc_get_stream_type(stream_id) != XQC_CLI_BID
+        || (stream_id >> 2u) < conn->cur_stream_id_bidi_local)
+    {
+        return NULL;
+    }
+
+    /* xqc_gen_stream_id() hands out cur_stream_id_bidi_local, so point it
+     * at the chosen id; the ordinary path then does the credit check */
+    uint64_t saved = conn->cur_stream_id_bidi_local;
+    conn->cur_stream_id_bidi_local = stream_id >> 2u;
+    xqc_stream_t *stream = xqc_stream_create(engine, cid, NULL, user_data);
+    if (!stream) {
+        conn->cur_stream_id_bidi_local = saved;
+    }
+    return stream;
+}
+
+uint64_t
+xqc_conn_implicit_stream_count(xqc_engine_t *engine, const xqc_cid_t *cid)
+{
+    xqc_connection_t *conn = xqc_engine_conns_hash_find(engine, cid, 's');
+    return conn ? conn->implicit_stream_count : 0;
+}
+#endif
+
 xqc_stream_t *
 xqc_stream_create_with_direction(xqc_connection_t *conn, xqc_stream_direction_t dir,
                                  void *user_data)
@@ -1059,12 +1091,36 @@ xqc_insert_passive_stream_hash(xqc_connection_t *conn, int64_t cur_max_sid,
                                xqc_stream_id_t stream_id)
 {
     xqc_stream_type_t type = xqc_get_stream_type(stream_id);
-    for (int64_t sid = cur_max_sid + 1; sid <= (stream_id >> 2u); ++sid) {
+    int64_t new_sid = (int64_t)(stream_id >> 2u);
+
+    /* Every id strictly between cur_max_sid and new_sid is implicitly
+     * opened: its entry is held although no stream exists for it. Bound
+     * those live entries before inserting any (the new id's own entry is
+     * not counted; its stream is created right after). */
+    uint64_t gaps = (uint64_t)(new_sid - cur_max_sid - 1);
+    if (gaps > conn->conn_settings.max_implicit_streams
+        || conn->implicit_stream_count
+           > conn->conn_settings.max_implicit_streams - gaps)
+    {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|exceed max_implicit_streams:%ui|live:%ui|new:%ui|stream_id:%ui|",
+                conn->conn_settings.max_implicit_streams,
+                conn->implicit_stream_count, gaps, stream_id);
+        XQC_CONN_ERR(conn, TRA_STREAM_LIMIT_ERROR);
+        return -XQC_EPROTO;
+    }
+
+    for (int64_t sid = cur_max_sid + 1; sid <= new_sid; ++sid) {
         xqc_id_hash_element_t e = {(uint64_t)sid << 2u | type, conn};
         if (xqc_id_hash_add(conn->passive_streams_hash, e)) {
             xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_id_hash_add error|stream_id:%ui|",
                     stream_id);
             XQC_CONN_ERR(conn, TRA_INTERNAL_ERROR);
+            return -XQC_EMALLOC;
+        }
+
+        if (sid < new_sid) {
+            conn->implicit_stream_count++;
         }
     }
     return XQC_OK;
@@ -1081,12 +1137,23 @@ xqc_passive_create_stream(xqc_connection_t *conn, xqc_stream_id_t stream_id,
     }
 
     int64_t sid = stream_id >> 2u;
+    xqc_bool_t claims_implicit = XQC_FALSE;
     if (xqc_stream_is_bidi(stream_id) && sid > conn->max_stream_id_bidi_remote) {
-        xqc_insert_passive_stream_hash(conn, conn->max_stream_id_bidi_remote, stream_id);
+        /* the insert may refuse (implicit-stream cap); honour it before
+         * the max remote id advances or a stream exists */
+        if (xqc_insert_passive_stream_hash(conn, conn->max_stream_id_bidi_remote,
+                                           stream_id) != XQC_OK)
+        {
+            return NULL;
+        }
         conn->max_stream_id_bidi_remote = sid;
 
     } else if (!xqc_stream_is_bidi(stream_id) && sid > conn->max_stream_id_uni_remote) {
-        xqc_insert_passive_stream_hash(conn, conn->max_stream_id_uni_remote, stream_id);
+        if (xqc_insert_passive_stream_hash(conn, conn->max_stream_id_uni_remote,
+                                           stream_id) != XQC_OK)
+        {
+            return NULL;
+        }
         conn->max_stream_id_uni_remote = sid;
 
     } else {
@@ -1096,6 +1163,9 @@ xqc_passive_create_stream(xqc_connection_t *conn, xqc_stream_id_t stream_id,
                     stream_id);
             return NULL;
         }
+        /* a skipped id is opened now: its entry stops being implicit once
+         * the stream exists (and is removed when that stream is destroyed) */
+        claims_implicit = XQC_TRUE;
     }
 
     xqc_stream_t *stream =
@@ -1105,6 +1175,10 @@ xqc_passive_create_stream(xqc_connection_t *conn, xqc_stream_id_t stream_id,
                 "|xqc_create_stream_with_conn error|stream_id:%ui|", stream_id);
         XQC_CONN_ERR(conn, TRA_INTERNAL_ERROR);
         return NULL;
+    }
+
+    if (claims_implicit) {
+        conn->implicit_stream_count--;
     }
 
     xqc_stream_type_t stream_type;

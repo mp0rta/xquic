@@ -1773,6 +1773,16 @@ typedef struct xqc_conn_settings_s {
      * — libxquic currently carries no SOVERSION.
      */
     uint8_t                     defer_send_flush;
+
+    /**
+     * Cap on implicitly opened stream ids. A peer stream id makes the
+     * connection keep an entry for every lower id it skipped; this bounds
+     * the entries currently held for ids no stream was created for (the
+     * count drops again when such an id is opened). Exceeding it closes the
+     * connection with TRA_STREAM_LIMIT_ERROR. 0 means the default, 16384.
+     * Same ABI caveat as defer_send_flush: appending enlarges the struct.
+     */
+    uint64_t                    max_implicit_streams;
 } xqc_conn_settings_t;
 
 
@@ -2265,6 +2275,25 @@ void xqc_conn_set_public_remote_trans_settings(
 XQC_EXPORT_PUBLIC_API
 xqc_stream_t *xqc_stream_create(xqc_engine_t *engine, const xqc_cid_t *cid,
                                 xqc_stream_settings_t *settings, void *user_data);
+
+#ifdef XQC_ENABLE_TEST_HOOKS
+/**
+ * @brief Test only (-DXQC_ENABLE_TEST_HOOKS=ON). Create a client-initiated
+ * bidirectional stream with the given id instead of the next sequential
+ * one. The id must be client-bidi, not below the next local id and within
+ * the peer's stream credit; later ordinary streams continue after it.
+ */
+XQC_EXPORT_PUBLIC_API
+xqc_stream_t *xqc_stream_create_with_id(xqc_engine_t *engine, const xqc_cid_t *cid,
+                                        xqc_stream_id_t stream_id, void *user_data);
+
+/**
+ * @brief Test only. The connection's live count of implicitly opened
+ * stream ids (see max_implicit_streams); 0 when the connection is unknown.
+ */
+XQC_EXPORT_PUBLIC_API
+uint64_t xqc_conn_implicit_stream_count(xqc_engine_t *engine, const xqc_cid_t *cid);
+#endif
 
 XQC_EXPORT_PUBLIC_API
 xqc_stream_t *xqc_stream_create_with_direction(xqc_connection_t *conn,

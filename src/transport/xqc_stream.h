@@ -15,6 +15,9 @@
 #define XQC_UNDEFINE_STREAM_ID        XQC_MAX_UINT64_VALUE
 #define XQC_STREAM_TRANSPORT_STATE_SZ 128
 
+/* default cap on implicitly opened stream ids (max_implicit_streams) */
+#define XQC_DEFAULT_MAX_IMPLICIT_STREAMS 16384
+
 #define XQC_STREAM_CLOSE_MSG(stream, msg)         \
     do {                                          \
         if ((stream)->stream_close_msg == NULL) { \

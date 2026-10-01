@@ -18,5 +18,10 @@ void  xqc_test_stream_frame_dense_prefix_liveness();
 void  xqc_test_stream_frame_prefix_respects_hard_cap();
 void  xqc_test_stream_frame_fin_repair_skips_discarded();
 void  xqc_test_stream_frame_cap_setting();
+void  xqc_test_stream_implicit_cap_sparse(void);
+void  xqc_test_stream_implicit_cap_dense(void);
+#ifdef XQC_ENABLE_TEST_HOOKS
+void  xqc_test_stream_create_with_id(void);
+#endif
 
 #endif /* _XQC_STREAM_FRAME_TEST_H_INCLUDED_ */
