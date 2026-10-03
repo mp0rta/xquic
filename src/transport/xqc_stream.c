@@ -1721,6 +1721,14 @@ xqc_stream_send(xqc_stream_t *stream, unsigned char *send_data, size_t send_data
             }
         }
 
+        if (conn->conn_settings.max_stream_unsent_packets
+            && xqc_send_queue_get_unsent_packets_num(conn->conn_send_queue)
+                   >= conn->conn_settings.max_stream_unsent_packets)
+        {
+            ret = -XQC_EAGAIN;
+            goto do_buff;
+        }
+
         if (!xqc_send_queue_can_write(conn->conn_send_queue)) {
             conn->conn_send_queue->sndq_full = XQC_TRUE;
             xqc_log(conn->log, XQC_LOG_DEBUG,

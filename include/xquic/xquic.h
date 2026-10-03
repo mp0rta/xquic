@@ -1420,6 +1420,16 @@ typedef struct xqc_conn_settings_s {
      */
     uint64_t sndq_packets_used_max;
     /**
+     * Cap on packets that are framed but not yet sent, checked before a
+     * stream write frames more data. 0 (default) = no cap. At the cap,
+     * xqc_stream_send returns -XQC_EAGAIN; the stream stays on the write
+     * list and is notified on later engine passes as before. DATAGRAM
+     * writes are not gated. Stream flow control bounds what a stream has
+     * outstanding, sent or not, and must be large enough for throughput;
+     * this bounds the part of it that waits locally behind the pacer.
+     */
+    uint32_t max_stream_unsent_packets;
+    /**
      * Max buffered out-of-order STREAM frame nodes per stream (reassembly
      * cap, CWE-770 mitigation per RFC 9000 §21.7).
      *

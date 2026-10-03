@@ -984,3 +984,51 @@ xqc_test_alpn_client_handshake_no_alpn(void)
 
     xqc_engine_destroy(conn->engine);
 }
+
+
+/*
+ * max_stream_unsent_packets: a stream write stops framing once that many
+ * packets wait unsent, even though flow control would admit far more. The
+ * stream is flagged as H3-owned so xqc_stream_send does not run the engine
+ * (which would send, and so drain, the queue) before returning.
+ */
+void
+xqc_test_conn_stream_unsent_cap()
+{
+    const uint32_t cap = 16;
+
+    xqc_engine_t *engine = test_create_engine();
+    CU_ASSERT_FATAL(engine != NULL);
+
+    xqc_conn_settings_t cs;
+    memset(&cs, 0, sizeof(cs));
+    cs.proto_version = XQC_VERSION_V1;
+    cs.max_stream_unsent_packets = cap;
+
+    xqc_conn_ssl_config_t ssl_cfg;
+    memset(&ssl_cfg, 0, sizeof(ssl_cfg));
+    const xqc_cid_t *cid = xqc_connect(engine, &cs, NULL, 0, "", 0, &ssl_cfg, NULL, 0,
+                                       "transport", NULL);
+    CU_ASSERT_FATAL(cid != NULL);
+    xqc_connection_t *conn = xqc_engine_conns_hash_find(engine, cid, 's');
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->conn_flag |= XQC_CONN_FLAG_CAN_SEND_1RTT;
+
+    xqc_stream_t *s = xqc_create_stream_with_conn(conn, XQC_UNDEFINE_STREAM_ID,
+                                                  XQC_CLI_BID, NULL, NULL);
+    CU_ASSERT_FATAL(s != NULL);
+    s->stream_flag |= XQC_STREAM_FLAG_HAS_H3;
+
+    static unsigned char buf[256 * 1024];
+    uint64_t before = xqc_send_queue_get_unsent_packets_num(conn->conn_send_queue);
+    ssize_t sent = xqc_stream_send(s, buf, sizeof(buf), 0);
+    uint64_t unsent = xqc_send_queue_get_unsent_packets_num(conn->conn_send_queue);
+
+    CU_ASSERT(sent > 0);
+    CU_ASSERT((size_t)sent < sizeof(buf));
+    CU_ASSERT(unsent >= cap);
+    CU_ASSERT(unsent <= xqc_max(before, cap) + 1);
+    CU_ASSERT(xqc_stream_send(s, buf, sizeof(buf), 0) == -XQC_EAGAIN);
+
+    xqc_engine_destroy(engine);
+}

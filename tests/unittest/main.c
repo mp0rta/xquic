@@ -99,6 +99,7 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_conn_idle_timeout", xqc_test_conn_idle_timeout)
         || !CU_add_test(pSuite, "xqc_test_conn_early_data_reject", xqc_test_conn_early_data_reject)
         || !CU_add_test(pSuite, "xqc_test_conn_early_data_reject_flow_ctl", xqc_test_conn_early_data_reject_flow_ctl)
+        || !CU_add_test(pSuite, "xqc_test_conn_stream_unsent_cap", xqc_test_conn_stream_unsent_cap)
         /* RFC 9000 §20.1 CRYPTO_ERROR dynamic construction */
         || !CU_add_test(pSuite, "xqc_test_conn_tls_error_cb_constructs_crypto_error", xqc_test_conn_tls_error_cb_constructs_crypto_error)
         || !CU_add_test(pSuite, "xqc_test_conn_crypto_error_base_value", xqc_test_conn_crypto_error_base_value)

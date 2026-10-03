@@ -9,6 +9,7 @@ void xqc_test_conn_create();
 void xqc_test_conn_idle_timeout();
 void xqc_test_conn_early_data_reject();
 void xqc_test_conn_early_data_reject_flow_ctl();
+void xqc_test_conn_stream_unsent_cap();
 
 /* RFC 9000 §20.1 CRYPTO_ERROR dynamic construction */
 void xqc_test_conn_tls_error_cb_constructs_crypto_error();
