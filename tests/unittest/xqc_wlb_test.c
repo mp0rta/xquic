@@ -1136,6 +1136,97 @@ xqc_test_wlb_acked_path_not_evicted(void)
     wlb_test_teardown(&f);
 }
 
+/* With the default backoff (2) the hidden expiries fall 1, 3 and 7 PTOs after
+ * the last progress, so WLB tolerates an ACK stall of just under 7 PTOs and
+ * evicts at the third expiry, not earlier. */
+void
+xqc_test_wlb_unacked_path_kept_until_third_hidden_pto(void)
+{
+    wlb_test_fixture_t f;
+    wlb_test_setup(&f);
+
+    wlb_test_add_path(&f, 0, 25000, 64 * 1024, 0);
+    xqc_path_ctx_t *relay = wlb_test_add_path(&f, 1, 25000, 64 * 1024, 0);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(relay);
+    (void)wlb_test_invoke(&f, UINT32_MAX);
+
+    xqc_usec_t pto = wlb_test_mark_unacked_since(&f, relay, g_fake_now_us);
+    wlb_test_clock_advance(7 * pto - 1);
+    relay->path_send_ctl->ctl_time_of_last_sent_ack_eliciting_packet[
+        XQC_PNS_APP_DATA] = g_fake_now_us;
+    CU_ASSERT_EQUAL(
+        xqc_send_ctl_get_effective_pto_count(relay->path_send_ctl), 2);
+
+    int on_relay = 0;
+    for (int i = 0; i < 32; i++) {
+        if (wlb_test_invoke(&f, UINT32_MAX) == 1) {
+            on_relay++;
+        }
+    }
+    CU_ASSERT_TRUE(on_relay > 0);
+
+    wlb_test_clock_advance(1);
+    relay->path_send_ctl->ctl_time_of_last_sent_ack_eliciting_packet[
+        XQC_PNS_APP_DATA] = g_fake_now_us;
+    CU_ASSERT_EQUAL(
+        xqc_send_ctl_get_effective_pto_count(relay->path_send_ctl), 3);
+    for (int i = 0; i < 32; i++) {
+        CU_ASSERT_EQUAL(wlb_test_invoke(&f, UINT32_MAX), 0);
+    }
+
+    wlb_test_teardown(&f);
+}
+
+/* Every path silently stops acknowledging. WLB then holds STREAM, control and
+ * datagrams off all of them (the PTO probes bypass the scheduler) except for
+ * its evicted-path datagram probe, and the first ACK on a path brings every
+ * kind of traffic, pinned flows included, back onto it. */
+void
+xqc_test_wlb_all_paths_silent_recover_on_ack(void)
+{
+    wlb_test_fixture_t f;
+    wlb_test_setup(&f);
+
+    xqc_path_ctx_t *direct = wlb_test_add_path(&f, 0, 25000, 64 * 1024, 0);
+    xqc_path_ctx_t *relay = wlb_test_add_path(&f, 1, 25000, 64 * 1024, 0);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(direct);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(relay);
+    /* the first datagram also arms the evicted-path probe interval */
+    (void)wlb_test_invoke(&f, UINT32_MAX);
+
+    xqc_usec_t pto = wlb_test_mark_unacked_since(&f, direct, g_fake_now_us);
+    (void)wlb_test_mark_unacked_since(&f, relay, g_fake_now_us);
+    wlb_test_clock_advance(7 * pto);
+    direct->path_send_ctl->ctl_time_of_last_sent_ack_eliciting_packet[
+        XQC_PNS_APP_DATA] = g_fake_now_us;
+    relay->path_send_ctl->ctl_time_of_last_sent_ack_eliciting_packet[
+        XQC_PNS_APP_DATA] = g_fake_now_us;
+
+    CU_ASSERT_EQUAL(wlb_test_invoke_stream(&f), UINT64_MAX);
+    CU_ASSERT_EQUAL(wlb_test_invoke_control(&f), UINT64_MAX);
+    CU_ASSERT_EQUAL(wlb_test_invoke(&f, UINT32_MAX), UINT64_MAX);
+    CU_ASSERT_EQUAL(wlb_test_invoke(&f, 0x1234), UINT64_MAX);
+
+    /* past the 500ms probe interval one datagram probes an evicted path */
+    wlb_test_clock_advance(600000);
+    uint64_t probed = wlb_test_invoke(&f, UINT32_MAX);
+    CU_ASSERT_TRUE(probed == 0 || probed == 1);
+    CU_ASSERT_EQUAL(wlb_test_invoke(&f, UINT32_MAX), UINT64_MAX);
+
+    /* an ACK covers everything in flight on the relay */
+    relay->path_send_ctl->ctl_progress_time = g_fake_now_us;
+    relay->path_send_ctl->ctl_bytes_in_flight = 0;
+    relay->path_send_ctl->ctl_bytes_ack_eliciting_inflight[
+        XQC_PNS_APP_DATA] = 0;
+
+    CU_ASSERT_EQUAL(wlb_test_invoke_stream(&f), 1);
+    CU_ASSERT_EQUAL(wlb_test_invoke_control(&f), 1);
+    CU_ASSERT_EQUAL(wlb_test_invoke(&f, UINT32_MAX), 1);
+    CU_ASSERT_EQUAL(wlb_test_invoke(&f, 0x1234), 1);
+
+    wlb_test_teardown(&f);
+}
+
 void
 xqc_test_wlb_routine_path_event_preserves_round(void)
 {
