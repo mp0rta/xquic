@@ -1932,9 +1932,9 @@ xqc_test_wlb_reapply_second_path_after_swap(void)
 
     xqc_path_ctx_t *p1 = wlb_test_add_path(&f, 1, 60000, 1024 * 1024, 0);
     CU_ASSERT_PTR_NOT_NULL_FATAL(p1);
-    xqc_path_ctx_t *got = wlb_test_reapply_get_path(&f, 0, 0);
-    CU_ASSERT_PTR_NOT_NULL(got);
-    CU_ASSERT(got == &f.paths[0] || got == p1);
+    /* Fill path 0's congestion window so only path 1 can send. */
+    f.send_ctls[0].ctl_bytes_in_flight = 1024 * 1024;
+    CU_ASSERT(wlb_test_reapply_get_path(&f, 0, 0) == p1);
 
     xqc_destroy_pool(f.conn.conn_pool);
     wlb_test_teardown(&f);
