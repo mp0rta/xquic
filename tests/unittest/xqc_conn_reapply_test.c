@@ -40,7 +40,7 @@ reapply_setup(reapply_fixture_t *f)
     CU_ASSERT_PTR_NOT_NULL_FATAL(f->conn);
     xqc_connection_t *c = f->conn;
 
-    #ifdef XQC_PROTECT_POOL_MEM
+#ifdef XQC_PROTECT_POOL_MEM
     c->conn_pool = xqc_create_pool(4096, XQC_FALSE);
 #else
     c->conn_pool = xqc_create_pool(4096);
@@ -111,22 +111,113 @@ xqc_test_reapply_same_vtable_keeps_state(void)
     reapply_teardown(&f);
 }
 
+/* Reapply must return -XQC_ESTATE and leave the connection untouched. */
+static void
+reapply_expect_estate(reapply_fixture_t *f)
+{
+    xqc_connection_t *c = f->conn;
+    xqc_scheduler_callback_t cb = c->conn_settings.scheduler_callback;
+    xqc_scheduler_params_t params = c->conn_settings.scheduler_params;
+    void *state = c->scheduler;
+    const xqc_scheduler_callback_t *active = c->scheduler_callback;
+
+    xqc_conn_settings_t s = reapply_settings(&xqc_wlb_scheduler_cb);
+    s.scheduler_params.pto_cnt_thr = 5;
+    CU_ASSERT_EQUAL(xqc_conn_reapply_settings(c, &s, XQC_CONN_REAPPLY_SCHEDULER),
+                    -XQC_ESTATE);
+    CU_ASSERT_EQUAL(memcmp(&cb, &c->conn_settings.scheduler_callback, sizeof(cb)), 0);
+    CU_ASSERT_EQUAL(memcmp(&params, &c->conn_settings.scheduler_params, sizeof(params)), 0);
+    CU_ASSERT(c->scheduler == state);
+    CU_ASSERT(c->scheduler_callback == active);
+}
+
 void
 xqc_test_reapply_refuses_two_paths(void)
 {
     reapply_fixture_t f;
     reapply_setup(&f);
-    xqc_connection_t *c = f.conn;
-    f.paths[f.n_paths++] = xqc_test_helper_path_synthesize(c, 1, XQC_PATH_STATE_ACTIVE);
+    f.paths[f.n_paths++] = xqc_test_helper_path_synthesize(f.conn, 1, XQC_PATH_STATE_ACTIVE);
     CU_ASSERT_PTR_NOT_NULL_FATAL(f.paths[1]);
-    void *old = c->scheduler;
-    const xqc_scheduler_callback_t *old_cb = c->scheduler_callback;
+    reapply_expect_estate(&f);
+    reapply_teardown(&f);
+}
+
+/* create_path_count guard alone: second path exists but is not ACTIVE. */
+void
+xqc_test_reapply_refuses_created_path_count(void)
+{
+    reapply_fixture_t f;
+    reapply_setup(&f);
+    f.paths[f.n_paths++] =
+        xqc_test_helper_path_synthesize(f.conn, 1, XQC_PATH_STATE_VALIDATING);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(f.paths[1]);
+    CU_ASSERT_EQUAL(f.conn->create_path_count, 2);
+    CU_ASSERT_EQUAL(f.conn->active_path_count, 1);
+    reapply_expect_estate(&f);
+    reapply_teardown(&f);
+}
+
+/* active_path_count guard alone: counters set by hand. */
+void
+xqc_test_reapply_refuses_active_path_count(void)
+{
+    reapply_fixture_t f;
+    reapply_setup(&f);
+    f.conn->active_path_count = 2;
+    CU_ASSERT_EQUAL(f.conn->create_path_count, 1);
+    reapply_expect_estate(&f);
+    f.conn->active_path_count = 1;
+    reapply_teardown(&f);
+}
+
+void
+xqc_test_reapply_refuses_datagram_redundancy(void)
+{
+    reapply_fixture_t f;
+    reapply_setup(&f);
+    f.conn->conn_settings.datagram_redundancy = 1;
+    reapply_expect_estate(&f);
+    reapply_teardown(&f);
+}
+
+/* conn created without a scheduler setting: active vtable is the global minrtt
+ * cb while conn_settings.scheduler_callback is zero. */
+void
+xqc_test_reapply_same_as_active_global_vtable(void)
+{
+    reapply_fixture_t f;
+    reapply_setup(&f);
+    xqc_connection_t *c = f.conn;
+    memset(&c->conn_settings.scheduler_callback, 0,
+           sizeof(c->conn_settings.scheduler_callback));
+    c->scheduler_callback = &xqc_minrtt_scheduler_cb;
+    void *state = c->scheduler;
+
+    xqc_conn_settings_t s = reapply_settings(&xqc_minrtt_scheduler_cb);
+    CU_ASSERT_EQUAL(xqc_conn_reapply_settings(c, &s, XQC_CONN_REAPPLY_SCHEDULER), XQC_OK);
+    CU_ASSERT(c->scheduler == state);
+    CU_ASSERT(c->scheduler_callback == &c->conn_settings.scheduler_callback);
+    CU_ASSERT(c->scheduler_callback->xqc_scheduler_get_path
+              == xqc_minrtt_scheduler_cb.xqc_scheduler_get_path);
+
+    reapply_teardown(&f);
+}
+
+void
+xqc_test_reapply_same_vtable_params_land(void)
+{
+    reapply_fixture_t f;
+    reapply_setup(&f);
+    xqc_connection_t *c = f.conn;
 
     xqc_conn_settings_t s = reapply_settings(&xqc_wlb_scheduler_cb);
-    CU_ASSERT_EQUAL(xqc_conn_reapply_settings(c, &s, XQC_CONN_REAPPLY_SCHEDULER),
-                    -XQC_ESTATE);
-    CU_ASSERT(c->scheduler == old);
-    CU_ASSERT(c->scheduler_callback == old_cb);
+    CU_ASSERT_EQUAL(xqc_conn_reapply_settings(c, &s, XQC_CONN_REAPPLY_SCHEDULER), XQC_OK);
+    void *state = c->scheduler;
+    s.scheduler_params.pto_cnt_thr = 5;
+    CU_ASSERT_EQUAL(xqc_conn_reapply_settings(c, &s, XQC_CONN_REAPPLY_SCHEDULER), XQC_OK);
+    CU_ASSERT(c->scheduler == state);
+    CU_ASSERT_EQUAL(c->conn_settings.scheduler_params.pto_cnt_thr, 5);
+    CU_ASSERT_EQUAL(c->conn_settings.scheduler_params.bw_Bps_thr, 375000);
 
     reapply_teardown(&f);
 }

@@ -1844,7 +1844,7 @@ wlb_test_reapply_setup(wlb_test_fixture_t *f, const xqc_scheduler_callback_t *st
     f->conn.create_path_count = 1;
     f->conn.active_path_count = 1;
     f->paths[0].parent_conn = &f->conn;
-    #ifdef XQC_PROTECT_POOL_MEM
+#ifdef XQC_PROTECT_POOL_MEM
     f->conn.conn_pool = xqc_create_pool(4096, XQC_FALSE);
 #else
     f->conn.conn_pool = xqc_create_pool(4096);
@@ -1910,6 +1910,31 @@ xqc_test_wlb_reapply_to_minrtt_schedules(void)
     CU_ASSERT(f.conn.scheduler != f.scheduler);
 
     CU_ASSERT(wlb_test_reapply_get_path(&f, 0, 0) == &f.paths[0]);
+
+    xqc_destroy_pool(f.conn.conn_pool);
+    wlb_test_teardown(&f);
+}
+
+/* Per-path WLB state is created lazily for a path added after the swap. */
+void
+xqc_test_wlb_reapply_second_path_after_swap(void)
+{
+    wlb_test_fixture_t f;
+    wlb_test_setup(&f);
+    wlb_test_reapply_setup(&f, &xqc_minrtt_scheduler_cb);
+
+    xqc_conn_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.scheduler_callback = xqc_wlb_scheduler_cb;
+    CU_ASSERT_EQUAL(xqc_conn_reapply_settings(&f.conn, &s, XQC_CONN_REAPPLY_SCHEDULER),
+                    XQC_OK);
+    CU_ASSERT(wlb_test_reapply_get_path(&f, 0, 0) == &f.paths[0]);
+
+    xqc_path_ctx_t *p1 = wlb_test_add_path(&f, 1, 60000, 1024 * 1024, 0);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(p1);
+    xqc_path_ctx_t *got = wlb_test_reapply_get_path(&f, 0, 0);
+    CU_ASSERT_PTR_NOT_NULL(got);
+    CU_ASSERT(got == &f.paths[0] || got == p1);
 
     xqc_destroy_pool(f.conn.conn_pool);
     wlb_test_teardown(&f);

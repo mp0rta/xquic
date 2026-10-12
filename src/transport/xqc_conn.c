@@ -4032,17 +4032,26 @@ xqc_conn_reapply_settings(xqc_connection_t *conn, const xqc_conn_settings_t *set
         return -XQC_EPARAM;
     }
 
-    if (conn->create_path_count != 1 || conn->active_path_count > 1) {
+    /* datagram redundancy pins rap/minrtt and the dgram reinjection controller */
+    if (conn->create_path_count != 1 || conn->active_path_count > 1
+        || conn->conn_settings.datagram_redundancy != 0)
+    {
         return -XQC_ESTATE;
     }
 
-    xqc_conn_settings_t tmp = *settings;
+    /* read only the scheduler fields of the caller's settings */
+    xqc_conn_settings_t tmp;
+    xqc_memzero(&tmp, sizeof(tmp));
+    tmp.scheduler_callback = settings->scheduler_callback;
+    tmp.scheduler_params = settings->scheduler_params;
     xqc_conn_set_default_sched_params(&conn->conn_settings, &tmp);
 
-    if (memcmp(&tmp.scheduler_callback, &conn->conn_settings.scheduler_callback,
+    if (memcmp(&tmp.scheduler_callback, conn->scheduler_callback,
                sizeof(tmp.scheduler_callback)) == 0)
     {
+        conn->conn_settings.scheduler_callback = tmp.scheduler_callback;
         conn->conn_settings.scheduler_params = tmp.scheduler_params;
+        conn->scheduler_callback = &conn->conn_settings.scheduler_callback;
         return XQC_OK;
     }
 
