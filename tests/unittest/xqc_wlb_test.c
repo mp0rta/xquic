@@ -28,6 +28,7 @@
 #include "src/transport/xqc_packet_out.h"
 #include "src/transport/xqc_send_ctl.h"
 #include "src/transport/xqc_utils.h"
+#include "src/common/xqc_memory_pool.h"
 #include "src/transport/xqc_frame.h"
 #include "src/transport/xqc_frame_parser.h"
 #include "src/transport/scheduler/xqc_scheduler_wlb.h"
@@ -1828,5 +1829,88 @@ xqc_test_wlb_duplicate_ack_counts_application_once(void)
     CU_ASSERT_EQUAL(stats[0].goodput_Bps, 1024 * 1024);
     CU_ASSERT_EQUAL(stats[0].warmup, 0);
 
+    wlb_test_teardown(&f);
+}
+
+/* ---- xqc_conn_reapply_settings on top of the WLB fixture ---- */
+
+/* Satisfy the reapply preconditions. conn.scheduler (f->scheduler, heap) and
+ * blocks from conn_pool are never mixed: after a reapply conn.scheduler points
+ * into the pool while f->scheduler keeps the heap pointer for teardown. */
+static void
+wlb_test_reapply_setup(wlb_test_fixture_t *f, const xqc_scheduler_callback_t *start)
+{
+    wlb_test_add_path(f, 0, 50000, 1024 * 1024, 0);
+    f->conn.create_path_count = 1;
+    f->conn.active_path_count = 1;
+    f->paths[0].parent_conn = &f->conn;
+    #ifdef XQC_PROTECT_POOL_MEM
+    f->conn.conn_pool = xqc_create_pool(4096, XQC_FALSE);
+#else
+    f->conn.conn_pool = xqc_create_pool(4096);
+#endif
+    CU_ASSERT_PTR_NOT_NULL_FATAL(f->conn.conn_pool);
+    f->conn.conn_settings.scheduler_params.bw_Bps_thr = 375000;
+    f->conn.conn_settings.scheduler_params.loss_percent_thr_high = 30;
+    f->conn.conn_settings.scheduler_params.loss_percent_thr_low = 10;
+    f->conn.conn_settings.scheduler_params.pto_cnt_thr = 2;
+    f->conn.conn_settings.scheduler_params.rtt_us_thr_high = 2000000;
+    f->conn.conn_settings.scheduler_params.rtt_us_thr_low = 500000;
+    f->conn.conn_settings.scheduler_callback = *start;
+    f->conn.scheduler_callback = &f->conn.conn_settings.scheduler_callback;
+    if (start != &xqc_wlb_scheduler_cb) {
+        f->conn.scheduler = xqc_pcalloc(f->conn.conn_pool, 0);
+    }
+}
+
+static xqc_path_ctx_t *
+wlb_test_reapply_get_path(wlb_test_fixture_t *f, uint64_t origin, int reinject)
+{
+    xqc_packet_out_t po;
+    wlb_test_make_packet_out(&po, 1);
+    po.po_path_id = origin;
+    xqc_bool_t cc_blk = XQC_FALSE;
+    return f->conn.scheduler_callback->xqc_scheduler_get_path(
+        f->conn.scheduler, &f->conn, &po, 1, reinject, &cc_blk);
+}
+
+void
+xqc_test_wlb_reapply_from_minrtt_schedules(void)
+{
+    wlb_test_fixture_t f;
+    wlb_test_setup(&f);
+    wlb_test_reapply_setup(&f, &xqc_minrtt_scheduler_cb);
+
+    xqc_conn_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.scheduler_callback = xqc_wlb_scheduler_cb;
+    CU_ASSERT_EQUAL(xqc_conn_reapply_settings(&f.conn, &s, XQC_CONN_REAPPLY_SCHEDULER),
+                    XQC_OK);
+    CU_ASSERT(f.conn.scheduler != f.scheduler);
+
+    CU_ASSERT(wlb_test_reapply_get_path(&f, 0, 0) == &f.paths[0]);
+    CU_ASSERT_PTR_NULL(wlb_test_reapply_get_path(&f, 0, 1));
+
+    xqc_destroy_pool(f.conn.conn_pool);
+    wlb_test_teardown(&f);
+}
+
+void
+xqc_test_wlb_reapply_to_minrtt_schedules(void)
+{
+    wlb_test_fixture_t f;
+    wlb_test_setup(&f);
+    wlb_test_reapply_setup(&f, &xqc_wlb_scheduler_cb);
+
+    xqc_conn_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.scheduler_callback = xqc_minrtt_scheduler_cb;
+    CU_ASSERT_EQUAL(xqc_conn_reapply_settings(&f.conn, &s, XQC_CONN_REAPPLY_SCHEDULER),
+                    XQC_OK);
+    CU_ASSERT(f.conn.scheduler != f.scheduler);
+
+    CU_ASSERT(wlb_test_reapply_get_path(&f, 0, 0) == &f.paths[0]);
+
+    xqc_destroy_pool(f.conn.conn_pool);
     wlb_test_teardown(&f);
 }

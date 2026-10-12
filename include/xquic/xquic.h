@@ -1139,6 +1139,25 @@ XQC_EXPORT_PUBLIC_API XQC_EXTERN const xqc_scheduler_callback_t xqc_interop_sche
 XQC_EXPORT_PUBLIC_API
 void xqc_conn_set_dgram_flow_hash(xqc_connection_t *conn, uint32_t flow_hash);
 
+/** Field bits for xqc_conn_reapply_settings(). */
+#define XQC_CONN_REAPPLY_SCHEDULER (1u << 0)
+
+/**
+ * @brief Re-apply selected settings on a live connection.
+ * Only XQC_CONN_REAPPLY_SCHEDULER exists: it replaces the connection's scheduler
+ * (vtable and state) with settings->scheduler_callback, and normalizes
+ * settings->scheduler_params (a zero field keeps the current value). All other
+ * fields of settings are ignored. Scheduler state is dropped, so this is only
+ * allowed while the connection has exactly one path ever created and at most one
+ * active; a call with the same vtable only updates the params.
+ * @return XQC_OK, -XQC_EPARAM (NULL argument, bad fields, incomplete vtable),
+ * -XQC_ESTATE (more than one path), -XQC_EMALLOC. Errors leave conn unchanged.
+ */
+XQC_EXPORT_PUBLIC_API
+xqc_int_t xqc_conn_reapply_settings(xqc_connection_t *conn,
+                                    const xqc_conn_settings_t *settings,
+                                    uint32_t fields);
+
 typedef enum {
     XQC_REINJ_UNACK_AFTER_SCHED = 1 << 0,
     XQC_REINJ_UNACK_BEFORE_SCHED = 1 << 1,

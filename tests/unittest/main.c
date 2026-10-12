@@ -50,6 +50,7 @@
 #include "xqc_crypto_frame_test.h"
 #include "xqc_dos_e2e_test.h"
 #include "xqc_wlb_test.h"
+#include "xqc_conn_reapply_test.h"
 #include "xqc_send_ctl_test.h"
 #include "xqc_vn_test.h"
 #include "xqc_frame_type_bit_test.h"
@@ -444,6 +445,14 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_wlb_application_delivery_advances_learning", xqc_test_wlb_application_delivery_advances_learning)
         || !CU_add_test(pSuite, "xqc_test_wlb_rejected_0rtt_does_not_advance_learning", xqc_test_wlb_rejected_0rtt_does_not_advance_learning)
         || !CU_add_test(pSuite, "xqc_test_wlb_duplicate_ack_counts_application_once", xqc_test_wlb_duplicate_ack_counts_application_once)
+        || !CU_add_test(pSuite, "xqc_test_reapply_minrtt_to_wlb", xqc_test_reapply_minrtt_to_wlb)
+        || !CU_add_test(pSuite, "xqc_test_reapply_same_vtable_keeps_state", xqc_test_reapply_same_vtable_keeps_state)
+        || !CU_add_test(pSuite, "xqc_test_reapply_refuses_two_paths", xqc_test_reapply_refuses_two_paths)
+        || !CU_add_test(pSuite, "xqc_test_reapply_rejects_bad_args", xqc_test_reapply_rejects_bad_args)
+        || !CU_add_test(pSuite, "xqc_test_reapply_params_zero_keeps_current", xqc_test_reapply_params_zero_keeps_current)
+        || !CU_add_test(pSuite, "xqc_test_reapply_params_override", xqc_test_reapply_params_override)
+        || !CU_add_test(pSuite, "xqc_test_wlb_reapply_from_minrtt_schedules", xqc_test_wlb_reapply_from_minrtt_schedules)
+        || !CU_add_test(pSuite, "xqc_test_wlb_reapply_to_minrtt_schedules", xqc_test_wlb_reapply_to_minrtt_schedules)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();

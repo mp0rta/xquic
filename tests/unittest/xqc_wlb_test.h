@@ -99,5 +99,7 @@ void xqc_test_wlb_control_delivery_does_not_advance_learning(void);
 void xqc_test_wlb_application_delivery_advances_learning(void);
 void xqc_test_wlb_rejected_0rtt_does_not_advance_learning(void);
 void xqc_test_wlb_duplicate_ack_counts_application_once(void);
+void xqc_test_wlb_reapply_from_minrtt_schedules(void);
+void xqc_test_wlb_reapply_to_minrtt_schedules(void);
 
 #endif /* XQC_WLB_TEST_H_INCLUDED */
