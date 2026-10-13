@@ -271,7 +271,8 @@ uint64_t g_last_sock_op_time;
  * 703 for CRYPTO_ERROR validation
  * 704 for active_connection_id_limit validation
  * 713/714 for max_ack_delay boundary validation
- * 8XX for MASQUE e2e testcases
+ * 800/801 for MASQUE e2e testcases
+ * 802/803 for the end-of-pass per-path app-limited check
  */
 int g_test_case;
 int g_ipv6;
@@ -1330,6 +1331,12 @@ xqc_client_write_socket_ex(uint64_t path_id,
 
     /* cases 1300-1301: the packet is lost without any error */
     if (xqc_client_silent_dropped(path_id)) {
+        return size;
+    }
+
+    /* case 803: every packet sent on the second path is lost, so that path
+     * never validates */
+    if (g_test_case == 803 && path_id == 1) {
         return size;
     }
 

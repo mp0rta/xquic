@@ -55,6 +55,7 @@
 #include "xqc_send_ctl_test.h"
 #include "xqc_vn_test.h"
 #include "xqc_frame_type_bit_test.h"
+#include "xqc_applimit_test.h"
 
 static int
 xqc_init_suite(void)
@@ -464,6 +465,20 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_wlb_reapply_second_path_after_swap", xqc_test_wlb_reapply_second_path_after_swap)
         || !CU_add_test(pSuite, "xqc_test_wlb_reapply_from_minrtt_schedules", xqc_test_wlb_reapply_from_minrtt_schedules)
         || !CU_add_test(pSuite, "xqc_test_wlb_reapply_to_minrtt_schedules", xqc_test_wlb_reapply_to_minrtt_schedules)
+        /* per-path app-limited marking at the end of each engine pass */
+        || !CU_add_test(pSuite, "xqc_test_applimit_unfed_path_conn_logic", xqc_test_applimit_unfed_path_conn_logic)
+        || !CU_add_test(pSuite, "xqc_test_applimit_unfed_path_main_logic", xqc_test_applimit_unfed_path_main_logic)
+        || !CU_add_test(pSuite, "xqc_test_applimit_idle_path_conn_logic", xqc_test_applimit_idle_path_conn_logic)
+        || !CU_add_test(pSuite, "xqc_test_applimit_idle_path_main_logic", xqc_test_applimit_idle_path_main_logic)
+        || !CU_add_test(pSuite, "xqc_test_applimit_idle_path_batch_send", xqc_test_applimit_idle_path_batch_send)
+        || !CU_add_test(pSuite, "xqc_test_applimit_next_packet_flagged", xqc_test_applimit_next_packet_flagged)
+        || !CU_add_test(pSuite, "xqc_test_applimit_pacing_held_packet", xqc_test_applimit_pacing_held_packet)
+        || !CU_add_test(pSuite, "xqc_test_applimit_pacing_held_packet_wlb", xqc_test_applimit_pacing_held_packet_wlb)
+        || !CU_add_test(pSuite, "xqc_test_applimit_cwnd_full", xqc_test_applimit_cwnd_full)
+        || !CU_add_test(pSuite, "xqc_test_applimit_sndbuf_full", xqc_test_applimit_sndbuf_full)
+        || !CU_add_test(pSuite, "xqc_test_applimit_lingering_ack_only", xqc_test_applimit_lingering_ack_only)
+        || !CU_add_test(pSuite, "xqc_test_applimit_marker_value", xqc_test_applimit_marker_value)
+        || !CU_add_test(pSuite, "xqc_test_applimit_pacer_untouched", xqc_test_applimit_pacer_untouched)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();
