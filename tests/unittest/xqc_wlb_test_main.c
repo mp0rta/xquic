@@ -89,6 +89,8 @@ main(void)
                                xqc_test_wlb_idle_time_does_not_end_warmup)
         || NULL == CU_add_test(s, "app_limited_path_is_weighted_by_capacity",
                                xqc_test_wlb_app_limited_path_is_weighted_by_capacity)
+        || NULL == CU_add_test(s, "queued_path_loses_estimate_credit",
+                               xqc_test_wlb_queued_path_loses_estimate_credit)
         || NULL == CU_add_test(s, "goodput_sample_ignores_sub_interval_burst",
                                xqc_test_wlb_goodput_sample_ignores_sub_interval_burst)
         || NULL == CU_add_test(s, "path_stats_snapshot",

@@ -90,6 +90,7 @@
 #include "src/transport/xqc_send_ctl.h"
 #include "src/transport/xqc_multipath.h"
 #include "src/common/xqc_time.h"
+#include "src/congestion_control/xqc_window_filter.h"
 
 /* ---------- constants ---------- */
 
@@ -124,6 +125,9 @@
 /* Minimum wall-clock span for one goodput sample. Sampling faster than this
  * measures the inside of an ACK burst rather than sustained rate. */
 #define WLB_GOODPUT_SAMPLE_MIN_US (200ULL * 1000)
+/* Window for the per-path floor of smoothed RTT, the queue-free reference
+ * for the estimate credit. */
+#define WLB_SRTT_FLOOR_WIN_US (10ULL * 1000000)
 
 /*
  * Tombstone marker for deleted flow table entries.
@@ -160,6 +164,7 @@ typedef struct {
     uint64_t    warmup_active_us;
     uint64_t    last_payload_schedule_us;
     xqc_bool_t  warmup;
+    xqc_win_filter_t srtt_floor; /* lowest srtt over WLB_SRTT_FLOOR_WIN_US */
 } wlb_path_weight_t;
 
 /** Top-level scheduler state, allocated by xquic via xqc_wlb_scheduler_size(). */
@@ -557,6 +562,13 @@ wlb_compute_goodput_weight(wlb_path_weight_t *entry, xqc_path_ctx_t *path,
         entry->warmup = XQC_FALSE;
     }
 
+    /* Not min_rtt: on a jittery link min_rtt is the luckiest single sample,
+     * often well under the queue-free srtt. A queue that outlasts the window
+     * becomes the floor; the 2*min_rtt haircut below still applies. */
+    xqc_usec_t srtt = xqc_send_ctl_get_srtt(ctl);
+    uint64_t srtt_floor = xqc_win_filter_min(&entry->srtt_floor, WLB_SRTT_FLOOR_WIN_US,
+                                             now_us, srtt);
+
     uint64_t weight = entry->goodput_ewma_Bps;
     if (weight > 0) {
         /* Measured goodput is demand-limited, not a capacity reading: a
@@ -577,7 +589,20 @@ wlb_compute_goodput_weight(wlb_path_weight_t *entry, xqc_path_ctx_t *path,
         if (xqc_send_ctl_is_app_limited(ctl)) {
             uint64_t capacity_Bps = xqc_send_ctl_get_est_bw(ctl);
             if (capacity_Bps > weight) {
-                weight = capacity_Bps;
+                /* An app-limited path holding a standing queue is fed past
+                 * its rate: BBR ignores app-limited samples below its
+                 * estimate, so the estimate stays at the old rate. Fade the
+                 * credit out with the queue beyond RTT jitter (rttvar). */
+                uint64_t credit = capacity_Bps - weight;
+                uint64_t queue = srtt - srtt_floor;  /* the floor never exceeds srtt */
+                uint64_t fade_lo = xqc_max(srtt_floor / 8, 2 * ctl->ctl_rttvar);
+                uint64_t fade_hi = xqc_max(srtt_floor / 2, 4 * ctl->ctl_rttvar);
+                if (queue > fade_lo) {
+                    credit = queue < fade_hi
+                             ? credit * (fade_hi - queue) / (fade_hi - fade_lo)
+                             : 0;
+                }
+                weight += credit;
             }
         }
         /* Measured acked goodput is already net of every lost packet, so
@@ -802,6 +827,8 @@ wlb_refresh_paths(xqc_wlb_scheduler_t *s, xqc_connection_t *conn)
         entry.path_id = path->path_id;
         entry.warmup = XQC_TRUE;
         entry.prior_delivered_time_us = xqc_monotonic_timestamp();
+        /* Start above any srtt so the first sample becomes the floor. */
+        xqc_win_filter_reset(&entry.srtt_floor, 0, UINT64_MAX);
         for (int j = 0; j < old_n; j++) {
             if (old[j].path_id == path->path_id) {
                 entry = old[j];

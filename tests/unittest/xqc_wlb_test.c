@@ -1561,6 +1561,67 @@ xqc_test_wlb_app_limited_path_is_weighted_by_capacity(void)
     wlb_test_teardown(&f);
 }
 
+/* Set path 1's srtt, run one 1 s delivery round, return path 1's picks of 100. */
+static int
+wlb_test_picks_after(wlb_test_fixture_t *f, xqc_usec_t srtt_1)
+{
+    f->send_ctls[1].ctl_srtt = srtt_1;
+    wlb_test_clock_advance(1000000);
+    wlb_test_record_delivery(f, 0, 256 * 1024);
+    wlb_test_record_delivery(f, 1, 256 * 1024);
+    return wlb_test_count_unpinned_path(f, 1, 100);  /* refreshes the weights */
+}
+
+/**
+ * The estimate credit is for an under-fed path. An app-limited path holding
+ * a standing queue -- srtt above its own floor by more than RTT jitter -- is
+ * fed past its rate, so the credit fades out between floor/8 and floor/2 of
+ * queue, or between 2 and 4 rttvar when those are larger. A rise that lasts
+ * past the floor window becomes the new floor and earns the credit back.
+ */
+void
+xqc_test_wlb_queued_path_loses_estimate_credit(void)
+{
+    wlb_test_fixture_t f;
+    wlb_test_setup(&f);
+
+    /* Both paths deliver 256 KiB/s; path 1's estimate is 3x that
+     * (cwnd / srtt = 19660 B / 25 ms), it is app-limited, 25 ms floor. */
+    wlb_test_add_path(&f, 0, 25000, 64 * 1024, 0);
+    wlb_test_add_path(&f, 1, 25000, 19660, 0);
+    wlb_test_drain_initial_round(&f);
+    f.send_ctls[1].ctl_app_limited = 1;
+    for (int i = 0; i < 8; i++) {   /* past warm-up */
+        (void)wlb_test_picks_after(&f, 25000);
+    }
+
+    int credited = wlb_test_picks_after(&f, 25000);  /* no queue */
+    int partial  = wlb_test_picks_after(&f, 32500);  /* 7.5 ms: part */
+    f.send_ctls[1].ctl_rttvar = 10000;
+    int jittery  = wlb_test_picks_after(&f, 32500);  /* under 2 * rttvar */
+    int halfway  = wlb_test_picks_after(&f, 55000);  /* 30 ms: half of 2..4 rttvar */
+    f.send_ctls[1].ctl_rttvar = 0;
+    int queued   = wlb_test_picks_after(&f, 40000);  /* >= floor/2 */
+    f.send_ctls[1].ctl_app_limited = 0;
+    int fed      = wlb_test_picks_after(&f, 40000);  /* measured */
+    f.send_ctls[1].ctl_app_limited = 1;
+
+    CU_ASSERT_TRUE(credited > partial + 3);
+    CU_ASSERT_TRUE(jittery > halfway + 3);
+    CU_ASSERT_TRUE(halfway > queued + 3);
+    CU_ASSERT_TRUE(partial > queued + 3);
+    CU_ASSERT_EQUAL(queued, fed);
+
+    /* Hold 40 ms past the 10 s window: it becomes the floor. */
+    int relaxed = 0;
+    for (int i = 0; i < 12; i++) {
+        relaxed = wlb_test_picks_after(&f, 40000);
+    }
+    CU_ASSERT_TRUE(relaxed > queued + 5);
+
+    wlb_test_teardown(&f);
+}
+
 /**
  * A goodput sample has to span real wall clock. Timing the inside of an ACK
  * burst reads a path delivering 1 MiB in 50 ms once a second as a 20 MB/s

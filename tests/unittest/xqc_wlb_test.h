@@ -89,6 +89,7 @@ void xqc_test_wlb_steady_path_gets_exploration_floor(void);
 void xqc_test_wlb_active_time_ends_warmup(void);
 void xqc_test_wlb_idle_time_does_not_end_warmup(void);
 void xqc_test_wlb_app_limited_path_is_weighted_by_capacity(void);
+void xqc_test_wlb_queued_path_loses_estimate_credit(void);
 void xqc_test_wlb_goodput_sample_ignores_sub_interval_burst(void);
 void xqc_test_wlb_path_stats_snapshot(void);
 void xqc_test_wlb_pinned_flow_refreshes_delivery_sample(void);
