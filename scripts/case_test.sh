@@ -5733,6 +5733,61 @@ else
 fi
 
 
+# ── QUIC transport: packet size cap and ACK room (case IDs 735/736) ───────
+# 735 happy path: both ends set max_pkt_out_size to its cap, 1436. The
+# datagram MSS is 1420 and a 1 MB datagram echo completes with full
+# 1452-byte UDP payloads and none larger, so no ACK is added to a full
+# packet.
+killall test_server 2> /dev/null
+rm -f test_session tp_localhost xqc_token
+stdbuf -oL ${SERVER_BIN} -l e -Q 65535 -e -U 1 -x 735 > svr_stdlog &
+sleep 1
+clear_log
+echo -e "max_pkt_out_size at its cap ...\c"
+${CLIENT_BIN} -l e -T 1 -s 1048576 -U 1 -Q 65535 -E -x 735 > stdlog
+cli_mss=`grep "\[dgram-735\]|1RTT|updated_mss:1420|" stdlog`
+svr_mss=`grep -a "\[dgram-735\]|1RTT|initial_mss:1420|" svr_stdlog`
+echo_ok=`grep "\[dgram\]|echo_check|same_content:yes|" stdlog`
+cli_max=`grep "\[udp-735\]|max|size:1452|" stdlog`
+svr_max=`grep -a "\[udp-735\]|max|size:1452|" svr_stdlog`
+oversize=`grep -a "\[udp-735\]|oversize|" stdlog svr_stdlog`
+errlog=`grep_err_log`
+if [ -n "$cli_mss" ] && [ -n "$svr_mss" ] && [ -n "$echo_ok" ] \
+    && [ -n "$cli_max" ] && [ -n "$svr_max" ] && [ -z "$oversize" ] \
+    && [ -z "$errlog" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "max_pkt_out_size_at_cap" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "max_pkt_out_size_at_cap" "fail"
+fi
+
+# 736 abnormal path: both ends ask for max_pkt_out_size 1500, above the cap.
+# It is clamped to 1436, so the MSS is 1420, a 1421-byte datagram is refused
+# with EDGRAM_TOO_LARGE, and no UDP payload exceeds 1452.
+killall test_server 2> /dev/null
+rm -f test_session tp_localhost xqc_token
+stdbuf -oL ${SERVER_BIN} -l e -Q 65535 -e -U 1 -x 736 > svr_stdlog &
+sleep 1
+clear_log
+echo -e "max_pkt_out_size above its cap ...\c"
+${CLIENT_BIN} -l d -T 1 -s 4800 -U 1 -Q 65535 -E -x 736 > stdlog
+cli_mss=`grep "\[dgram-735\]|1RTT|updated_mss:1420|" stdlog`
+svr_mss=`grep -a "\[dgram-735\]|1RTT|initial_mss:1420|" svr_stdlog`
+refused=`grep "datagram_is_too_large" clog`
+oversized=`grep "oversized_datagram|recorded_mss:1421|send_size:1421|" stdlog`
+oversize=`grep -a "\[udp-735\]|oversize|" stdlog svr_stdlog`
+errlog=`grep_err_log`
+if [ -n "$cli_mss" ] && [ -n "$svr_mss" ] && [ -n "$refused" ] \
+    && [ -n "$oversized" ] && [ -z "$oversize" ] && [ -z "$errlog" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "max_pkt_out_size_above_cap" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "max_pkt_out_size_above_cap" "fail"
+fi
+
+
 # ── Recovery: per-path app-limited mark after the send step (case IDs 802/803)
 # 802 happy path: the client writes its only request before its second path
 # is validated, and that path then carries no data. The end-of-pass check
