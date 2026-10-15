@@ -212,11 +212,17 @@ _Static_assert(XQC_FRAME_PATH_FROZEN < 31,
 /*
  * PING and PADDING frames contain no information, so lost PING or
  *     PADDING frames do not require repair
+ *
+ * ACK_MP is excluded like ACK. The repair copy drops both
+ *     (xqc_packet_out_remove_ack_frame), so with ACK_MP counted here a lost
+ *     packet holding only ACK_MP and DATAGRAM frames was resent as a
+ *     DATAGRAM-only packet; RFC 9221 Section 5.2: DATAGRAM frames are not
+ *     retransmitted upon loss detection.
  */
 #define XQC_NEED_REPAIR(types)                                                    \
     ((types) & ~(XQC_FRAME_BIT_ACK | XQC_FRAME_BIT_PADDING | XQC_FRAME_BIT_PING | \
                  XQC_FRAME_BIT_CONNECTION_CLOSE | XQC_FRAME_BIT_DATAGRAM |        \
-                 XQC_FRAME_BIT_SID | XQC_FRAME_BIT_REPAIR_SYMBOL))
+                 XQC_FRAME_BIT_SID | XQC_FRAME_BIT_REPAIR_SYMBOL | XQC_FRAME_BIT_ACK_MP))
 
 
 const char *xqc_frame_type_2_str(xqc_engine_t *engine, xqc_frame_type_bit_t type_bit);

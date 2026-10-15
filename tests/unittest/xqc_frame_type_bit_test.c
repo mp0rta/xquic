@@ -146,11 +146,24 @@ xqc_test_need_repair_with_high_bit()
     types = XQC_FRAME_BIT_STREAM | XQC_FRAME_BIT_REPAIR_SYMBOL;
     CU_ASSERT(XQC_NEED_REPAIR(types) != 0);
 
-    /* ACK + PADDING + PING + CONN_CLOSE + DATAGRAM + SID + REPAIR_SYMBOL:
-     * all are excluded from repair; result should be 0 */
+    /* ACK_MP alone, and the ACK_MP + DATAGRAM packet an ACK_MP lands on when
+     * it joins a queued DATAGRAM packet: should NOT need repair (DATAGRAM
+     * frames are not retransmitted, RFC 9221 Section 5.2) */
+    types = XQC_FRAME_BIT_ACK_MP;
+    CU_ASSERT(XQC_NEED_REPAIR(types) == 0);
+    types = XQC_FRAME_BIT_ACK_MP | XQC_FRAME_BIT_DATAGRAM;
+    CU_ASSERT(XQC_NEED_REPAIR(types) == 0);
+
+    /* STREAM + ACK_MP: should need repair (STREAM triggers it) */
+    types = XQC_FRAME_BIT_STREAM | XQC_FRAME_BIT_ACK_MP;
+    CU_ASSERT(XQC_NEED_REPAIR(types) != 0);
+
+    /* ACK + PADDING + PING + CONN_CLOSE + DATAGRAM + SID + REPAIR_SYMBOL +
+     * ACK_MP: all are excluded from repair; result should be 0 */
     types = XQC_FRAME_BIT_ACK | XQC_FRAME_BIT_PADDING | XQC_FRAME_BIT_PING
           | XQC_FRAME_BIT_CONNECTION_CLOSE | XQC_FRAME_BIT_DATAGRAM
-          | XQC_FRAME_BIT_SID | XQC_FRAME_BIT_REPAIR_SYMBOL;
+          | XQC_FRAME_BIT_SID | XQC_FRAME_BIT_REPAIR_SYMBOL
+          | XQC_FRAME_BIT_ACK_MP;
     CU_ASSERT(XQC_NEED_REPAIR(types) == 0);
 }
 
