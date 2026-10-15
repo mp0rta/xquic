@@ -1682,6 +1682,47 @@ xqc_test_wlb_floor_learned_only_under_load(void)
 }
 
 /**
+ * A sample that delivered nothing is not load, even against an estimate of 0
+ * (BBR has none before its first bandwidth sample, and a quarter of 0 is 0).
+ * Warm-up can end on scheduling time alone; an empty sample taken as load
+ * past it makes the initial srtt the floor, and a path whose srtt turns out
+ * higher then reads as queued and loses its credit until that floor ages out.
+ */
+void
+xqc_test_wlb_empty_sample_is_not_load(void)
+{
+    wlb_test_fixture_t f;
+    wlb_test_setup(&f);
+
+    /* Path 1 has no RTT or bandwidth sample yet: the initial 250 ms srtt and
+     * an estimate of 0. */
+    wlb_test_add_path(&f, 0, 25000, 64 * 1024, 0);
+    wlb_test_add_path(&f, 1, 250000, 19660, 0);
+    f.cong_states[1].bandwidth_Bps = 0;
+    wlb_test_drain_initial_round(&f);
+
+    /* Handed payload every round, path 1 delivers none of it; warm-up ends on
+     * scheduling time after 3 rounds. */
+    for (int i = 0; i < 6; i++) {
+        wlb_test_clock_advance(1000000);
+        wlb_test_record_delivery(&f, 0, 256 * 1024);
+        (void)wlb_test_count_unpinned_path(&f, 1, 100);
+    }
+
+    /* First samples: srtt 400 ms and an estimate of 786,400 B/s, a third of
+     * which the app-limited path delivers. With no floor that is no queue,
+     * and the credit takes path 1 to about 80 of 100 picks against path 0's
+     * ~160 KB/s; a 250 ms floor would cut it to about 20. */
+    f.cong_states[1].bandwidth_Bps = 786400;
+    f.send_ctls[1].ctl_app_limited = 1;
+    int first = wlb_test_picks_after(&f, 400000);
+
+    CU_ASSERT_TRUE(first > 50);
+
+    wlb_test_teardown(&f);
+}
+
+/**
  * A goodput sample has to span real wall clock. Timing the inside of an ACK
  * burst reads a path delivering 1 MiB in 50 ms once a second as a 20 MB/s
  * path instead of a 1 MB/s one, and that inflated average then out-weighted

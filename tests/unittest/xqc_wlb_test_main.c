@@ -93,6 +93,8 @@ main(void)
                                xqc_test_wlb_queued_path_loses_estimate_credit)
         || NULL == CU_add_test(s, "floor_learned_only_under_load",
                                xqc_test_wlb_floor_learned_only_under_load)
+        || NULL == CU_add_test(s, "empty_sample_is_not_load",
+                               xqc_test_wlb_empty_sample_is_not_load)
         || NULL == CU_add_test(s, "goodput_sample_ignores_sub_interval_burst",
                                xqc_test_wlb_goodput_sample_ignores_sub_interval_burst)
         || NULL == CU_add_test(s, "path_stats_snapshot",

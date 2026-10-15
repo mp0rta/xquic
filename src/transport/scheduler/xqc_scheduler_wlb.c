@@ -554,7 +554,9 @@ wlb_compute_goodput_weight(wlb_path_weight_t *entry, xqc_path_ctx_t *path,
         entry->warmup_acked_bytes += delivered;
         entry->prior_delivered = entry->app_delivered;
         entry->prior_delivered_time_us = now_us;
-        loaded = sample_Bps >= xqc_send_ctl_get_est_bw(ctl) / 4;
+        /* An empty sample is never load: BBR's estimate is 0 before its first
+         * bandwidth sample, and 0 B/s is a quarter of that. */
+        loaded = delivered > 0 && sample_Bps >= xqc_send_ctl_get_est_bw(ctl) / 4;
     }
 
     if (entry->warmup
