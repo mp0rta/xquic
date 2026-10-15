@@ -91,6 +91,8 @@ main(void)
                                xqc_test_wlb_app_limited_path_is_weighted_by_capacity)
         || NULL == CU_add_test(s, "queued_path_loses_estimate_credit",
                                xqc_test_wlb_queued_path_loses_estimate_credit)
+        || NULL == CU_add_test(s, "floor_learned_only_under_load",
+                               xqc_test_wlb_floor_learned_only_under_load)
         || NULL == CU_add_test(s, "goodput_sample_ignores_sub_interval_burst",
                                xqc_test_wlb_goodput_sample_ignores_sub_interval_burst)
         || NULL == CU_add_test(s, "path_stats_snapshot",

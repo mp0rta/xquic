@@ -1622,6 +1622,65 @@ xqc_test_wlb_queued_path_loses_estimate_credit(void)
     wlb_test_teardown(&f);
 }
 
+/* One 1 s round in which path 1 delivers 1/16 of the 786,400 B/s estimate
+ * the next test gives it; returns path 1's picks of 100. */
+static int
+wlb_test_light_picks(wlb_test_fixture_t *f)
+{
+    wlb_test_clock_advance(1000000);
+    wlb_test_record_delivery(f, 0, 256 * 1024);
+    wlb_test_record_delivery(f, 1, 48 * 1024);
+    return wlb_test_count_unpinned_path(f, 1, 100);
+}
+
+/**
+ * The floor is the srtt of a loaded path. While a path warms up, or carries
+ * under a quarter of its estimate, its srtt can sit under the loaded value
+ * (a link that delivers in order delays packets more as their rate rises),
+ * and a floor learned there would read the loaded srtt as a queue. A floor
+ * without loaded samples ages out after about a window, so a new, higher
+ * base RTT is not read as a queue for longer than that.
+ */
+void
+xqc_test_wlb_floor_learned_only_under_load(void)
+{
+    wlb_test_fixture_t f;
+    wlb_test_setup(&f);
+
+    /* Path 1's estimate is 3x what it delivers below, and it is app-limited. */
+    wlb_test_add_path(&f, 0, 25000, 64 * 1024, 0);
+    wlb_test_add_path(&f, 1, 25000, 19660, 0);
+    wlb_test_drain_initial_round(&f);
+    f.send_ctls[1].ctl_app_limited = 1;
+
+    (void)wlb_test_picks_after(&f, 25000);      /* warm-up: not learned */
+    for (int i = 0; i < 3; i++) {
+        (void)wlb_test_picks_after(&f, 40000);  /* warm-up ends here: floor 40 ms */
+    }
+    int warmed = wlb_test_picks_after(&f, 40000);
+
+    f.send_ctls[1].ctl_srtt = 25000;            /* light load: not learned */
+    for (int i = 0; i < 3; i++) {
+        (void)wlb_test_light_picks(&f);
+    }
+    int loaded = wlb_test_picks_after(&f, 40000);
+
+    int whole = wlb_test_picks_after(&f, 25000);  /* learned: srtt at the floor */
+
+    f.send_ctls[1].ctl_srtt = 60000;            /* new base RTT under light load */
+    int kept = 0;
+    for (int i = 0; i < 10; i++) {
+        kept = wlb_test_light_picks(&f);        /* the 25 ms floor holds: no credit */
+    }
+    int aged = wlb_test_light_picks(&f);        /* 11 s on: the floor has aged out */
+
+    CU_ASSERT_TRUE(warmed + 3 >= whole);
+    CU_ASSERT_TRUE(loaded + 3 >= whole);
+    CU_ASSERT_TRUE(aged > kept + 10);
+
+    wlb_test_teardown(&f);
+}
+
 /**
  * A goodput sample has to span real wall clock. Timing the inside of an ACK
  * burst reads a path delivering 1 MiB in 50 ms once a second as a 20 MB/s
