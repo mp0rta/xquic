@@ -271,6 +271,7 @@ uint64_t g_last_sock_op_time;
  * 703 for CRYPTO_ERROR validation
  * 704 for active_connection_id_limit validation
  * 713/714 for max_ack_delay boundary validation
+ * 735/736 for max_pkt_out_size at and above its cap
  * 800/801 for MASQUE e2e testcases
  * 802/803 for the end-of-pass per-path app-limited check
  */
@@ -646,6 +647,13 @@ xqc_client_datagram_send(user_conn_t *user_conn)
     if (g_send_dgram == 1) {
         if (g_test_case == 203 && user_conn->dgram_mss) {
             g_test_case = -1;
+            user_conn->dgram_mss++;
+        }
+        /* 736: one byte over the clamped MSS must be refused */
+        if (g_test_case == 736 && user_conn->dgram_mss
+            && user_conn->dgram_mss
+               == xqc_datagram_get_mss(user_conn->quic_conn))
+        {
             user_conn->dgram_mss++;
         }
         uint64_t dgram_id;
@@ -1165,6 +1173,29 @@ end:
     return ret;
 }
 
+/*
+ * 735/736: the largest UDP payload sent must stay within a 1500-byte IPv6
+ * packet (1452) when max_pkt_out_size is at or above its cap
+ */
+static size_t g_max_udp_payload;
+
+static void
+xqc_test_record_udp_payload(size_t size)
+{
+    if (g_test_case != 735 && g_test_case != 736) {
+        return;
+    }
+
+    if (size > 1452) {
+        printf("[udp-735]|oversize|size:%zu|\n", size);
+    }
+
+    if (size > g_max_udp_payload) {
+        g_max_udp_payload = size;
+        printf("[udp-735]|max|size:%zu|\n", size);
+    }
+}
+
 ssize_t 
 xqc_client_write_socket(const unsigned char *buf, size_t size,
     const struct sockaddr *peer_addr, socklen_t peer_addrlen, void *user)
@@ -1183,6 +1214,7 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
     }
     send_buf_size = size;
     memcpy(send_buf, buf, send_buf_size);
+    xqc_test_record_udp_payload(size);
 
     /* make initial packet loss to test 0rtt buffer */
     if (g_test_case == 39) {
@@ -1412,6 +1444,7 @@ xqc_client_write_socket_ex(uint64_t path_id,
     }
     send_buf_size = size;
     memcpy(send_buf, buf, send_buf_size);
+    xqc_test_record_udp_payload(size);
 
     /* make initial packet loss to test 0rtt buffer */
     if (g_test_case == 39) {
@@ -2136,6 +2169,10 @@ xqc_client_conn_handshake_finished(xqc_connection_t *conn, void *user_data, void
     }
     if (g_test_case == 200 || g_test_case == 201) {
         printf("[dgram-200]|1RTT|updated_mss:%zu|\n", user_conn->dgram_mss);
+    }
+
+    if (g_test_case == 735 || g_test_case == 736) {
+        printf("[dgram-735]|1RTT|updated_mss:%zu|\n", user_conn->dgram_mss);
     }
     
     if (g_send_dgram && user_conn->dgram_retry_in_hs_cb) {
@@ -5565,6 +5602,14 @@ int main(int argc, char *argv[]) {
 
     if (g_test_case == 201) {
         conn_settings.max_pkt_out_size = 1216;
+    }
+
+    if (g_test_case == 735) {
+        conn_settings.max_pkt_out_size = 1436;
+    }
+
+    if (g_test_case == 736) {
+        conn_settings.max_pkt_out_size = 1500;
     }
     
 
