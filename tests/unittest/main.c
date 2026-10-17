@@ -144,6 +144,7 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_ack_room_capped_at_mss", xqc_test_ack_room_capped_at_mss)
         || !CU_add_test(pSuite, "xqc_test_ack_refused_by_full_packet_at_cap",
                         xqc_test_ack_refused_by_full_packet_at_cap)
+        || !CU_add_test(pSuite, "xqc_test_parse_uint32_high_bytes", xqc_test_parse_uint32_high_bytes)
         || !CU_add_test(pSuite, "xqc_test_transport_params", xqc_test_transport_params)
         || !CU_add_test(pSuite, "xqc_test_tp_value_not_longer_than_len",
                         xqc_test_tp_value_not_longer_than_len)
