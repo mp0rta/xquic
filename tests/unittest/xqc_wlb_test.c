@@ -107,6 +107,7 @@ wlb_test_setup(wlb_test_fixture_t *f)
     f->log.log_level = XQC_LOG_FATAL;  /* suppress per-test noise */
     f->conn.log = &f->log;
     xqc_init_list_head(&f->conn.conn_paths_list);
+    xqc_init_list_head(&f->conn.conn_closed_paths_list);
 
     /* Allocate scheduler state and init through the public vtable so the
      * test exercises exactly the production code path. */
