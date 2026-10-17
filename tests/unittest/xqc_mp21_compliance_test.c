@@ -71,6 +71,7 @@ xqc_test_mp21_make_conn(const xqc_test_mp21_conn_params_t *p)
     /* mp21 L2: PATH_CIDS_BLOCKED handler walks conn->scid_set per-path
      * cid_set_list; calloc-zeroed list head would crash list traversal. */
     xqc_init_list_head(&conn->scid_set.cid_set_list);
+    xqc_init_list_head(&conn->scid_set.abandoned_set_list);
 
     return conn;
 }
