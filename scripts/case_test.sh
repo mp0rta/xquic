@@ -5877,6 +5877,58 @@ else
 fi
 grep_err_log
 
+# ── Recovery: a lost PMTUD probe is not a congestion signal (case IDs 804/805)
+# RFC 9000 Section 14.4: the loss of a PMTU probe SHOULD NOT trigger a
+# congestion control reaction. The client path drops every datagram above
+# 1300 bytes, which only PMTUD probes exceed.
+# 804 happy path: the probes are lost, the transfer completes, and no packet
+# is marked lost, so no congestion event starts.
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e --pmtud 1 > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "lost PMTUD probes start no congestion event ...\c"
+sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E --pmtud 1 -x 804 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+probe_lost=`grep "|PMTUD probe lost|" clog`
+marked=`grep "|mark lost|" clog`
+cc_event=`grep "|OnLostDetection|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$probe_lost" ] \
+    && [ -z "$marked" ] && [ -z "$cc_event" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "lost_pmtud_probe_no_congestion_event" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} probe_lost:${probe_lost:+y}" \
+        "marked:${marked:+y} cc_event:${cc_event:+y} errlog:${errlog:+y})"
+    case_print_result "lost_pmtud_probe_no_congestion_event" "fail"
+fi
+grep_err_log
+
+# 805 abnormal path: the same path also drops one ordinary full-size packet.
+# That packet is still marked lost and starts a congestion event, next to
+# the probes that do not.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "a lost data packet still starts a congestion event ...\c"
+sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E --pmtud 1 -x 805 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+probe_lost=`grep "|PMTUD probe lost|" clog`
+marked=`grep "|mark lost|" clog`
+cc_event=`grep "|OnLostDetection|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$probe_lost" ] \
+    && [ -n "$marked" ] && [ -n "$cc_event" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "lost_data_packet_congestion_event" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} probe_lost:${probe_lost:+y}" \
+        "marked:${marked:+y} cc_event:${cc_event:+y} errlog:${errlog:+y})"
+    case_print_result "lost_data_packet_congestion_event" "fail"
+fi
+grep_err_log
+
 killall test_server 2> /dev/null
 
 cd -

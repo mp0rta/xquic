@@ -273,6 +273,11 @@ main(int argc, char *argv[])
                         xqc_test_send_ctl_single_loss_does_not_reset_rtt)
         || !CU_add_test(pSuite, "xqc_test_send_ctl_persistent_congestion_no_rtt_sample_early_return",
                         xqc_test_send_ctl_persistent_congestion_no_rtt_sample_early_return)
+        /* RFC 9000 14.4: no congestion reaction to a lost PMTU probe */
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_lost_pmtud_probe_no_cc_reaction",
+                        xqc_test_send_ctl_lost_pmtud_probe_no_cc_reaction)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_lost_packet_cc_reaction",
+                        xqc_test_send_ctl_lost_packet_cc_reaction)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)
