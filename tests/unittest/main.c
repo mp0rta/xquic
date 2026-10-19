@@ -17,6 +17,7 @@
 #include "xqc_reno_test.h"
 #include "xqc_cubic_test.h"
 #include "xqc_bbr2_test.h"
+#include "xqc_bbr_test.h"
 #include "xqc_packet_test.h"
 #include "xqc_stream_frame_test.h"
 #include "xqc_process_frame_test.h"
@@ -122,6 +123,7 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_cubic_init_cwnd", xqc_test_cubic_init_cwnd)
         || !CU_add_test(pSuite, "xqc_test_bbr2_probe_wait_fast_convergence", xqc_test_bbr2_probe_wait_fast_convergence)
         || !CU_add_test(pSuite, "xqc_test_bbr2_probe_wait_bounds", xqc_test_bbr2_probe_wait_bounds)
+        || !CU_add_test(pSuite, "xqc_test_bbr_rttvar_compensation", xqc_test_bbr_rttvar_compensation)
         || !CU_add_test(pSuite, "xqc_test_short_header_parse_cid", xqc_test_short_header_packet_parse_cid)
         || !CU_add_test(pSuite, "xqc_test_long_header_parse_cid", xqc_test_long_header_packet_parse_cid)
         || !CU_add_test(pSuite, "xqc_test_crypto_frame_flood", xqc_test_crypto_frame_flood)

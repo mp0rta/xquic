@@ -153,7 +153,7 @@ typedef enum qlog_event_importance_s {
     EVENT_IMPORTANCE_REMOVED    = 4,   /**< Currently, some events have been removed in the latest qlog draft. But old qvis need them! */
 } qlog_event_importance_t;
 
-#define XQC_BBR_RTTVAR_COMPENSATION_ENABLED 0
+#define XQC_BBR_RTTVAR_COMPENSATION_ENABLED 1
 typedef enum {
     XQC_BBR_FLAG_NONE = 0x00,
 #if XQC_BBR_RTTVAR_COMPENSATION_ENABLED
