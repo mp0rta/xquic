@@ -5383,6 +5383,41 @@ else
     case_print_result "crypto_error_not_fixed_enum" "fail"
 fi
 
+# test 900: the library-side verification rejects the self-signed cert:
+# cert_verify_failed_notify fires exactly once, with X509 error 18
+killall test_server 2> /dev/null
+clear_log
+echo -e "cert_verify_failed_notify on a rejected cert ...\c"
+${SERVER_BIN} -l d -e > /dev/null &
+sleep 1
+${CLIENT_BIN} -l d -t 1 -E -x 900 > stdlog
+result=`grep -c "cert_verify_failed_notify|" stdlog`
+result18=`grep -c "cert_verify_failed_notify|x509_err:18|" stdlog`
+if [ "$result" -eq 1 ] && [ "$result18" -eq 1 ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "cert_verify_failed_notify_reject" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "cert_verify_failed_notify_reject" "fail"
+fi
+
+# test 901: self-signed allowed, the handshake succeeds: no notify
+killall test_server 2> /dev/null
+clear_log
+echo -e "cert_verify_failed_notify absent on an accepted cert ...\c"
+${SERVER_BIN} -l d -e > /dev/null &
+sleep 1
+${CLIENT_BIN} -s 1024 -l d -t 1 -E -x 901 > stdlog
+passed=`grep ">>>>>>>> pass:1" stdlog`
+result=`grep -c "cert_verify_failed_notify|" stdlog`
+if [ -n "$passed" ] && [ "$result" -eq 0 ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "cert_verify_failed_notify_accept" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "cert_verify_failed_notify_accept" "fail"
+fi
+
 ## RFC 9000 Section 7.4.1: 0-RTT transport parameter validation
 
 # test 701: server reduces max_streams_bidi after first connection,

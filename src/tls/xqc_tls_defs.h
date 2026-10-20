@@ -116,6 +116,11 @@ typedef xqc_int_t (*xqc_tls_cert_pt)(const unsigned char *certs[], const size_t 
     size_t certs_len, void *user_data);
 
 /**
+ * @brief library-side certificate rejection notify. x509_err is the X509_V_ERR_* code
+ */
+typedef void (*xqc_tls_cert_verify_failed_pt)(int x509_err, void *user_data);
+
+/**
  * @brief new session ticket callback, SHALL be stored by application
  */
 typedef void (*xqc_tls_session_pt)(const char *data, size_t data_len, void *user_data);
@@ -160,6 +165,9 @@ typedef struct xqc_tls_callbacks_s {
 
     /* certificate verify callback function */
     xqc_tls_cert_pt                 cert_verify_cb;
+
+    /* notify only: the library-side verification path rejected the certificate */
+    xqc_tls_cert_verify_failed_pt   cert_verify_failed_cb;
 
     /* session ticket callback function */
     xqc_tls_session_pt              session_cb;

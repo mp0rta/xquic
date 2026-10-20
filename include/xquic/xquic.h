@@ -340,6 +340,18 @@ typedef void (*xqc_conn_update_cid_notify_pt)(xqc_connection_t *conn,
 typedef int (*xqc_cert_verify_pt)(const unsigned char *certs[], const size_t cert_len[],
                                   size_t certs_len, void *conn_user_data);
 
+/**
+ * @brief client certificate rejected notify, for the library-side verification path
+ * (XQC_TLS_CERT_FLAG_NEED_VERIFY without XQC_TLS_CERT_FLAG_APP_VERIFY). Notify only: it
+ * cannot change the decision, which is already final; the connection closes as before.
+ * Called at most once per handshake, only when the library actually rejected the peer's
+ * certificate; never under APP_VERIFY (the application made the decision itself) and
+ * never when verification is off.
+ *
+ * @param x509_err the X509 verify error that caused the rejection (X509_V_ERR_*)
+ */
+typedef void (*xqc_cert_verify_failed_notify_pt)(int x509_err, void *conn_user_data);
+
 
 /**
  * @brief server peer addr changed notify
@@ -760,6 +772,11 @@ typedef struct xqc_transport_callbacks_s {
      * been established,
      */
     xqc_socket_write_pt conn_send_packet_before_accept;
+
+    /**
+     * library-side certificate rejection notify. OPTIONAL for client
+     */
+    xqc_cert_verify_failed_notify_pt cert_verify_failed_notify;
 
 } xqc_transport_callbacks_t;
 

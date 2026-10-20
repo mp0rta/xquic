@@ -274,6 +274,7 @@ uint64_t g_last_sock_op_time;
  * 735/736 for max_pkt_out_size at and above its cap
  * 800/801 for MASQUE e2e testcases
  * 802/803 for the end-of-pass per-path app-limited check
+ * 900/901 for cert_verify_failed_notify on a rejected / accepted certificate
  */
 int g_test_case;
 int g_ipv6;
@@ -4542,6 +4543,12 @@ xqc_client_cert_verify(const unsigned char *certs[],
     return 0;
 }
 
+void
+xqc_client_cert_verify_failed_notify(int x509_err, void *conn_user_data)
+{
+    printf("cert_verify_failed_notify|x509_err:%d|\n", x509_err);
+}
+
 void 
 xqc_client_ready_to_create_path(const xqc_cid_t *cid, 
     void *conn_user_data)
@@ -5358,6 +5365,7 @@ int main(int argc, char *argv[]) {
         .ready_to_create_path_notify = xqc_client_ready_to_create_path,
         .path_removed_notify = xqc_client_path_removed,
         .conn_closing = xqc_client_conn_closing_notify,
+        .cert_verify_failed_notify = xqc_client_cert_verify_failed_notify,
     };
 
     xqc_cong_ctrl_callback_t cong_ctrl;
@@ -5525,9 +5533,14 @@ int main(int argc, char *argv[]) {
         conn_settings.datagram_redundant_probe = 30000;
     }
 
-    if (g_test_case == 703) {
+    if (g_test_case == 703 || g_test_case == 900) {
         g_verify_cert = 1;
         g_verify_cert_allow_self_sign = 0;
+    }
+
+    if (g_test_case == 901) {
+        g_verify_cert = 1;
+        g_verify_cert_allow_self_sign = 1;
     }
 
     g_conn_settings = &conn_settings;

@@ -6981,6 +6981,15 @@ xqc_conn_tls_cert_verify_cb(const unsigned char *certs[], const size_t cert_len[
                                               conn->user_data);
 }
 
+void
+xqc_conn_tls_cert_verify_failed_cb(int x509_err, void *user_data)
+{
+    xqc_connection_t *conn = (xqc_connection_t *)user_data;
+    if (conn->transport_cbs.cert_verify_failed_notify) {
+        conn->transport_cbs.cert_verify_failed_notify(x509_err, conn->user_data);
+    }
+}
+
 
 void
 xqc_conn_tls_session_cb(const char *data, size_t data_len, void *user_data)
@@ -7067,6 +7076,7 @@ const xqc_tls_callbacks_t xqc_conn_tls_cbs = {
     .tp_cb = xqc_conn_tls_transport_params_cb,
     .alpn_select_cb = xqc_conn_tls_alpn_select_cb,
     .cert_verify_cb = xqc_conn_tls_cert_verify_cb,
+    .cert_verify_failed_cb = xqc_conn_tls_cert_verify_failed_cb,
     .session_cb = xqc_conn_tls_session_cb,
     .keylog_cb = xqc_conn_tls_keylog_cb,
     .error_cb = xqc_conn_tls_error_cb,

@@ -80,7 +80,7 @@ its case is retired so later changes cannot reuse it.
 |-------|--------------------|---------------|
 | `[705, 799]` | QUIC Transport core | `705-706`, `713-714`, `735-736` |
 | `[800, 899]` | Recovery and congestion control | `800-803` |
-| `[900, 999]` | QUIC-TLS | None |
+| `[900, 999]` | QUIC-TLS | `900-901` |
 | `[1000, 1099]` | HTTP/3 framing, streams, and settings | `1000-1012` |
 | `[1100, 1149]` | QPACK | None |
 | `[1150, 1199]` | HTTP priority | None |
