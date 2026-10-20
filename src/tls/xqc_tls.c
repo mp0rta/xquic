@@ -1155,9 +1155,13 @@ xqc_ssl_cert_verify_cb(int ok, X509_STORE_CTX *store_ctx)
 end:
     /* a failing return ends X509_verify_cert, so this fires at most once per
      * handshake; tolerated errors (ALLOW_SELF_SIGNED, an accepted unknown
-     * issuer) return success and are not rejections */
-    if (verify_res != XQC_SSL_SUCCESS && tls->cbs->cert_verify_failed_cb != NULL) {
-        tls->cbs->cert_verify_failed_cb(err_code, tls->user_data);
+     * issuer) return success and are not rejections. Read the error again:
+     * the certs array extraction may have replaced err_code's value. */
+    if (verify_res != XQC_SSL_SUCCESS
+        && tls->cbs->cert_verify_failed_cb != NULL)
+    {
+        tls->cbs->cert_verify_failed_cb(X509_STORE_CTX_get_error(store_ctx),
+                                        tls->user_data);
     }
     xqc_ssl_free_certs_array(certs_array, certs_array_len);
     return verify_res;

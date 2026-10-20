@@ -1096,7 +1096,8 @@ xqc_test_tls_cert_verify_failed_notify()
      *    notified once, with the X509 error that caused it. */
     memset(&xqc_tt_av, 0, sizeof(xqc_tt_av));
     xqc_tt_av.ret = XQC_OK;
-    CU_ASSERT(xqc_tt_av_handshake(XQC_TLS_CERT_FLAG_NEED_VERIFY, XQC_TRUE, &completed) != XQC_OK);
+    CU_ASSERT(xqc_tt_av_handshake(XQC_TLS_CERT_FLAG_NEED_VERIFY, XQC_TRUE,
+                                  &completed) != XQC_OK);
     CU_ASSERT(completed == XQC_FALSE);
     CU_ASSERT(xqc_tt_av.failed_calls == 1);
     CU_ASSERT(xqc_tt_av.failed_err == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT);
@@ -1132,8 +1133,9 @@ xqc_test_tls_cert_verify_failed_notify()
     /* 5. APP_VERIFY: the application decided and already knows */
     memset(&xqc_tt_av, 0, sizeof(xqc_tt_av));
     xqc_tt_av.ret = -XQC_TLS_INTERNAL;
-    CU_ASSERT(xqc_tt_av_handshake(XQC_TLS_CERT_FLAG_NEED_VERIFY | XQC_TLS_CERT_FLAG_APP_VERIFY,
-                                  XQC_TRUE, &completed) != XQC_OK);
+    CU_ASSERT(xqc_tt_av_handshake(
+        XQC_TLS_CERT_FLAG_NEED_VERIFY | XQC_TLS_CERT_FLAG_APP_VERIFY,
+        XQC_TRUE, &completed) != XQC_OK);
     CU_ASSERT(xqc_tt_av.calls == 1);
     CU_ASSERT(xqc_tt_av.failed_calls == 0);
 }

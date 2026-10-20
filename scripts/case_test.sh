@@ -5390,7 +5390,7 @@ clear_log
 echo -e "cert_verify_failed_notify on a rejected cert ...\c"
 ${SERVER_BIN} -l d -e > /dev/null &
 sleep 1
-${CLIENT_BIN} -l d -t 1 -E -x 900 > stdlog
+${CLIENT_BIN} -l d -t 1 -E -1 -x 900 > stdlog
 result=`grep -c "cert_verify_failed_notify|" stdlog`
 result18=`grep -c "cert_verify_failed_notify|x509_err:18|" stdlog`
 if [ "$result" -eq 1 ] && [ "$result18" -eq 1 ]; then
@@ -5407,7 +5407,7 @@ clear_log
 echo -e "cert_verify_failed_notify absent on an accepted cert ...\c"
 ${SERVER_BIN} -l d -e > /dev/null &
 sleep 1
-${CLIENT_BIN} -s 1024 -l d -t 1 -E -x 901 > stdlog
+${CLIENT_BIN} -s 1024 -l d -t 1 -E -1 -x 901 > stdlog
 passed=`grep ">>>>>>>> pass:1" stdlog`
 result=`grep -c "cert_verify_failed_notify|" stdlog`
 if [ -n "$passed" ] && [ "$result" -eq 0 ]; then

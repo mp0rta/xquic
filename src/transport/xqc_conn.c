@@ -6986,7 +6986,8 @@ xqc_conn_tls_cert_verify_failed_cb(int x509_err, void *user_data)
 {
     xqc_connection_t *conn = (xqc_connection_t *)user_data;
     if (conn->transport_cbs.cert_verify_failed_notify) {
-        conn->transport_cbs.cert_verify_failed_notify(x509_err, conn->user_data);
+        conn->transport_cbs.cert_verify_failed_notify(x509_err,
+                                                      conn->user_data);
     }
 }
 
