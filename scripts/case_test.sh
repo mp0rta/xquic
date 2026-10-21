@@ -5384,7 +5384,8 @@ else
 fi
 
 # test 900: the library-side verification rejects the self-signed cert:
-# cert_verify_failed_notify fires exactly once, with X509 error 18
+# cert_verify_failed_notify fires exactly once, with X509 error 18, and the
+# connection is still rejected
 killall test_server 2> /dev/null
 clear_log
 echo -e "cert_verify_failed_notify on a rejected cert ...\c"
@@ -5393,7 +5394,10 @@ sleep 1
 ${CLIENT_BIN} -l d -t 1 -E -1 -x 900 > stdlog
 result=`grep -c "cert_verify_failed_notify|" stdlog`
 result18=`grep -c "cert_verify_failed_notify|x509_err:18|" stdlog`
-if [ "$result" -eq 1 ] && [ "$result18" -eq 1 ]; then
+# the notify only reports: the connection must still close on the rejection
+# (CRYPTO_ERROR 0x112, as case 703 pins)
+rejected=`grep -c "conn_err:274" stdlog`
+if [ "$result" -eq 1 ] && [ "$result18" -eq 1 ] && [ "$rejected" -gt 0 ]; then
     echo ">>>>>>>> pass:1"
     case_print_result "cert_verify_failed_notify_reject" "pass"
 else
