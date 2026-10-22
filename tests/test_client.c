@@ -497,6 +497,34 @@ xqc_client_silent_dropped(uint64_t path_id)
     return g_silent.all_paths || path_id == g_silent.path_id;
 }
 
+/* cases 804-805: a path that drops every datagram above 1300 bytes, which
+ * only PMTUD probes exceed. 805 also drops one ordinary full-size packet,
+ * a real loss next to the probe losses. */
+#define XQC_TEST_CASE_PATH_MTU 1300
+
+static int
+xqc_client_mtu_dropped(const unsigned char *buf, size_t size)
+{
+    static int full_pkts = 0;
+
+    if (g_test_case != 804 && g_test_case != 805) {
+        return 0;
+    }
+
+    if (size > XQC_TEST_CASE_PATH_MTU) {
+        return 1;
+    }
+
+    /* the 20th full-size short header packet */
+    if (g_test_case == 805 && (buf[0] & 0x80) == 0 && size >= 1000
+        && ++full_pkts == 20)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
 static void
 xqc_client_silent_update_gap(xqc_usec_t now)
 {
@@ -1217,6 +1245,11 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
     memcpy(send_buf, buf, send_buf_size);
     xqc_test_record_udp_payload(size);
 
+    /* cases 804-805 */
+    if (xqc_client_mtu_dropped(buf, size)) {
+        return size;
+    }
+
     /* make initial packet loss to test 0rtt buffer */
     if (g_test_case == 39) {
         g_test_case = -1;
@@ -1364,6 +1397,11 @@ xqc_client_write_socket_ex(uint64_t path_id,
 
     /* cases 1300-1301: the packet is lost without any error */
     if (xqc_client_silent_dropped(path_id)) {
+        return size;
+    }
+
+    /* cases 804-805 */
+    if (xqc_client_mtu_dropped(buf, size)) {
         return size;
     }
 

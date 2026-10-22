@@ -1438,6 +1438,23 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
 		{
             if (po->po_flag & XQC_POF_IN_FLIGHT) {
 
+                /* RFC 9000 §14.4: the loss of a PMTU probe is not a reliable
+                 * indication of congestion. It only means the probed size does
+                 * not fit the path: drop it without counting it as lost, so it
+                 * neither starts a congestion event nor feeds the loss rate.
+                 * The probe carries only PING and PADDING, nothing to repair.
+                 */
+                if (po->po_flag & XQC_POF_PMTUD_PROBING) {
+                    xqc_send_ctl_decrease_inflight(conn, po);
+                    xqc_log(conn->log, XQC_LOG_DEBUG,
+                            "|PMTUD probe lost|pns:%d|pkt_num:%ui|size:%ud|",
+                            pns, po->po_pkt.pkt_num, po->po_buf_size);
+                    xqc_send_queue_remove_unacked(po, send_queue);
+                    xqc_send_queue_insert_free(po,
+                        &send_queue->sndq_free_packets, send_queue);
+                    continue;
+                }
+
                 /* reinjection */
                 if (conn->enable_multipath
                     && conn->reinj_callback
