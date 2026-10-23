@@ -514,6 +514,25 @@ xqc_client_mtu_dropped(const unsigned char *buf, size_t size)
         return size > XQC_TEST_CASE_PATH_MTU && ++big_pkts > 300;
     }
 
+    /* case 807: the path is smaller than the base size (1298) from the
+     * start: only datagrams up to 1260 bytes get through */
+    if (g_test_case == 807) {
+        return size > 1260;
+    }
+
+    /* case 808: an outage at the base size: after 300 short header
+     * packets, every datagram is lost for one second */
+    if (g_test_case == 808) {
+        static uint64_t outage_start = 0;
+        if (outage_start == 0) {
+            if ((buf[0] & 0x80) == 0 && ++full_pkts == 300) {
+                outage_start = xqc_now();
+            }
+            return outage_start != 0;
+        }
+        return xqc_now() - outage_start < 1000000;
+    }
+
     if (g_test_case != 804 && g_test_case != 805) {
         return 0;
     }
@@ -1252,7 +1271,7 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
     memcpy(send_buf, buf, send_buf_size);
     xqc_test_record_udp_payload(size);
 
-    /* cases 804-806 */
+    /* cases 804-808 */
     if (xqc_client_mtu_dropped(buf, size)) {
         return size;
     }
@@ -1407,7 +1426,7 @@ xqc_client_write_socket_ex(uint64_t path_id,
         return size;
     }
 
-    /* cases 804-806 */
+    /* cases 804-808 */
     if (xqc_client_mtu_dropped(buf, size)) {
         return size;
     }
@@ -5668,6 +5687,14 @@ int main(int argc, char *argv[]) {
 
     if (g_test_case == 736) {
         conn_settings.max_pkt_out_size = 1500;
+    }
+
+    /* cases 807-808: mqvpn's base size, and no search above it in 808 */
+    if (g_test_case == 807 || g_test_case == 808) {
+        conn_settings.max_pkt_out_size = 1298;
+    }
+    if (g_test_case == 808) {
+        conn_settings.probing_pkt_out_size = 1298;
     }
     
 

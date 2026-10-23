@@ -1464,15 +1464,16 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                     continue;
                 }
 
-                /* RFC 8899 s4.3: packets above the base size keep getting
-                 * lost (the losses are detected from the ACKs of smaller
-                 * ones). Packets sent before the last acked large one are
+                /* RFC 8899 s4.3: large packets keep getting lost (the
+                 * losses are detected from the ACKs of smaller ones).
+                 * Packets sent before the last acked large one are
                  * ordinary losses and do not count. A queue overflow also
                  * loses many in a row, so this only makes the path suspect:
                  * probes at the current size decide, below. */
                 if (conn->enable_pmtud && pns == XQC_PNS_APP_DATA
                     && send_ctl->ctl_bh_suspect_time == 0
-                    && po->po_used_size > conn->conn_settings.max_pkt_out_size
+                    && po->po_used_size > xqc_pmtud_big_size(conn,
+                                              send_ctl->ctl_path->curr_pkt_out_size)
                     && po->po_pkt.pkt_num > send_ctl->ctl_largest_big_acked
                     && ++send_ctl->ctl_big_lost_cnt >= XQC_PMTUD_BLACKHOLE_LOSSES)
                 {
@@ -1802,6 +1803,7 @@ xqc_send_ctl_pmtud_bh_reset(xqc_send_ctl_t *send_ctl)
     send_ctl->ctl_bh_probe_time = 0;
     send_ctl->ctl_bh_probes_sent = 0;
     send_ctl->ctl_bh_probes_lost = 0;
+    send_ctl->ctl_bh_small_acked = 0;
 }
 
 void
@@ -1928,13 +1930,20 @@ xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl,
                 xqc_send_ctl_on_pmtud_ping_acked(send_ctl, packet_out);
             }
 
-            /* a packet above the base size got through, a probe included
-             * (its PING is small, its size is the padded buffer): no black
-             * hole */
             if (do_cc && packet_out->po_pkt.pkt_pns == XQC_PNS_APP_DATA
-                && (packet_out->po_used_size > conn->conn_settings.max_pkt_out_size
+                && send_ctl->ctl_bh_suspect_time
+                && packet_out->po_sent_time >= send_ctl->ctl_bh_suspect_time)
+            {
+                send_ctl->ctl_bh_small_acked = 1;
+            }
+
+            /* a large packet got through, a probe included (its PING is
+             * small, its size is the padded buffer): no black hole */
+            size_t big = xqc_pmtud_big_size(conn, send_ctl->ctl_path->curr_pkt_out_size);
+            if (do_cc && packet_out->po_pkt.pkt_pns == XQC_PNS_APP_DATA
+                && (packet_out->po_used_size > big
                     || ((packet_out->po_flag & XQC_POF_PMTUD_PROBING)
-                        && packet_out->po_buf_size > conn->conn_settings.max_pkt_out_size))
+                        && packet_out->po_buf_size > big))
                 && packet_out->po_pkt.pkt_num > send_ctl->ctl_largest_big_acked)
             {
                 send_ctl->ctl_largest_big_acked = packet_out->po_pkt.pkt_num;

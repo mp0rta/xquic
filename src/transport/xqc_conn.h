@@ -795,6 +795,18 @@ void xqc_conn_try_to_update_mss(xqc_connection_t *conn);
 #define XQC_PMTUD_MIN_PROBE_TIMEOUT (50 * 1000)
 /* how long a search below the cap stands before the next one (us) */
 #define XQC_PMTUD_RAISE_INTERVAL    (600 * 1000000ULL)
+/* a black hole at the base size goes down to this, QUIC's minimum, when
+ * smaller packets still get through: the path is smaller than the base */
+#define XQC_PMTUD_FLOOR             XQC_QUIC_MIN_MSS
+
+/* Packets above this size on @path tell whether large packets get through:
+ * the base size while above it, the floor once at or below it. */
+static inline size_t
+xqc_pmtud_big_size(xqc_connection_t *conn, size_t curr_pkt_out_size)
+{
+    size_t base = conn->conn_settings.max_pkt_out_size;
+    return curr_pkt_out_size > base || base <= XQC_PMTUD_FLOOR ? base : XQC_PMTUD_FLOOR;
+}
 
 void xqc_conn_pmtud_on_blackhole(xqc_connection_t *conn, xqc_path_ctx_t *path,
     const char *reason);

@@ -5955,6 +5955,45 @@ else
 fi
 grep_err_log
 
+# ── PMTUD below the base size (case IDs 807/808)
+# 807: the path carries only 1260 bytes, less than the base size (1298),
+# from the start. The black hole at the base size is confirmed while the
+# small packets get through, so the size goes down to the floor (1200),
+# the search finds what fits, and the transfer completes.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "PMTUD path smaller than the base size ...\c"
+sudo ${CLIENT_BIN} -s 10240000 -l d -t 10 -E --pmtud 1 -x 807 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+floor=`grep "|PMTUD black hole|.*|back to:1200|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$floor" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "pmtud_path_below_base" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} floor:${floor:+y} errlog:${errlog:+y})"
+    case_print_result "pmtud_path_below_base" "fail"
+fi
+grep_err_log
+
+# 808: an outage at the base size loses packets of every size: nothing is
+# acked, so it is not a black hole and the size stays at the base.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "PMTUD outage does not go below the base size ...\c"
+sudo ${CLIENT_BIN} -s 10240000 -l d -t 10 -E --pmtud 1 -x 808 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+floor=`grep "|PMTUD black hole|.*|back to:1200|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -z "$floor" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "pmtud_outage_stays_at_base" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} floor:${floor:+y} errlog:${errlog:+y})"
+    case_print_result "pmtud_outage_stays_at_base" "fail"
+fi
+grep_err_log
+
 killall test_server 2> /dev/null
 
 cd -

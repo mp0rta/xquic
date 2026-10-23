@@ -120,7 +120,7 @@ typedef struct xqc_send_ctl_s {
     unsigned                    ctl_pto_count;
 
     /* PMTUD black hole detection (RFC 8899 s4.3): the largest 1-RTT packet
-     * number acked among packets above the base size, and how many such
+     * number acked among large packets (xqc_pmtud_big_size), and how many such
      * packets sent after it were lost since. Enough of them make the path
      * suspect; probes at the current size then confirm it or not. */
     xqc_packet_number_t         ctl_largest_big_acked;
@@ -129,6 +129,9 @@ typedef struct xqc_send_ctl_s {
     xqc_usec_t                  ctl_bh_probe_time;
     unsigned                    ctl_bh_probes_sent;
     unsigned                    ctl_bh_probes_lost;
+    /* a packet sent after the path became suspect was acked: something gets
+     * through, so it is not an outage */
+    unsigned                    ctl_bh_small_acked;
 
     unsigned                    ctl_send_count;
     unsigned                    ctl_lost_count;

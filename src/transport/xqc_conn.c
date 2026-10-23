@@ -2350,20 +2350,30 @@ xqc_conn_pmtud_on_blackhole(xqc_connection_t *conn, xqc_path_ctx_t *path,
     xqc_list_head_t *pos, *next;
     size_t base = conn->conn_settings.max_pkt_out_size;
     size_t failed = path->curr_pkt_out_size;
+    size_t back_to = xqc_pmtud_big_size(conn, failed);
     size_t min_pkt_out_size = 0;
 
-    if (failed <= base) {
+    if (failed <= back_to) {
+        return;
+    }
+
+    /* Below the base size only when smaller packets still get through:
+     * when nothing does, the path is down, not small. */
+    if (back_to < base && !path->path_send_ctl->ctl_bh_small_acked) {
+        xqc_log(conn->log, XQC_LOG_INFO, "|PMTUD black hole|path:%ui|size:%uz|"
+                "nothing acked, not going below the base|", path->path_id, failed);
+        xqc_send_ctl_pmtud_bh_reset(path->path_send_ctl);
         return;
     }
 
     xqc_log(conn->log, XQC_LOG_WARN, "|PMTUD black hole|path:%ui|size:%uz|back to:%uz|"
             "reason:%s|big_lost:%ud|probes:%ud/%ud|pto:%ud|srtt:%ui|",
-            path->path_id, failed, base, reason,
+            path->path_id, failed, back_to, reason,
             path->path_send_ctl->ctl_big_lost_cnt, path->path_send_ctl->ctl_bh_probes_lost,
             path->path_send_ctl->ctl_bh_probes_sent, path->path_send_ctl->ctl_pto_count,
             path->path_send_ctl->ctl_srtt);
 
-    path->curr_pkt_out_size = base;
+    path->curr_pkt_out_size = back_to;
     xqc_send_ctl_pmtud_bh_reset(path->path_send_ctl);
     conn->pmtud_blackhole_time = xqc_monotonic_timestamp();
 
