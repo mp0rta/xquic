@@ -1921,6 +1921,11 @@ typedef struct xqc_conn_stats_s {
     /**
      * Active path metrics. Dynamically allocated by xquic.
      *
+     * One entry per path in the ACTIVE, CLOSING or CLOSED state: first the
+     * paths that are not CLOSED, in the order they were created, then the
+     * CLOSED ones, in the order they reached CLOSED. Once a path has
+     * closed, the entries are no longer in creation order.
+     *
      * Ownership: xquic allocates the buffer; caller MUST free() (libc free,
      * not xqc_free) the paths_info pointer after use to avoid leaking. On
      * error returns (e.g. connection not found, allocation failure),
