@@ -728,9 +728,9 @@ error:
 }
 
 
-int
-xqc_write_pmtud_ping_to_packet(xqc_path_ctx_t *path, 
-    size_t probing_size, xqc_pkt_type_t pkt_type)
+static int
+xqc_write_pmtud_ping(xqc_path_ctx_t *path, size_t probing_size, xqc_pkt_type_t pkt_type,
+    xqc_bool_t probe_list)
 {
     int ret;
     xqc_packet_out_t *packet_out;
@@ -763,12 +763,34 @@ xqc_write_pmtud_ping_to_packet(xqc_path_ctx_t *path,
     packet_out->po_flag |= XQC_POF_PMTUD_PROBING;
     packet_out->po_max_pkt_out_size = conn->max_pkt_out_size;
 
-    xqc_send_queue_move_to_high_pri(&packet_out->po_list, conn->conn_send_queue);
+    if (probe_list) {
+        /* not held back by a congestion window full of lost packets */
+        xqc_send_queue_remove_send(&packet_out->po_list);
+        xqc_send_queue_insert_probe(&packet_out->po_list,
+                                    &conn->conn_send_queue->sndq_pto_probe_packets);
+
+    } else {
+        xqc_send_queue_move_to_high_pri(&packet_out->po_list, conn->conn_send_queue);
+    }
     return XQC_OK;
 
 error:
     xqc_maybe_recycle_packet_out(packet_out, conn);
     return ret;
+}
+
+int
+xqc_write_pmtud_ping_to_packet(xqc_path_ctx_t *path, 
+    size_t probing_size, xqc_pkt_type_t pkt_type)
+{
+    return xqc_write_pmtud_ping(path, probing_size, pkt_type, XQC_FALSE);
+}
+
+/* a probe at the path's current size, to check a suspected black hole */
+int
+xqc_write_pmtud_bh_probe(xqc_path_ctx_t *path, size_t probing_size)
+{
+    return xqc_write_pmtud_ping(path, probing_size, XQC_PTYPE_SHORT_HEADER, XQC_TRUE);
 }
 
 int

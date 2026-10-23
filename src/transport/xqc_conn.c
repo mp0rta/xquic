@@ -2120,6 +2120,65 @@ xqc_conn_try_to_update_mss(xqc_connection_t *conn)
     }
 }
 
+/*
+ * Packets above the base size no longer get through @path: go back to the
+ * base size on it, so the connection sends what every path carries, and
+ * search again from there, below the size that failed.
+ */
+void
+xqc_conn_pmtud_on_blackhole(xqc_connection_t *conn, xqc_path_ctx_t *path,
+    const char *reason)
+{
+    xqc_path_ctx_t *p;
+    xqc_list_head_t *pos, *next;
+    size_t base = conn->conn_settings.max_pkt_out_size;
+    size_t failed = path->curr_pkt_out_size;
+    size_t min_pkt_out_size = 0;
+
+    if (failed <= base) {
+        return;
+    }
+
+    xqc_log(conn->log, XQC_LOG_WARN, "|PMTUD black hole|path:%ui|size:%uz|back to:%uz|"
+            "reason:%s|big_lost:%ud|probes:%ud/%ud|pto:%ud|srtt:%ui|",
+            path->path_id, failed, base, reason,
+            path->path_send_ctl->ctl_big_lost_cnt, path->path_send_ctl->ctl_bh_probes_lost,
+            path->path_send_ctl->ctl_bh_probes_sent, path->path_send_ctl->ctl_pto_count,
+            path->path_send_ctl->ctl_srtt);
+
+    path->curr_pkt_out_size = base;
+    xqc_send_ctl_pmtud_bh_reset(path->path_send_ctl);
+    conn->pmtud_blackhole_time = xqc_monotonic_timestamp();
+
+    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
+        p = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+        if (p->path_state >= XQC_PATH_STATE_CLOSING) {
+            continue;
+        }
+        if (min_pkt_out_size == 0 || p->curr_pkt_out_size < min_pkt_out_size) {
+            min_pkt_out_size = p->curr_pkt_out_size;
+        }
+    }
+    if (min_pkt_out_size == 0 || min_pkt_out_size >= conn->pkt_out_size) {
+        return;
+    }
+
+    conn->pkt_out_size = min_pkt_out_size;
+    conn->max_pkt_out_size = failed - 1;
+    conn->probing_pkt_out_size = (conn->pkt_out_size + conn->max_pkt_out_size) >> 1;
+    conn->probing_cnt = 0;
+    conn->conn_flag |= XQC_CONN_FLAG_PMTUD_PROBING;
+    xqc_timer_unset(&conn->conn_timer_manager, XQC_TIMER_PMTUD_PROBING);
+    xqc_datagram_record_mss(conn);
+
+    /* a small ack-eliciting packet, so ACKs flow again on this path */
+    if (xqc_path_send_ping_to_probe(path, XQC_PNS_APP_DATA,
+                                    XQC_PATH_SPECIFIED_BY_PTMUD) != XQC_OK)
+    {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|PMTUD black hole|ping failed|");
+    }
+}
+
 
 ssize_t
 xqc_send_burst(xqc_connection_t *conn, xqc_path_ctx_t *path, struct iovec *iov, int cnt)
@@ -5810,6 +5869,15 @@ xqc_conn_ptmud_probing(xqc_connection_t *conn)
     if ((conn->max_pkt_out_size - conn->pkt_out_size) < 10) {
         xqc_log_event(conn->log, CON_MTU_UPDATED, conn, 1);
         conn->conn_flag &= ~XQC_CONN_FLAG_PMTUD_PROBING;
+        /* RFC 8899 s5.1.1: below the cap, search again from the top later,
+         * in case the path got larger */
+        if (conn->pkt_out_size + 10 <= conn->conn_settings.probing_pkt_out_size) {
+            conn->max_pkt_out_size = conn->conn_settings.probing_pkt_out_size;
+            conn->probing_pkt_out_size = conn->max_pkt_out_size;
+            conn->probing_cnt = 0;
+            xqc_timer_set(&conn->conn_timer_manager, XQC_TIMER_PMTUD_PROBING,
+                          xqc_monotonic_timestamp(), XQC_PMTUD_RAISE_INTERVAL);
+        }
         return;
     }
     xqc_log_event(conn->log, CON_MTU_UPDATED, conn, 0);

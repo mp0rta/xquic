@@ -212,6 +212,8 @@ xqc_send_ctl_reset(xqc_send_ctl_t *send_ctl)
     xqc_path_ctx_t *path = send_ctl->ctl_path;
 
     send_ctl->ctl_pto_count = 0;
+    send_ctl->ctl_largest_big_acked = 0;
+    xqc_send_ctl_pmtud_bh_reset(send_ctl);
     send_ctl->ctl_minrtt = XQC_MAX_UINT32_VALUE;
     send_ctl->ctl_srtt = conn->conn_settings.initial_rtt;
     send_ctl->ctl_rttvar = send_ctl->ctl_srtt / 2;
@@ -1413,6 +1415,7 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
     xqc_int_t repair_dgram = 0;
     xqc_reinjection_mode_t mode = conn->conn_settings.mp_enable_reinjection & XQC_REINJ_UNACK_BEFORE_SCHED;
     int has_reinjection = 0;
+    int blackhole = 0;
 
     xqc_list_for_each_safe(pos, next, &send_queue->sndq_unacked_packets[pns]) {
         po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
@@ -1443,6 +1446,15 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                  * a congestion control reaction. Drop the probe, which
                  * carries nothing to repair, without counting it as lost. */
                 if (po->po_flag & XQC_POF_PMTUD_PROBING) {
+                    /* a probe at the current size, sent to check a
+                     * suspected black hole */
+                    if (send_ctl->ctl_bh_suspect_time
+                        && po->po_sent_time >= send_ctl->ctl_bh_suspect_time
+                        && po->po_buf_size == send_ctl->ctl_path->curr_pkt_out_size
+                        && ++send_ctl->ctl_bh_probes_lost >= XQC_PMTUD_BLACKHOLE_PROBES)
+                    {
+                        blackhole = 1;
+                    }
                     xqc_send_ctl_decrease_inflight(conn, po);
                     xqc_log(conn->log, XQC_LOG_DEBUG,
                             "|PMTUD probe lost|pns:%d|pkt_num:%ui|size:%ud|",
@@ -1450,6 +1462,22 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                     xqc_send_queue_remove_unacked(po, send_queue);
                     xqc_send_queue_insert_free(po, &send_queue->sndq_free_packets, send_queue);
                     continue;
+                }
+
+                /* RFC 8899 s4.3: packets above the base size keep getting
+                 * lost (the losses are detected from the ACKs of smaller
+                 * ones). Packets sent before the last acked large one are
+                 * ordinary losses and do not count. A queue overflow also
+                 * loses many in a row, so this only makes the path suspect:
+                 * probes at the current size decide, below. */
+                if (conn->enable_pmtud && pns == XQC_PNS_APP_DATA
+                    && send_ctl->ctl_bh_suspect_time == 0
+                    && po->po_used_size > conn->conn_settings.max_pkt_out_size
+                    && po->po_pkt.pkt_num > send_ctl->ctl_largest_big_acked
+                    && ++send_ctl->ctl_big_lost_cnt >= XQC_PMTUD_BLACKHOLE_LOSSES)
+                {
+                    send_ctl->ctl_bh_suspect_time = now;
+                    send_ctl->ctl_bh_probe_time = now;
                 }
 
                 /* reinjection */
@@ -1564,6 +1592,15 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
             xqc_list_splice_tail_init(&path->path_reinj_tmp_buf,
                                       &path->path_schedule_buf[XQC_SEND_TYPE_NORMAL]);
         }
+    }
+
+    if (blackhole) {
+        xqc_conn_pmtud_on_blackhole(conn, send_ctl->ctl_path, "loss");
+
+    } else if (send_ctl->ctl_bh_suspect_time
+               && now - send_ctl->ctl_bh_probe_time >= send_ctl->ctl_srtt / 2)
+    {
+        xqc_send_ctl_pmtud_bh_probe(send_ctl, now);
     }
 
     /* update statistic */
@@ -1731,6 +1768,36 @@ xqc_send_ctl_cc_on_ack(xqc_send_ctl_t *send_ctl, xqc_packet_out_t *acked_packet,
 #endif
 }
 
+/* A black hole is suspected: probes at the current size, up to
+ * XQC_PMTUD_BLACKHOLE_PROBES, each sent when the ACK for the small PING
+ * after the previous one comes back, so about one per RTT. A full queue
+ * lets one through, a black hole none. */
+void
+xqc_send_ctl_pmtud_bh_probe(xqc_send_ctl_t *send_ctl, xqc_usec_t now)
+{
+    xqc_path_ctx_t *path = send_ctl->ctl_path;
+
+    if (send_ctl->ctl_bh_probes_sent >= XQC_PMTUD_BLACKHOLE_PROBES) {
+        return;
+    }
+    if (xqc_write_pmtud_bh_probe(path, path->curr_pkt_out_size) == XQC_OK)
+    {
+        send_ctl->ctl_bh_probes_sent++;
+        xqc_path_send_ping_to_probe(path, XQC_PNS_APP_DATA, XQC_PATH_SPECIFIED_BY_PTMUD);
+    }
+    send_ctl->ctl_bh_probe_time = now;
+}
+
+void
+xqc_send_ctl_pmtud_bh_reset(xqc_send_ctl_t *send_ctl)
+{
+    send_ctl->ctl_big_lost_cnt = 0;
+    send_ctl->ctl_bh_suspect_time = 0;
+    send_ctl->ctl_bh_probe_time = 0;
+    send_ctl->ctl_bh_probes_sent = 0;
+    send_ctl->ctl_bh_probes_lost = 0;
+}
+
 void
 xqc_send_ctl_on_pmtud_ping_acked(xqc_send_ctl_t *send_ctl, 
     xqc_packet_out_t *po)
@@ -1742,8 +1809,14 @@ xqc_send_ctl_on_pmtud_ping_acked(xqc_send_ctl_t *send_ctl,
         xqc_log(conn->log, XQC_LOG_WARN, 
                 "|PMTUD probe acked on invalid path|path:%ui|", 
                 po->po_path_id);
+        return;
     }
     
+    /* sent before the last black hole: the path may have shrunk since */
+    if (po->po_sent_time < conn->pmtud_blackhole_time) {
+        return;
+    }
+
     if (po->po_buf_size > path->curr_pkt_out_size) {
         /* update path MTU */
         path->curr_pkt_out_size = po->po_buf_size;
@@ -1847,6 +1920,19 @@ xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl,
             /* PTMUD probing success */
             if (packet_out->po_flag & XQC_POF_PMTUD_PROBING) {
                 xqc_send_ctl_on_pmtud_ping_acked(send_ctl, packet_out);
+            }
+
+            /* a packet above the base size got through, a probe included
+             * (its PING is small, its size is the padded buffer): no black
+             * hole */
+            if (packet_out->po_pkt.pkt_pns == XQC_PNS_APP_DATA
+                && (packet_out->po_used_size > conn->conn_settings.max_pkt_out_size
+                    || ((packet_out->po_flag & XQC_POF_PMTUD_PROBING)
+                        && packet_out->po_buf_size > conn->conn_settings.max_pkt_out_size))
+                && packet_out->po_pkt.pkt_num > send_ctl->ctl_largest_big_acked)
+            {
+                send_ctl->ctl_largest_big_acked = packet_out->po_pkt.pkt_num;
+                xqc_send_ctl_pmtud_bh_reset(send_ctl);
             }
         }
 

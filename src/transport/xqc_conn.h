@@ -433,6 +433,8 @@ struct xqc_connection_s {
 
     /* for qlog */
     uint32_t MTU_updated_count;
+    /* last PMTUD black hole: probes sent before it say nothing of the path now */
+    xqc_usec_t pmtud_blackhole_time;
     uint64_t packet_dropped_count; /**< RFC 9001 §6.6: decryption failure count across all keys */
 
 
@@ -782,6 +784,16 @@ xqc_int_t xqc_conn_handle_deprecated_stateless_reset(xqc_connection_t *conn,
                                                      const xqc_cid_t *scid);
 
 void xqc_conn_try_to_update_mss(xqc_connection_t *conn);
+
+/* PMTUD black hole (RFC 8899 s4.3): losses of packets above the base size
+ * after the last large one was acked, or PTOs while sending above it. */
+#define XQC_PMTUD_BLACKHOLE_LOSSES  3
+#define XQC_PMTUD_BLACKHOLE_PROBES  3
+/* how long a search below the cap stands before the next one (us) */
+#define XQC_PMTUD_RAISE_INTERVAL    (600 * 1000000ULL)
+
+void xqc_conn_pmtud_on_blackhole(xqc_connection_t *conn, xqc_path_ctx_t *path,
+    const char *reason);
 
 void xqc_conn_get_stats_internal(xqc_connection_t *conn, xqc_conn_stats_t *stats);
 

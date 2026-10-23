@@ -100,7 +100,8 @@ xqc_datagram_record_mss(xqc_connection_t *conn)
     
     conn->dgram_mss = xqc_min(xqc_min(dgram_frame_limit, udp_payload_limit), mtu_limit);
 end:
-    if (conn->dgram_mss > old_mss) {
+    /* notify a smaller MSS too: PMTUD shrinks it on a black hole */
+    if (conn->dgram_mss != old_mss && conn->dgram_mss > 0) {
         conn->conn_flag |= XQC_CONN_FLAG_DGRAM_MSS_NOTIFY;
 
     } else {

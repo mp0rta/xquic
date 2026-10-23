@@ -109,6 +109,17 @@ xqc_timer_loss_detection_timeout(xqc_timer_type_t type, xqc_usec_t now, void *us
 
     send_ctl->ctl_pto_count++;
     conn->max_pto_cnt = xqc_max(send_ctl->ctl_pto_count, conn->max_pto_cnt);
+
+    /* Nothing acked for a PTO while sending above the base size: with no
+     * small packet in flight there are no ACKs to declare the large ones
+     * lost, so suspect a black hole now and let the probes decide. */
+    if (conn->enable_pmtud
+        && send_ctl->ctl_bh_suspect_time == 0
+        && path->curr_pkt_out_size > conn->conn_settings.max_pkt_out_size)
+    {
+        send_ctl->ctl_bh_suspect_time = now;
+        xqc_send_ctl_pmtud_bh_probe(send_ctl, now);
+    }
     xqc_log(conn->log, XQC_LOG_DEBUG, "|xqc_send_ctl_set_loss_detection_timer|PTO|conn:%p|pto_count:%ud", 
             conn, send_ctl->ctl_pto_count);
     xqc_send_ctl_set_loss_detection_timer(send_ctl);
