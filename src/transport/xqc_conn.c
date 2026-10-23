@@ -2153,9 +2153,10 @@ xqc_conn_pmtud_split_lost(xqc_connection_t *conn, xqc_packet_out_t *po)
     xqc_frame_type_bit_t allowed = XQC_FRAME_BIT_STREAM | XQC_FRAME_BIT_ACK
         | XQC_FRAME_BIT_ACK_MP | XQC_FRAME_BIT_PING | XQC_FRAME_BIT_PADDING;
 
-    /* po_buf_size is the packet size when @po was built */
+    /* built at a larger size (po_buf_size), and does not fit the current one */
     if (!conn->enable_pmtud
         || po->po_buf_size <= conn->pkt_out_size
+        || po->po_used_size <= conn->pkt_out_size
         || po->po_pkt.pkt_type != XQC_PTYPE_SHORT_HEADER
         || !(po->po_frame_types & XQC_FRAME_BIT_STREAM)
         || (po->po_frame_types & ~allowed))
@@ -2216,6 +2217,126 @@ xqc_conn_pmtud_split_lost(xqc_connection_t *conn, xqc_packet_out_t *po)
 }
 
 /*
+ * @po is about to be sent, but was built before a PMTUD black hole brought
+ * the packet size down: it would be lost, and a pacing congestion
+ * controller can take seconds to drain such a backlog. A DATAGRAM packet
+ * cannot be split, so drop it as the path would; write the data of a
+ * STREAM packet into packets that fit. XQC_TRUE if @po is gone.
+ */
+xqc_bool_t
+xqc_conn_pmtud_drop_oversize(xqc_connection_t *conn, xqc_packet_out_t *po)
+{
+    xqc_frame_type_bit_t dgram = XQC_FRAME_BIT_DATAGRAM | XQC_FRAME_BIT_ACK
+        | XQC_FRAME_BIT_ACK_MP | XQC_FRAME_BIT_PING | XQC_FRAME_BIT_PADDING;
+    xqc_path_ctx_t *path;
+
+    if (!conn->enable_pmtud
+        || po->po_buf_size <= conn->pkt_out_size
+        || po->po_used_size <= conn->pkt_out_size
+        || (po->po_flag & XQC_POF_PMTUD_PROBING)
+        || po->po_pkt.pkt_type != XQC_PTYPE_SHORT_HEADER)
+    {
+        return XQC_FALSE;
+    }
+
+    if ((po->po_frame_types & XQC_FRAME_BIT_DATAGRAM) && !(po->po_frame_types & ~dgram)) {
+        xqc_datagram_notify_loss(conn, po);
+
+    } else if (xqc_conn_pmtud_split_lost(conn, po) != XQC_OK) {
+        return XQC_FALSE;
+    }
+
+    xqc_log(conn->log, XQC_LOG_DEBUG, "|PMTUD|oversize packet not sent|pn:%ui|copy:%d|refs:%ud|flag:%ud|inbuf:%d|size:%uz|used:%ud|to:%uz|frame:%s|",
+            po->po_pkt.pkt_num, po->po_origin != NULL, po->po_origin_ref_cnt, po->po_flag,
+            !!(po->po_flag & XQC_POF_IN_PATH_BUF_LIST),
+            po->po_buf_size, po->po_used_size, conn->pkt_out_size,
+            xqc_frame_type_2_str(conn->engine, po->po_frame_types));
+    path = xqc_conn_find_path_by_path_id(conn, po->po_path_id);
+    xqc_send_queue_maybe_remove_unacked(po, conn->conn_send_queue, path);
+    return XQC_TRUE;
+}
+
+/*
+ * After a black hole, the packets queued but not sent yet that do not fit
+ * the new size: drop or split them all now. Left to the send loop, they
+ * would go one congestion window per tick, and with a pacing congestion
+ * controller the backlog at the old size can be thousands of packets, in
+ * front of everything new.
+ */
+static void
+xqc_conn_pmtud_drop_unsent(xqc_connection_t *conn)
+{
+    xqc_send_queue_t *sq = conn->conn_send_queue;
+    xqc_list_head_t *lists[] = {
+        &sq->sndq_send_packets, &sq->sndq_send_packets_high_pri, &sq->sndq_lost_packets,
+    };
+    xqc_list_head_t *pos, *next, *ppos, *pnext;
+    xqc_path_ctx_t *path;
+    xqc_packet_out_t *po;
+
+    for (size_t i = 0; i < sizeof(lists) / sizeof(lists[0]); i++) {
+        xqc_list_for_each_safe(pos, next, lists[i]) {
+            po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+            xqc_conn_pmtud_drop_oversize(conn, po);
+        }
+    }
+
+    xqc_list_for_each_safe(ppos, pnext, &conn->conn_paths_list) {
+        path = xqc_list_entry(ppos, xqc_path_ctx_t, path_list);
+        for (int t = 0; t < XQC_SEND_TYPE_N; t++) {
+            xqc_list_for_each_safe(pos, next, &path->path_schedule_buf[t]) {
+                po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+                xqc_conn_pmtud_drop_oversize(conn, po);
+            }
+        }
+    }
+}
+
+/*
+ * After a black hole on @path, the packets in flight there that do not fit
+ * the new size will never arrive. Nothing marks them lost either: that
+ * needs a later packet acked, and new packets wait behind them in the
+ * congestion window, while the PTO resends them at the size that fails.
+ * Take them out of flight now: report lost datagrams, and resend the data
+ * of the others in packets that fit.
+ */
+static void
+xqc_conn_pmtud_drop_inflight(xqc_connection_t *conn, xqc_path_ctx_t *path)
+{
+    xqc_send_queue_t *sq = conn->conn_send_queue;
+    xqc_list_head_t *pos, *next;
+    xqc_packet_out_t *po;
+
+    xqc_list_for_each_safe(pos, next, &sq->sndq_unacked_packets[XQC_PNS_APP_DATA]) {
+        po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+
+        if (po->po_path_id != path->path_id
+            || !(po->po_flag & XQC_POF_IN_FLIGHT)
+            || po->po_used_size <= conn->pkt_out_size
+            || po->po_acked || (po->po_origin && po->po_origin->po_acked))
+        {
+            continue;
+        }
+
+        xqc_send_ctl_decrease_inflight(conn, po);
+        if (po->po_flag & XQC_POF_PMTUD_PROBING) {
+            xqc_send_queue_remove_unacked(po, sq);
+            xqc_send_queue_insert_free(po, &sq->sndq_free_packets, sq);
+
+        } else if (po->po_frame_types & XQC_FRAME_BIT_DATAGRAM) {
+            xqc_datagram_notify_loss(conn, po);
+            xqc_send_queue_maybe_remove_unacked(po, sq, NULL);
+
+        } else if (xqc_conn_pmtud_split_lost(conn, po) == XQC_OK) {
+            xqc_send_queue_maybe_remove_unacked(po, sq, NULL);
+
+        } else if (XQC_NEED_REPAIR(po->po_frame_types)) {
+            xqc_send_queue_copy_to_lost(po, sq, XQC_TRUE);
+        }
+    }
+}
+
+/*
  * Packets above the base size no longer get through @path: go back to the
  * base size on it, so the connection sends what every path carries, and
  * search again from there, below the size that failed.
@@ -2265,6 +2386,9 @@ xqc_conn_pmtud_on_blackhole(xqc_connection_t *conn, xqc_path_ctx_t *path,
     conn->conn_flag |= XQC_CONN_FLAG_PMTUD_PROBING;
     xqc_timer_unset(&conn->conn_timer_manager, XQC_TIMER_PMTUD_PROBING);
     xqc_datagram_record_mss(conn);
+
+    xqc_conn_pmtud_drop_inflight(conn, path);
+    xqc_conn_pmtud_drop_unsent(conn);
 
     /* a small ack-eliciting packet, so ACKs flow again on this path */
     if (xqc_path_send_ping_to_probe(path, XQC_PNS_APP_DATA,
@@ -2349,6 +2473,10 @@ xqc_check_acked_or_dropped_pkt(xqc_connection_t *conn, xqc_packet_out_t *packet_
                                xqc_send_type_t send_type)
 {
     if (xqc_send_ctl_indirectly_ack_or_drop_po(conn, packet_out)) {
+        return XQC_TRUE;
+    }
+
+    if (xqc_conn_pmtud_drop_oversize(conn, packet_out)) {
         return XQC_TRUE;
     }
 

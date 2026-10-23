@@ -797,6 +797,8 @@ void xqc_conn_pmtud_on_blackhole(xqc_connection_t *conn, xqc_path_ctx_t *path,
 
 xqc_int_t xqc_conn_pmtud_split_lost(xqc_connection_t *conn, xqc_packet_out_t *po);
 
+xqc_bool_t xqc_conn_pmtud_drop_oversize(xqc_connection_t *conn, xqc_packet_out_t *po);
+
 void xqc_conn_get_stats_internal(xqc_connection_t *conn, xqc_conn_stats_t *stats);
 
 xqc_ping_record_t *xqc_conn_create_ping_record(xqc_connection_t *conn);
