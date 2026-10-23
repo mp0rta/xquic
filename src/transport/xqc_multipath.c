@@ -1844,11 +1844,11 @@ xqc_path_standby_probe(xqc_path_ctx_t *path)
 xqc_path_perf_class_t 
 xqc_path_get_perf_class(xqc_path_ctx_t *path)
 {
-    /* A closing or closed path stays in conn_paths_list until the connection
-     * is destroyed, and the schedulers classify every entry for every packet.
-     * Its class is the lowest; skip the work below, which walks the whole
-     * path list again (xqc_conn_get_min_srtt) and made scheduling quadratic
-     * in the number of paths ever created. */
+    /* A closing or closed path gets the lowest class without the work
+     * below, which walks conn_paths_list again (xqc_conn_get_min_srtt).
+     * The schedulers classify every path on conn_paths_list for every
+     * packet, and a closing path stays there until it is closed (a closed
+     * path moves to conn_closed_paths_list). */
     if (path->path_state >= XQC_PATH_STATE_CLOSING) {
         return XQC_PATH_CLASS_STANDBY_LOW;
     }
