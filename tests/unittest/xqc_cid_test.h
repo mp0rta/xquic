@@ -30,5 +30,8 @@ void xqc_test_cid_delete_original();
 /* an abandoned path ID's CIDs leave cid_set_list but stay findable */
 void xqc_test_cid_abandoned_set_off_list(void);
 
+/* a set that leaves ABANDONED goes back to cid_set_list */
+void xqc_test_cid_abandoned_set_back_on_list(void);
+
 #endif
 
