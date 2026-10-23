@@ -2108,9 +2108,10 @@ xqc_conn_try_to_update_mss(xqc_connection_t *conn)
 
     if (min_pkt_out_size > conn->pkt_out_size) {
         conn->pkt_out_size = min_pkt_out_size;
-        /* try to update PMTUD probing info */
+        /* try to update PMTUD probing info: binary search, the next probe
+         * halfway between the size that got through and the upper bound */
         conn->max_pkt_out_size = max_pkt_out_size;
-        conn->probing_pkt_out_size = max_pkt_out_size;
+        conn->probing_pkt_out_size = (min_pkt_out_size + max_pkt_out_size + 1) >> 1;
         conn->probing_cnt = 0;
         /* launch new probing immediately */
         conn->conn_flag |= XQC_CONN_FLAG_PMTUD_PROBING;
@@ -6088,13 +6089,15 @@ xqc_conn_ptmud_probing(xqc_connection_t *conn)
         conn->probing_cnt = 0;
     }
 
-    /* stop probing if the range is less than 10B */
-    if ((conn->max_pkt_out_size - conn->pkt_out_size) < 10) {
+    /* stop probing once the size is known closely enough */
+    if ((conn->max_pkt_out_size - conn->pkt_out_size) < XQC_PMTUD_SEARCH_PRECISION) {
         xqc_log_event(conn->log, CON_MTU_UPDATED, conn, 1);
         conn->conn_flag &= ~XQC_CONN_FLAG_PMTUD_PROBING;
         /* RFC 8899 s5.1.1: below the cap, search again from the top later,
          * in case the path got larger */
-        if (conn->pkt_out_size + 10 <= conn->conn_settings.probing_pkt_out_size) {
+        if (conn->pkt_out_size + XQC_PMTUD_SEARCH_PRECISION
+            <= conn->conn_settings.probing_pkt_out_size)
+        {
             conn->max_pkt_out_size = conn->conn_settings.probing_pkt_out_size;
             conn->probing_pkt_out_size = conn->max_pkt_out_size;
             conn->probing_cnt = 0;
@@ -6111,7 +6114,11 @@ xqc_conn_ptmud_probing(xqc_connection_t *conn)
     xqc_list_head_t *pos, *next;
     xqc_path_ctx_t *path;
     xqc_int_t ret = XQC_OK;
-    xqc_usec_t probing_interval = conn->conn_settings.pmtud_probing_interval;
+    /* RFC 9000 s14.4: a probe is lost after a PTO, like any packet. The
+     * probes do not count as congestion, so no backoff is needed between
+     * the attempts. The configured interval is the upper bound. */
+    xqc_usec_t probing_interval = xqc_min(conn->conn_settings.pmtud_probing_interval,
+        xqc_max(xqc_conn_get_max_pto(conn), XQC_PMTUD_MIN_PROBE_TIMEOUT));
 
     /* only probing on active paths */
     xqc_list_for_each_safe(pos, next, &conn->conn_paths_list)
@@ -6127,9 +6134,8 @@ xqc_conn_ptmud_probing(xqc_connection_t *conn)
         }
     }
 
-    /* set timer: default 500ms, 1000ms, or 2000ms according to probing_cnt */
     xqc_timer_set(&conn->conn_timer_manager, XQC_TIMER_PMTUD_PROBING,
-                  xqc_monotonic_timestamp(), probing_interval * (1 << conn->probing_cnt));
+                  xqc_monotonic_timestamp(), probing_interval);
 
     conn->probing_cnt++;
     conn->conn_flag &= ~XQC_CONN_FLAG_PMTUD_PROBING;
