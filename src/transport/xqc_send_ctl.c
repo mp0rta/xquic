@@ -1536,6 +1536,12 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                      * counters below this branch still bump. */
                     if (xqc_loss_replay_should_suppress(conn, po)) {
                         xqc_send_queue_maybe_remove_unacked(po, conn->conn_send_queue, NULL);
+
+                    } else if (xqc_conn_pmtud_split_lost(conn, po) == XQC_OK) {
+                        /* too large since a PMTUD black hole: its data went
+                         * into new packets of the current size */
+                        xqc_send_queue_maybe_remove_unacked(po, conn->conn_send_queue, NULL);
+
                     } else {
                         xqc_send_queue_copy_to_lost(po, send_queue, XQC_TRUE);
                     }
@@ -1925,7 +1931,7 @@ xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl,
             /* a packet above the base size got through, a probe included
              * (its PING is small, its size is the padded buffer): no black
              * hole */
-            if (packet_out->po_pkt.pkt_pns == XQC_PNS_APP_DATA
+            if (do_cc && packet_out->po_pkt.pkt_pns == XQC_PNS_APP_DATA
                 && (packet_out->po_used_size > conn->conn_settings.max_pkt_out_size
                     || ((packet_out->po_flag & XQC_POF_PMTUD_PROBING)
                         && packet_out->po_buf_size > conn->conn_settings.max_pkt_out_size))

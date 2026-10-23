@@ -5929,6 +5929,32 @@ else
 fi
 grep_err_log
 
+# ── PMTUD black hole: the path shrinks mid-transfer (case ID 806)
+# RFC 8899 s4.3: after 300 datagrams above 1300 bytes got through, the
+# client path drops every one of them. The black hole must be detected,
+# the packet size go back to the base and the lost stream packets be split
+# into packets that fit: the transfer completes and the echo matches.
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e --pmtud 1 > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "PMTUD black hole mid-transfer, stream data split ...\c"
+sudo ${CLIENT_BIN} -s 20480000 -l d -t 10 -E --pmtud 1 -x 806 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+blackhole=`grep "|PMTUD black hole|" clog`
+split=`grep "|split lost packet|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$blackhole" ] && [ -n "$split" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "pmtud_blackhole_stream_split" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} blackhole:${blackhole:+y}" \
+        "split:${split:+y} errlog:${errlog:+y})"
+    case_print_result "pmtud_blackhole_stream_split" "fail"
+fi
+grep_err_log
+
 killall test_server 2> /dev/null
 
 cd -

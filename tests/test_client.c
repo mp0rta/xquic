@@ -506,6 +506,13 @@ static int
 xqc_client_mtu_dropped(const unsigned char *buf, size_t size)
 {
     static int full_pkts = 0;
+    static int big_pkts = 0;
+
+    /* case 806: the path shrinks during the transfer, after 300 datagrams
+     * above 1300 bytes got through, and drops every one of them from then on */
+    if (g_test_case == 806) {
+        return size > XQC_TEST_CASE_PATH_MTU && ++big_pkts > 300;
+    }
 
     if (g_test_case != 804 && g_test_case != 805) {
         return 0;
@@ -1245,7 +1252,7 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
     memcpy(send_buf, buf, send_buf_size);
     xqc_test_record_udp_payload(size);
 
-    /* cases 804-805 */
+    /* cases 804-806 */
     if (xqc_client_mtu_dropped(buf, size)) {
         return size;
     }
@@ -1400,7 +1407,7 @@ xqc_client_write_socket_ex(uint64_t path_id,
         return size;
     }
 
-    /* cases 804-805 */
+    /* cases 804-806 */
     if (xqc_client_mtu_dropped(buf, size)) {
         return size;
     }

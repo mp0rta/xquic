@@ -2120,6 +2120,101 @@ xqc_conn_try_to_update_mss(xqc_connection_t *conn)
     }
 }
 
+/* the data of stream frame @f in @po: skip the type, stream id, offset and
+ * length fields */
+static const unsigned char *
+xqc_conn_stream_frame_data(xqc_packet_out_t *po, xqc_po_stream_frame_t *f)
+{
+    const unsigned char *p = po->po_buf + f->ps_type_offset;
+    unsigned char type = *p++;
+
+    p += xqc_vint_len(*p >> 6);
+    if (type & 0x04) {
+        p += xqc_vint_len(*p >> 6);
+    }
+    if (type & 0x02) {
+        p += xqc_vint_len(*p >> 6);
+    }
+    return p;
+}
+
+/*
+ * PMTUD shrank the packet size after @po was sent, so a copy of the lost
+ * @po would not fit any more: write its stream data into new packets of
+ * the current size instead. Only for packets carrying nothing but STREAM,
+ * ACK, PING and PADDING frames. The new packets take the stream refs before
+ * @po gives its own back, and @po is marked acked so that none of its other
+ * copies counts them again. XQC_OK if @po can be dropped.
+ */
+xqc_int_t
+xqc_conn_pmtud_split_lost(xqc_connection_t *conn, xqc_packet_out_t *po)
+{
+    xqc_packet_out_t *origin = po->po_origin ? po->po_origin : po;
+    xqc_frame_type_bit_t allowed = XQC_FRAME_BIT_STREAM | XQC_FRAME_BIT_ACK
+        | XQC_FRAME_BIT_ACK_MP | XQC_FRAME_BIT_PING | XQC_FRAME_BIT_PADDING;
+
+    /* po_buf_size is the packet size when @po was built */
+    if (!conn->enable_pmtud
+        || po->po_buf_size <= conn->pkt_out_size
+        || po->po_pkt.pkt_type != XQC_PTYPE_SHORT_HEADER
+        || !(po->po_frame_types & XQC_FRAME_BIT_STREAM)
+        || (po->po_frame_types & ~allowed))
+    {
+        return -XQC_EPARAM;
+    }
+
+    for (int i = 0; i < XQC_MAX_STREAM_FRAME_IN_PO; i++) {
+        xqc_po_stream_frame_t *f = &po->po_stream_frames[i];
+        const unsigned char *data;
+        uint64_t offset;
+        size_t left, written;
+
+        if (!f->ps_is_used) {
+            break;
+        }
+        if (xqc_find_stream_by_id(f->ps_stream_id, conn->streams_hash) == NULL) {
+            continue; /* the stream is gone, its data with it */
+        }
+
+        data = xqc_conn_stream_frame_data(po, f);
+        offset = f->ps_offset;
+        left = f->ps_length;
+        do {
+            xqc_packet_out_t *npo = xqc_write_new_packet(conn, XQC_PTYPE_SHORT_HEADER);
+            int n;
+
+            if (npo == NULL) {
+                return -XQC_EWRITE_PKT;
+            }
+            n = xqc_gen_stream_frame(npo, f->ps_stream_id, offset, f->ps_has_fin,
+                                     data, left, &written);
+            if (n < 0) {
+                xqc_maybe_recycle_packet_out(npo, conn);
+                return n;
+            }
+            npo->po_used_size += n;
+            npo->po_stream_id = f->ps_stream_id;
+            npo->po_stream_offset = offset + written;
+            xqc_conn_increase_unacked_stream_ref(conn, npo);
+
+            /* sent ahead of new data, as a retransmission */
+            xqc_send_queue_remove_send(&npo->po_list);
+            xqc_send_queue_insert_lost(&npo->po_list,
+                                       &conn->conn_send_queue->sndq_lost_packets);
+
+            data += written;
+            offset += written;
+            left -= written;
+        } while (left > 0);
+    }
+
+    xqc_conn_decrease_unacked_stream_ref(conn, po);
+    origin->po_acked = 1;
+    xqc_log(conn->log, XQC_LOG_DEBUG, "|PMTUD|split lost packet|pkt_num:%ui|size:%uz|to:%uz|",
+            po->po_pkt.pkt_num, po->po_buf_size, conn->pkt_out_size);
+    return XQC_OK;
+}
+
 /*
  * Packets above the base size no longer get through @path: go back to the
  * base size on it, so the connection sends what every path carries, and
