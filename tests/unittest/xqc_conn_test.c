@@ -1035,11 +1035,12 @@ xqc_test_conn_stream_unsent_cap()
 
 
 /*
- * A closing or closed path stays in conn_paths_list until the connection is
- * destroyed, and the minrtt, backup and backup_fec schedulers classify every
- * path for every packet before they skip the paths that are not ACTIVE.
- * A path that is no longer ACTIVE gets the lowest class without computing
- * it: the computation walks the whole path list again.
+ * A closing path stays in conn_paths_list until it is closed (a closed path
+ * moves to conn_closed_paths_list), and the minrtt, backup and backup_fec
+ * schedulers classify every path on conn_paths_list for every packet before
+ * they skip the paths that are not ACTIVE. A path that is no longer ACTIVE
+ * gets the lowest class without computing it: the computation walks
+ * conn_paths_list again.
  */
 static xqc_path_ctx_t *
 xqc_test_conn_fast_path(xqc_connection_t *conn)

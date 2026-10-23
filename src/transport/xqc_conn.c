@@ -865,6 +865,10 @@ xqc_conn_create(xqc_engine_t *engine, xqc_cid_t *dcid, xqc_cid_t *scid,
         goto fail;
     }
 
+    /* Every failure below ends in xqc_conn_destroy(), which walks
+     * conn_closed_paths_list. */
+    xqc_init_list_head(&xc->conn_closed_paths_list);
+
     xc->conn_settings = *settings;
 
     xqc_memcpy(xc->conn_settings.conn_option_str, settings->conn_option_str,
