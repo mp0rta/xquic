@@ -17,5 +17,13 @@ void xqc_test_pmtud_drop_oversize_datagram(void);
 void xqc_test_pmtud_drop_oversize_keeps_probes_and_fitting(void);
 void xqc_test_pmtud_search_stops_within_precision(void);
 void xqc_test_pmtud_search_probes_wide_range(void);
+void xqc_test_pmtud_outage_is_not_blackhole(void);
+void xqc_test_pmtud_acked_large_data_clears_suspicion(void);
+void xqc_test_pmtud_acked_small_data_keeps_suspicion(void);
+void xqc_test_pmtud_blackhole_probes_one_rtt_apart(void);
+void xqc_test_pmtud_pto_on_suspect_path_sends_probe(void);
+void xqc_test_pmtud_lost_search_probe_retries_soon(void);
+void xqc_test_pmtud_stale_probe_loss_does_not_retry(void);
+void xqc_test_pmtud_dgram_with_copy_lost_once(void);
 
 #endif /* XQC_PMTUD_TEST_H_INCLUDED */

@@ -2140,6 +2140,19 @@ xqc_conn_stream_frame_data(xqc_packet_out_t *po, xqc_po_stream_frame_t *f)
 }
 
 /*
+ * Report the DATAGRAM in @po lost, once: its origin is marked done, so
+ * none of its other copies reports it again, or later as acked.
+ */
+static void
+xqc_conn_pmtud_dgram_lost(xqc_connection_t *conn, xqc_packet_out_t *po)
+{
+    xqc_packet_out_t *origin = po->po_origin ? po->po_origin : po;
+
+    xqc_datagram_notify_loss(conn, po);
+    origin->po_acked = 1;
+}
+
+/*
  * PMTUD shrank the packet size after @po was sent, so a copy of the lost
  * @po would not fit any more: write its stream data into new packets of
  * the current size instead. Only for packets carrying nothing but STREAM,
@@ -2240,8 +2253,13 @@ xqc_conn_pmtud_drop_oversize(xqc_connection_t *conn, xqc_packet_out_t *po)
         return XQC_FALSE;
     }
 
-    if ((po->po_frame_types & XQC_FRAME_BIT_DATAGRAM) && !(po->po_frame_types & ~dgram)) {
-        xqc_datagram_notify_loss(conn, po);
+    if (po->po_acked || (po->po_origin && po->po_origin->po_acked)) {
+        /* a copy of a packet already acked or reported lost: just drop it */
+
+    } else if ((po->po_frame_types & XQC_FRAME_BIT_DATAGRAM)
+               && !(po->po_frame_types & ~dgram))
+    {
+        xqc_conn_pmtud_dgram_lost(conn, po);
 
     } else if (xqc_conn_pmtud_split_lost(conn, po) != XQC_OK) {
         return XQC_FALSE;
@@ -2325,7 +2343,7 @@ xqc_conn_pmtud_drop_inflight(xqc_connection_t *conn, xqc_path_ctx_t *path)
             xqc_send_queue_insert_free(po, &sq->sndq_free_packets, sq);
 
         } else if (po->po_frame_types & XQC_FRAME_BIT_DATAGRAM) {
-            xqc_datagram_notify_loss(conn, po);
+            xqc_conn_pmtud_dgram_lost(conn, po);
             xqc_send_queue_maybe_remove_unacked(po, sq, NULL);
 
         } else if (xqc_conn_pmtud_split_lost(conn, po) == XQC_OK) {
@@ -2354,14 +2372,7 @@ xqc_conn_pmtud_on_blackhole(xqc_connection_t *conn, xqc_path_ctx_t *path,
     size_t min_pkt_out_size = 0;
 
     if (failed <= back_to) {
-        return;
-    }
-
-    /* Below the base size only when smaller packets still get through:
-     * when nothing does, the path is down, not small. */
-    if (back_to < base && !path->path_send_ctl->ctl_bh_small_acked) {
-        xqc_log(conn->log, XQC_LOG_INFO, "|PMTUD black hole|path:%ui|size:%uz|"
-                "nothing acked, not going below the base|", path->path_id, failed);
+        /* already at the floor: nothing lower to go to */
         xqc_send_ctl_pmtud_bh_reset(path->path_send_ctl);
         return;
     }
@@ -2387,6 +2398,11 @@ xqc_conn_pmtud_on_blackhole(xqc_connection_t *conn, xqc_path_ctx_t *path,
         }
     }
     if (min_pkt_out_size == 0 || min_pkt_out_size >= conn->pkt_out_size) {
+        /* another path is smaller still: the connection already sends at
+         * that size, keep the search below what failed here */
+        if (failed - 1 < conn->max_pkt_out_size) {
+            conn->max_pkt_out_size = xqc_max(failed - 1, conn->pkt_out_size);
+        }
         return;
     }
 
@@ -6124,11 +6140,11 @@ xqc_conn_ptmud_probing(xqc_connection_t *conn)
     xqc_list_head_t *pos, *next;
     xqc_path_ctx_t *path;
     xqc_int_t ret = XQC_OK;
-    /* RFC 9000 s14.4: a probe is lost after a PTO, like any packet. The
-     * probes do not count as congestion, so no backoff is needed between
-     * the attempts. The configured interval is the upper bound. */
-    xqc_usec_t probing_interval = xqc_min(conn->conn_settings.pmtud_probing_interval,
-        xqc_max(xqc_conn_get_max_pto(conn), XQC_PMTUD_MIN_PROBE_TIMEOUT));
+    /* RFC 8899 s5.1.1: the probe timer is at least 1 s. It only matters
+     * when nothing is acked: a probe that QUIC declares lost brings the
+     * next attempt one RTT later (xqc_send_ctl_detect_lost). */
+    xqc_usec_t probing_interval =
+        xqc_max(conn->conn_settings.pmtud_probing_interval, XQC_PMTUD_PROBE_TIMER);
 
     /* only probing on active paths */
     xqc_list_for_each_safe(pos, next, &conn->conn_paths_list)

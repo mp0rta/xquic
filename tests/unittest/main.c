@@ -306,6 +306,22 @@ main(int argc, char *argv[])
                         xqc_test_pmtud_search_stops_within_precision)
         || !CU_add_test(pSuite, "xqc_test_pmtud_search_probes_wide_range",
                         xqc_test_pmtud_search_probes_wide_range)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_outage_is_not_blackhole",
+                        xqc_test_pmtud_outage_is_not_blackhole)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_acked_large_data_clears_suspicion",
+                        xqc_test_pmtud_acked_large_data_clears_suspicion)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_acked_small_data_keeps_suspicion",
+                        xqc_test_pmtud_acked_small_data_keeps_suspicion)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_blackhole_probes_one_rtt_apart",
+                        xqc_test_pmtud_blackhole_probes_one_rtt_apart)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_pto_on_suspect_path_sends_probe",
+                        xqc_test_pmtud_pto_on_suspect_path_sends_probe)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_lost_search_probe_retries_soon",
+                        xqc_test_pmtud_lost_search_probe_retries_soon)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_stale_probe_loss_does_not_retry",
+                        xqc_test_pmtud_stale_probe_loss_does_not_retry)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_dgram_with_copy_lost_once",
+                        xqc_test_pmtud_dgram_with_copy_lost_once)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)

@@ -5976,8 +5976,9 @@ else
 fi
 grep_err_log
 
-# 808: an outage at the base size loses packets of every size: nothing is
-# acked, so it is not a black hole and the size stays at the base.
+# 808: an outage at the base size loses packets of every size, the probes
+# sent during it included: it is not a black hole and the size stays at the
+# base.
 rm -rf tp_localhost test_session xqc_token
 clear_log
 echo -e "PMTUD outage does not go below the base size ...\c"

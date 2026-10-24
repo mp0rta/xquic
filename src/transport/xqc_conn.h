@@ -791,8 +791,8 @@ void xqc_conn_try_to_update_mss(xqc_connection_t *conn);
 #define XQC_PMTUD_BLACKHOLE_PROBES  3
 /* the search stops when the size is known within this many bytes */
 #define XQC_PMTUD_SEARCH_PRECISION  4
-/* lower bound of the time a probe is waited for (us) */
-#define XQC_PMTUD_MIN_PROBE_TIMEOUT (50 * 1000)
+/* RFC 8899 s5.1.1: the probe timer MUST NOT be under 1 s (us) */
+#define XQC_PMTUD_PROBE_TIMER       (1000 * 1000)
 /* how long a search below the cap stands before the next one (us) */
 #define XQC_PMTUD_RAISE_INTERVAL    (600 * 1000000ULL)
 /* a black hole at the base size goes down to this, QUIC's minimum, when

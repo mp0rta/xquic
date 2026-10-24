@@ -119,6 +119,11 @@ xqc_timer_loss_detection_timeout(xqc_timer_type_t type, xqc_usec_t now, void *us
     {
         send_ctl->ctl_bh_suspect_time = now;
         xqc_send_ctl_pmtud_bh_probe(send_ctl, now);
+
+    } else {
+        /* already suspect, and nothing acked since: no ACK processing will
+         * send the next probe */
+        xqc_send_ctl_pmtud_bh_maybe_probe(send_ctl, now);
     }
     xqc_log(conn->log, XQC_LOG_DEBUG, "|xqc_send_ctl_set_loss_detection_timer|PTO|conn:%p|pto_count:%ud", 
             conn, send_ctl->ctl_pto_count);

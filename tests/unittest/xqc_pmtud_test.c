@@ -14,6 +14,12 @@
 #include "src/transport/xqc_stream.h"
 #include "src/transport/xqc_frame_parser.h"
 #include "src/transport/xqc_multipath.h"
+#include "src/transport/xqc_timer.h"
+#include "src/transport/xqc_datagram.h"
+
+/* not in a header: the loss detection timer callback */
+void xqc_timer_loss_detection_timeout(xqc_timer_type_t type, xqc_usec_t now,
+    void *user_data);
 
 #define PMTUD_BASE 1298
 #define PMTUD_CAP  1436
@@ -47,6 +53,8 @@ xqc_test_pmtud_conn(size_t base, size_t curr)
     send_ctl->ctl_latest_rtt = 10000;
     send_ctl->ctl_first_rtt_sample_time = 1;
     send_ctl->ctl_largest_acked[XQC_PNS_APP_DATA] = 100;
+    /* the packets acked after the probes were sent right after them */
+    send_ctl->ctl_largest_acked_sent_time[XQC_PNS_APP_DATA] = 20;
     return conn;
 }
 
@@ -184,7 +192,6 @@ xqc_test_pmtud_blackhole_at_base_goes_to_floor(void)
     CU_ASSERT_FATAL(conn != NULL);
     xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
     send_ctl->ctl_bh_suspect_time = 1;
-    send_ctl->ctl_bh_small_acked = 1;
 
     xqc_test_pmtud_lose_probes(conn, PMTUD_BASE);
 
@@ -195,7 +202,8 @@ xqc_test_pmtud_blackhole_at_base_goes_to_floor(void)
     xqc_engine_destroy(conn->engine);
 }
 
-/* nothing acked since the path became suspect: it is down, not small, and
+/* the probes were lost with everything sent around them, and only
+ * packets sent long after got through: the path was down, not small, and
  * the size stays at the base */
 void
 xqc_test_pmtud_outage_at_base_keeps_base(void)
@@ -205,6 +213,7 @@ xqc_test_pmtud_outage_at_base_keeps_base(void)
     CU_ASSERT_FATAL(conn != NULL);
     xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
     send_ctl->ctl_bh_suspect_time = 1;
+    send_ctl->ctl_largest_acked_sent_time[XQC_PNS_APP_DATA] = 2000000;
 
     xqc_test_pmtud_lose_probes(conn, PMTUD_BASE);
 
@@ -371,6 +380,196 @@ xqc_test_pmtud_search_probes_wide_range(void)
     CU_ASSERT_EQUAL(conn->max_pkt_out_size, 1400);
     CU_ASSERT(xqc_timer_is_set(&conn->conn_timer_manager,
                                XQC_TIMER_PMTUD_PROBING));
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* the same above the base size: an outage is not a black hole */
+void
+xqc_test_pmtud_outage_is_not_blackhole(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+    send_ctl->ctl_bh_suspect_time = 1;
+    send_ctl->ctl_largest_acked_sent_time[XQC_PNS_APP_DATA] = 2000000;
+
+    xqc_test_pmtud_lose_probes(conn, 1400);
+
+    CU_ASSERT_EQUAL(CURR(conn), 1400);
+    CU_ASSERT_EQUAL(send_ctl->ctl_bh_suspect_time, 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* an acked packet above the base size, whatever it carries, clears a
+ * suspicion: large packets do get through */
+static void
+xqc_test_pmtud_ack(xqc_connection_t *conn, size_t size,
+    xqc_frame_type_bit_t frames)
+{
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+    xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, 60, size, 10,
+                                                  XQC_FALSE);
+    CU_ASSERT_FATAL(po != NULL);
+    po->po_frame_types = frames;
+    send_ctl->ctl_bh_suspect_time = 1;
+    xqc_send_ctl_on_packet_acked(send_ctl, po, 1000000, 1);
+}
+
+void
+xqc_test_pmtud_acked_large_data_clears_suspicion(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+
+    xqc_test_pmtud_ack(conn, 1400, XQC_FRAME_BIT_DATAGRAM);
+
+    CU_ASSERT_EQUAL(send_ctl->ctl_bh_suspect_time, 0);
+    CU_ASSERT_EQUAL(send_ctl->ctl_largest_big_acked, 60);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_pmtud_acked_small_data_keeps_suspicion(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+
+    xqc_test_pmtud_ack(conn, 1000, XQC_FRAME_BIT_DATAGRAM);
+
+    CU_ASSERT_EQUAL(send_ctl->ctl_bh_suspect_time, 1);
+    CU_ASSERT_EQUAL(send_ctl->ctl_largest_big_acked, 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* RFC 8899 s3 item 7: probes that skip the congestion window go at most
+ * once per RTT */
+void
+xqc_test_pmtud_blackhole_probes_one_rtt_apart(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+    send_ctl->ctl_bh_suspect_time = 1;
+    send_ctl->ctl_bh_probe_time = 100000;
+    send_ctl->ctl_bh_probes_sent = 1;
+
+    xqc_send_ctl_pmtud_bh_maybe_probe(send_ctl,
+                                      100000 + send_ctl->ctl_srtt - 1);
+    CU_ASSERT_EQUAL(send_ctl->ctl_bh_probes_sent, 1);
+
+    xqc_send_ctl_pmtud_bh_maybe_probe(send_ctl,
+                                      100000 + send_ctl->ctl_srtt);
+    CU_ASSERT_EQUAL(send_ctl->ctl_bh_probes_sent, 2);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* a suspect path where nothing is acked any more: the PTO sends the next
+ * probe, or nothing would */
+void
+xqc_test_pmtud_pto_on_suspect_path_sends_probe(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+    conn->conn_flag |= XQC_CONN_FLAG_CAN_SEND_1RTT
+                       | XQC_CONN_FLAG_HANDSHAKE_COMPLETED;
+    send_ctl->ctl_bh_suspect_time = 1;
+    send_ctl->ctl_bh_probe_time = 1;
+    send_ctl->ctl_bh_probes_sent = 1;
+
+    xqc_timer_loss_detection_timeout(XQC_TIMER_LOSS_DETECTION, 1000000,
+                                     send_ctl);
+
+    CU_ASSERT_EQUAL(send_ctl->ctl_bh_probes_sent, 2);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* RFC 9000 s14.3: QUIC declaring a search probe lost brings the next
+ * attempt one RTT later, well before the 1 s probe timer */
+void
+xqc_test_pmtud_lost_search_probe_retries_soon(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1300);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+    conn->probing_pkt_out_size = 1350;
+
+    CU_ASSERT_FATAL(xqc_test_pmtud_unacked(conn, 1, 1350, 10, XQC_TRUE)
+                    != NULL);
+    xqc_test_pmtud_detect(conn);
+
+    xqc_timer_t *timer =
+        &conn->conn_timer_manager.timer[XQC_TIMER_PMTUD_PROBING];
+    CU_ASSERT(timer->timer_is_set);
+    CU_ASSERT_EQUAL(timer->expire_time, 1000000 + send_ctl->ctl_srtt);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* a lost probe of an older size says nothing about the current attempt */
+void
+xqc_test_pmtud_stale_probe_loss_does_not_retry(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1300);
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->probing_pkt_out_size = 1350;
+
+    CU_ASSERT_FATAL(xqc_test_pmtud_unacked(conn, 1, 1400, 10, XQC_TRUE)
+                    != NULL);
+    xqc_test_pmtud_detect(conn);
+
+    CU_ASSERT(!xqc_timer_is_set(&conn->conn_timer_manager,
+                                XQC_TIMER_PMTUD_PROBING));
+
+    xqc_engine_destroy(conn->engine);
+}
+
+static int g_pmtud_dgram_lost;
+
+static xqc_int_t
+xqc_test_pmtud_dgram_lost_cb(xqc_connection_t *conn, uint64_t dgram_id,
+    void *user_data)
+{
+    (void)conn;
+    (void)dgram_id;
+    (void)user_data;
+    g_pmtud_dgram_lost++;
+    return 0;
+}
+
+/* a DATAGRAM with a copy, both too large: reported lost once, not once
+ * per copy */
+void
+xqc_test_pmtud_dgram_with_copy_lost_once(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, PMTUD_BASE);
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->app_proto_cbs.dgram_cbs.datagram_lost_notify =
+        xqc_test_pmtud_dgram_lost_cb;
+    conn->conn_flag |= XQC_CONN_FLAG_UPPER_CONN_EXIST;
+    g_pmtud_dgram_lost = 0;
+
+    xqc_packet_out_t *origin = xqc_test_pmtud_unacked(conn, 1, 1400, 10,
+                                                      XQC_FALSE);
+    xqc_packet_out_t *copy = xqc_test_pmtud_unacked(conn, 2, 1400, 10,
+                                                    XQC_FALSE);
+    CU_ASSERT_FATAL(origin != NULL && copy != NULL);
+    origin->po_frame_types = XQC_FRAME_BIT_DATAGRAM;
+    copy->po_frame_types = XQC_FRAME_BIT_DATAGRAM;
+    copy->po_origin = origin;
+    origin->po_origin_ref_cnt = 1;
+
+    CU_ASSERT(xqc_conn_pmtud_drop_oversize(conn, copy));
+    CU_ASSERT(xqc_conn_pmtud_drop_oversize(conn, origin));
+    CU_ASSERT_EQUAL(g_pmtud_dgram_lost, 1);
 
     xqc_engine_destroy(conn->engine);
 }

@@ -129,9 +129,6 @@ typedef struct xqc_send_ctl_s {
     xqc_usec_t                  ctl_bh_probe_time;
     unsigned                    ctl_bh_probes_sent;
     unsigned                    ctl_bh_probes_lost;
-    /* a packet sent after the path became suspect was acked: something gets
-     * through, so it is not an outage */
-    unsigned                    ctl_bh_small_acked;
 
     unsigned                    ctl_send_count;
     unsigned                    ctl_lost_count;
@@ -356,5 +353,8 @@ void xqc_send_ctl_set_next_pn_for_packet(xqc_connection_t *conn, xqc_pn_ctl_t *p
 void xqc_send_ctl_pmtud_bh_reset(xqc_send_ctl_t *send_ctl);
 
 void xqc_send_ctl_pmtud_bh_probe(xqc_send_ctl_t *send_ctl, xqc_usec_t now);
+
+void xqc_send_ctl_pmtud_bh_maybe_probe(xqc_send_ctl_t *send_ctl,
+    xqc_usec_t now);
 
 #endif /* _XQC_SEND_CTL_H_INCLUDED_ */
