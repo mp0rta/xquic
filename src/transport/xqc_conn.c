@@ -2488,7 +2488,6 @@ xqc_conn_pmtud_on_blackhole(xqc_connection_t *conn, xqc_path_ctx_t *path,
 {
     xqc_path_ctx_t *p;
     xqc_list_head_t *pos, *next;
-    size_t base = conn->conn_settings.max_pkt_out_size;
     size_t failed = path->curr_pkt_out_size;
     size_t back_to = xqc_pmtud_big_size(conn, failed);
     size_t min_pkt_out_size = 0;
@@ -2524,6 +2523,12 @@ xqc_conn_pmtud_on_blackhole(xqc_connection_t *conn, xqc_path_ctx_t *path,
          * that size, keep the search below what failed here */
         if (failed - 1 < conn->max_pkt_out_size) {
             conn->max_pkt_out_size = xqc_max(failed - 1, conn->pkt_out_size);
+        }
+        /* and no probe above the new upper bound */
+        if (conn->probing_pkt_out_size > conn->max_pkt_out_size) {
+            conn->probing_pkt_out_size =
+                (conn->pkt_out_size + conn->max_pkt_out_size) >> 1;
+            conn->probing_cnt = 0;
         }
         return;
     }

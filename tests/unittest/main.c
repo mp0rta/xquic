@@ -346,6 +346,8 @@ main(int argc, char *argv[])
                         xqc_test_pmtud_split_skips_reset_stream)
         || !CU_add_test(pSuite, "xqc_test_pmtud_unneeded_rest_keeps_packet_count",
                         xqc_test_pmtud_unneeded_rest_keeps_packet_count)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_blackhole_above_conn_size_clamps_probe",
+                        xqc_test_pmtud_blackhole_above_conn_size_clamps_probe)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)

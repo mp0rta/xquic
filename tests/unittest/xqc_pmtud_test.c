@@ -942,3 +942,25 @@ xqc_test_pmtud_unneeded_rest_keeps_packet_count(void)
 
     xqc_engine_destroy(conn->engine);
 }
+
+/* a black hole on a path larger than the connection size, which a smaller
+ * path holds: the search stays below the size that failed, the next probe
+ * included */
+void
+xqc_test_pmtud_blackhole_above_conn_size_clamps_probe(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1250);
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->probing_pkt_out_size = 1343;
+    CURR(conn) = 1320;
+
+    xqc_conn_pmtud_on_blackhole(conn, conn->conn_initial_path, "test");
+
+    CU_ASSERT_EQUAL(CURR(conn), PMTUD_BASE);
+    CU_ASSERT_EQUAL(conn->pkt_out_size, 1250);
+    CU_ASSERT_EQUAL(conn->max_pkt_out_size, 1319);
+    CU_ASSERT(conn->probing_pkt_out_size <= conn->max_pkt_out_size);
+    CU_ASSERT(conn->probing_pkt_out_size > conn->pkt_out_size);
+
+    xqc_engine_destroy(conn->engine);
+}
