@@ -306,7 +306,12 @@ xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid, xqc_cid_t *dcid, uint64
     xqc_cid_set_update_state(&conn->scid_set, path_id, XQC_CID_SET_USED);
 
     path->path_create_time = xqc_monotonic_timestamp();
-    path->curr_pkt_out_size = conn->pkt_out_size;
+    /* PMTUD: a new path starts from the base size, which every path is
+     * expected to carry, not from what another path was found to carry */
+    path->curr_pkt_out_size = conn->enable_pmtud
+                              ? xqc_min(conn->pkt_out_size,
+                                        conn->conn_settings.max_pkt_out_size)
+                              : conn->pkt_out_size;
     path->path_max_pkt_out_size = conn->max_pkt_out_size;
 
     /* insert path to conn_paths_list */
@@ -1466,6 +1471,7 @@ xqc_path_validate(xqc_path_ctx_t *path)
 
         /* PMTUD: launch probing immediately */
         if (conn->enable_pmtud) {
+            xqc_conn_pmtud_on_new_path(conn, path);
             conn->probing_cnt = 0;
             conn->conn_flag |= XQC_CONN_FLAG_PMTUD_PROBING;
             xqc_timer_unset(&conn->conn_timer_manager, XQC_TIMER_PMTUD_PROBING);

@@ -322,6 +322,14 @@ main(int argc, char *argv[])
                         xqc_test_pmtud_stale_probe_loss_does_not_retry)
         || !CU_add_test(pSuite, "xqc_test_pmtud_dgram_with_copy_lost_once",
                         xqc_test_pmtud_dgram_with_copy_lost_once)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_path_challenge_padded_to_1200",
+                        xqc_test_pmtud_path_challenge_padded_to_1200)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_probe_padded_to_probed_size",
+                        xqc_test_pmtud_probe_padded_to_probed_size)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_new_path_lowers_connection_size",
+                        xqc_test_pmtud_new_path_lowers_connection_size)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_new_path_not_smaller_keeps_size",
+                        xqc_test_pmtud_new_path_not_smaller_keeps_size)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)

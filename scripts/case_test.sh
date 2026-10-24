@@ -5995,6 +5995,49 @@ else
 fi
 grep_err_log
 
+# ── PMTUD with a second, smaller path (case IDs 809/810)
+# 809: the second path carries only 1300 bytes from the start. Its
+# PATH_CHALLENGE is expanded to 1200 bytes (RFC 9000 s8.2.1), not to the
+# size of the first path, so it validates, and the transfer completes.
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e --pmtud 1 -M > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "PMTUD second path smaller than the first validates ...\c"
+sudo ${CLIENT_BIN} -s 10240000 -l d -t 10 -E --pmtud 1 -M -i lo -i lo -x 809 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+validated=`grep "|path validated|path_id:1|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$validated" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "pmtud_smaller_second_path_validates" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} validated:${validated:+y} errlog:${errlog:+y})"
+    case_print_result "pmtud_smaller_second_path_validates" "fail"
+fi
+grep_err_log
+
+# 810: the same second path, added one second in, once the first path has
+# grown: it starts from the base size, the connection goes back down to it
+# and searches again, and the transfer completes.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "PMTUD new path starts from the base size ...\c"
+sudo ${CLIENT_BIN} -s 20480000 -l d -t 15 -E --pmtud 1 -M -i lo -i lo -x 810 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+validated=`grep "|path validated|path_id:1|" clog`
+newpath=`grep "|PMTUD|new path|path:1|size:1298|" clog | grep -v "|was:1298|"`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$validated" ] && [ -n "$newpath" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "pmtud_new_path_starts_at_base" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} validated:${validated:+y} newpath:${newpath:+y} errlog:${errlog:+y})"
+    case_print_result "pmtud_new_path_starts_at_base" "fail"
+fi
+grep_err_log
+
 killall test_server 2> /dev/null
 
 cd -

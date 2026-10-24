@@ -573,3 +573,83 @@ xqc_test_pmtud_dgram_with_copy_lost_once(void)
 
     xqc_engine_destroy(conn->engine);
 }
+
+/* RFC 9000 s8.2.1: PATH_CHALLENGE is expanded to 1200 bytes, not to the
+ * size found on another path */
+void
+xqc_test_pmtud_path_challenge_padded_to_1200(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, 1, 1400, 10,
+                                                  XQC_FALSE);
+    CU_ASSERT_FATAL(po != NULL);
+    po->po_frame_types = XQC_FRAME_BIT_PATH_CHALLENGE;
+    po->po_used_size = 30;
+
+    xqc_gen_padding_frame(conn, po);
+    CU_ASSERT_EQUAL(po->po_used_size,
+                    XQC_PACKET_INITIAL_MIN_LENGTH - XQC_TLS_AEAD_OVERHEAD_MAX_LEN);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* a PMTUD probe still takes the size it probes */
+void
+xqc_test_pmtud_probe_padded_to_probed_size(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1300);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, 1, 1400, 10,
+                                                  XQC_TRUE);
+    CU_ASSERT_FATAL(po != NULL);
+    po->po_used_size = 30;
+
+    xqc_gen_padding_frame(conn, po);
+    CU_ASSERT_EQUAL(po->po_used_size, 1400 + XQC_ACK_SPACE);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* a validated new path at the base size brings the connection down to it
+ * and starts a new search over the whole range */
+void
+xqc_test_pmtud_new_path_lowers_connection_size(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_path_ctx_t path;
+    memset(&path, 0, sizeof(path));
+    path.path_id = 1;
+    path.curr_pkt_out_size = PMTUD_BASE;
+
+    xqc_conn_pmtud_on_new_path(conn, &path);
+
+    CU_ASSERT_EQUAL(conn->pkt_out_size, PMTUD_BASE);
+    CU_ASSERT_EQUAL(conn->max_pkt_out_size, PMTUD_CAP);
+    CU_ASSERT((conn->conn_flag & XQC_CONN_FLAG_PMTUD_PROBING) != 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* a new path already as large as the connection size changes nothing */
+void
+xqc_test_pmtud_new_path_not_smaller_keeps_size(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, PMTUD_BASE);
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->max_pkt_out_size = 1350;
+    xqc_path_ctx_t path;
+    memset(&path, 0, sizeof(path));
+    path.path_id = 1;
+    path.curr_pkt_out_size = PMTUD_BASE;
+
+    xqc_conn_pmtud_on_new_path(conn, &path);
+
+    CU_ASSERT_EQUAL(conn->pkt_out_size, PMTUD_BASE);
+    CU_ASSERT_EQUAL(conn->max_pkt_out_size, 1350);
+
+    xqc_engine_destroy(conn->engine);
+}

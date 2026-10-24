@@ -810,6 +810,7 @@ xqc_pmtud_big_size(xqc_connection_t *conn, size_t curr_pkt_out_size)
 
 void xqc_conn_pmtud_on_blackhole(xqc_connection_t *conn, xqc_path_ctx_t *path,
     const char *reason);
+void xqc_conn_pmtud_on_new_path(xqc_connection_t *conn, xqc_path_ctx_t *path);
 
 xqc_int_t xqc_conn_pmtud_split_lost(xqc_connection_t *conn, xqc_packet_out_t *po);
 

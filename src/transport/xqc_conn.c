@@ -2356,6 +2356,32 @@ xqc_conn_pmtud_drop_inflight(xqc_connection_t *conn, xqc_path_ctx_t *path)
 }
 
 /*
+ * @path is validated and starts at the base size: until a probe shows it
+ * carries more, the connection sends at that size, and searches the whole
+ * range again. Queued packets built at the old size are dropped or split
+ * as after a black hole, since any of them could go to the new path.
+ */
+void
+xqc_conn_pmtud_on_new_path(xqc_connection_t *conn, xqc_path_ctx_t *path)
+{
+    if (path->curr_pkt_out_size >= conn->pkt_out_size) {
+        return;
+    }
+
+    xqc_log(conn->log, XQC_LOG_INFO, "|PMTUD|new path|path:%ui|size:%uz|was:%uz|",
+            path->path_id, path->curr_pkt_out_size, conn->pkt_out_size);
+
+    conn->pkt_out_size = path->curr_pkt_out_size;
+    conn->max_pkt_out_size = conn->conn_settings.probing_pkt_out_size;
+    conn->probing_pkt_out_size = (conn->pkt_out_size + conn->max_pkt_out_size) >> 1;
+    conn->probing_cnt = 0;
+    conn->conn_flag |= XQC_CONN_FLAG_PMTUD_PROBING;
+    xqc_timer_unset(&conn->conn_timer_manager, XQC_TIMER_PMTUD_PROBING);
+    xqc_datagram_record_mss(conn);
+    xqc_conn_pmtud_drop_unsent(conn);
+}
+
+/*
  * Packets above the base size no longer get through @path: go back to the
  * base size on it, so the connection sends what every path carries, and
  * search again from there, below the size that failed.

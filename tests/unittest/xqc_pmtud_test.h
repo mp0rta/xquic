@@ -25,5 +25,9 @@ void xqc_test_pmtud_pto_on_suspect_path_sends_probe(void);
 void xqc_test_pmtud_lost_search_probe_retries_soon(void);
 void xqc_test_pmtud_stale_probe_loss_does_not_retry(void);
 void xqc_test_pmtud_dgram_with_copy_lost_once(void);
+void xqc_test_pmtud_path_challenge_padded_to_1200(void);
+void xqc_test_pmtud_probe_padded_to_probed_size(void);
+void xqc_test_pmtud_new_path_lowers_connection_size(void);
+void xqc_test_pmtud_new_path_not_smaller_keeps_size(void);
 
 #endif /* XQC_PMTUD_TEST_H_INCLUDED */
