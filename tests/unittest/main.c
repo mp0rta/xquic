@@ -352,6 +352,12 @@ main(int argc, char *argv[])
                         xqc_test_pmtud_validating_path_not_in_mss)
         || !CU_add_test(pSuite, "xqc_test_pmtud_active_path_in_mss",
                         xqc_test_pmtud_active_path_in_mss)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_dgram_on_validating_path_fits_its_size",
+                        xqc_test_pmtud_dgram_on_validating_path_fits_its_size)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_no_ack_into_packet_above_path_size",
+                        xqc_test_pmtud_no_ack_into_packet_above_path_size)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_pto_copy_fits_path_size",
+                        xqc_test_pmtud_pto_copy_fits_path_size)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)

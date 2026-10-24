@@ -114,6 +114,13 @@ xqc_packet_out_can_attach_ack(xqc_packet_out_t *po,
         return XQC_FALSE;
     }
 
+    /* PMTUD: built larger than the path is known to carry (it is not
+     * validated yet), and only its content was kept to that size: an ACK
+     * would go past it */
+    if (path->parent_conn->enable_pmtud && po->po_buf_size > path->curr_pkt_out_size) {
+        return XQC_FALSE;
+    }
+
     if (po->po_flag & XQC_POF_STREAM_NO_LEN) {
         return XQC_FALSE;
     }

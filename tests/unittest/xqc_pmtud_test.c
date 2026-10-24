@@ -1006,3 +1006,86 @@ xqc_test_pmtud_active_path_in_mss(void)
 {
     CU_ASSERT_EQUAL(xqc_test_pmtud_mss_with_second_path(XQC_PATH_STATE_ACTIVE), PMTUD_BASE);
 }
+
+/* a pinned DATAGRAM on a path not yet validated, at the base size while
+ * the connection grew to 1400, fits the base size */
+void
+xqc_test_pmtud_dgram_on_validating_path_fits_its_size(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->conn_flag |= XQC_CONN_FLAG_CAN_SEND_1RTT;
+    conn->dgram_mss = 1380;
+    CURR(conn) = 1400;
+    conn->conn_initial_path->path_max_pkt_out_size = PMTUD_CAP;
+
+    xqc_path_ctx_t path;
+    memset(&path, 0, sizeof(path));
+    path.path_id = 1;
+    path.path_state = XQC_PATH_STATE_VALIDATING;
+    path.curr_pkt_out_size = PMTUD_BASE;
+    path.path_max_pkt_out_size = PMTUD_CAP;
+    xqc_list_add_tail(&path.path_list, &conn->conn_paths_list);
+
+    size_t mss = xqc_datagram_get_mss_on_path(conn, 1);
+    CU_ASSERT(mss > 0);
+    CU_ASSERT(mss + XQC_DATAGRAM_HEADER_BYTES < PMTUD_BASE);
+    /* the active path is not limited below the connection size */
+    CU_ASSERT_EQUAL(xqc_datagram_get_mss_on_path(conn, 0), 1380);
+
+    xqc_list_del_init(&path.path_list);
+    xqc_engine_destroy(conn->engine);
+}
+
+/* no ACK goes into a packet built larger than its path is known to carry */
+void
+xqc_test_pmtud_no_ack_into_packet_above_path_size(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_path_ctx_t *path = conn->conn_initial_path;
+    xqc_packet_out_t po;
+    memset(&po, 0, sizeof(po));
+    po.po_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+    po.po_frame_types = XQC_FRAME_BIT_DATAGRAM;
+    po.po_path_id = path->path_id;
+    po.po_buf_size = 1400;
+    po.po_used_size = 1200;
+
+    path->curr_pkt_out_size = PMTUD_BASE;
+    CU_ASSERT(!xqc_packet_out_can_attach_ack(&po, path, XQC_PTYPE_SHORT_HEADER));
+    path->curr_pkt_out_size = 1400;
+    CU_ASSERT(xqc_packet_out_can_attach_ack(&po, path, XQC_PTYPE_SHORT_HEADER));
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* a PTO on a path at the base size sends no copy of a larger packet sent
+ * elsewhere: a PING instead */
+void
+xqc_test_pmtud_pto_copy_fits_path_size(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, 60, 1400, 10, XQC_FALSE);
+    CU_ASSERT_FATAL(po != NULL);
+    po->po_frame_types = XQC_FRAME_BIT_STREAM;
+    conn->conn_flag |= XQC_CONN_FLAG_CAN_SEND_1RTT;
+    CURR(conn) = PMTUD_BASE;
+
+    xqc_path_send_one_or_two_ack_elicit_pkts(conn->conn_initial_path, XQC_PNS_APP_DATA);
+
+    int probes = 0, too_big = 0;
+    xqc_list_head_t *pos, *next;
+    xqc_list_for_each_safe(pos, next, &conn->conn_send_queue->sndq_pto_probe_packets) {
+        xqc_packet_out_t *p = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+        probes++;
+        if (p->po_used_size > PMTUD_BASE) {
+            too_big++;
+        }
+    }
+    CU_ASSERT(probes > 0);
+    CU_ASSERT_EQUAL(too_big, 0);
+
+    xqc_engine_destroy(conn->engine);
+}

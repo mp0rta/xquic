@@ -3727,6 +3727,12 @@ xqc_path_send_one_or_two_ack_elicit_pkts(xqc_path_ctx_t *path, xqc_pkt_num_space
             continue;
         }
 
+        /* PMTUD: no copy larger than this path is known to carry, which a
+         * path not yet validated is not */
+        if (c->enable_pmtud && packet_out->po_used_size > path->curr_pkt_out_size) {
+            continue;
+        }
+
         if (XQC_IS_ACK_ELICITING(packet_out->po_frame_types) &&
             (XQC_NEED_REPAIR(packet_out->po_frame_types) ||
              (packet_out->po_flag & XQC_POF_NOTIFY) ||
