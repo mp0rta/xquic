@@ -799,3 +799,50 @@ xqc_test_pmtud_mixed_datagram_not_dropped(void)
 
     xqc_engine_destroy(conn->engine);
 }
+
+/* a DATAGRAM packet waiting in the send queue, with room left */
+static xqc_packet_out_t *
+xqc_test_pmtud_queued_dgram(xqc_connection_t *conn)
+{
+    xqc_packet_out_t *po = xqc_packet_out_get_and_insert_send(
+        conn->conn_send_queue, XQC_PTYPE_SHORT_HEADER);
+    if (po != NULL) {
+        po->po_frame_types = XQC_FRAME_BIT_DATAGRAM;
+        po->po_used_size = 100;
+    }
+    return po;
+}
+
+/* with PMTUD, a control frame never goes into a packet with a DATAGRAM:
+ * such a packet is dropped whole after a black hole */
+void
+xqc_test_pmtud_control_frame_not_added_to_datagram(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, PMTUD_BASE);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_packet_out_t *dgram = xqc_test_pmtud_queued_dgram(conn);
+    CU_ASSERT_FATAL(dgram != NULL);
+
+    xqc_packet_out_t *po = xqc_send_queue_get_packet_out(
+        conn->conn_send_queue, 20, XQC_PTYPE_SHORT_HEADER);
+    CU_ASSERT(po != NULL && po != dgram);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* without PMTUD, packets are filled as before */
+void
+xqc_test_pmtud_off_control_frame_shares_datagram(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, PMTUD_BASE);
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->enable_pmtud = 0;
+    xqc_packet_out_t *dgram = xqc_test_pmtud_queued_dgram(conn);
+    CU_ASSERT_FATAL(dgram != NULL);
+
+    xqc_packet_out_t *po = xqc_send_queue_get_packet_out(
+        conn->conn_send_queue, 20, XQC_PTYPE_SHORT_HEADER);
+    CU_ASSERT(po == dgram);
+
+    xqc_engine_destroy(conn->engine);
+}

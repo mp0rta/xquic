@@ -338,6 +338,10 @@ main(int argc, char *argv[])
                         xqc_test_pmtud_split_control_only_packet)
         || !CU_add_test(pSuite, "xqc_test_pmtud_mixed_datagram_not_dropped",
                         xqc_test_pmtud_mixed_datagram_not_dropped)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_control_frame_not_added_to_datagram",
+                        xqc_test_pmtud_control_frame_not_added_to_datagram)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_off_control_frame_shares_datagram",
+                        xqc_test_pmtud_off_control_frame_shares_datagram)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)
