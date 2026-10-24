@@ -330,6 +330,14 @@ main(int argc, char *argv[])
                         xqc_test_pmtud_new_path_lowers_connection_size)
         || !CU_add_test(pSuite, "xqc_test_pmtud_new_path_not_smaller_keeps_size",
                         xqc_test_pmtud_new_path_not_smaller_keeps_size)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_pto_before_1rtt_sends_no_probe",
+                        xqc_test_pmtud_pto_before_1rtt_sends_no_probe)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_split_keeps_control_frames",
+                        xqc_test_pmtud_split_keeps_control_frames)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_split_control_only_packet",
+                        xqc_test_pmtud_split_control_only_packet)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_mixed_datagram_not_dropped",
+                        xqc_test_pmtud_mixed_datagram_not_dropped)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)

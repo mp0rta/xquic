@@ -798,6 +798,9 @@ void xqc_conn_try_to_update_mss(xqc_connection_t *conn);
 /* a black hole at the base size goes down to this, QUIC's minimum, when
  * smaller packets still get through: the path is smaller than the base */
 #define XQC_PMTUD_FLOOR             XQC_QUIC_MIN_MSS
+/* the frames of a packet that is only a DATAGRAM, for the PMTUD drops */
+#define XQC_PMTUD_DGRAM_ONLY        (XQC_FRAME_BIT_DATAGRAM | XQC_FRAME_BIT_ACK \
+    | XQC_FRAME_BIT_ACK_MP | XQC_FRAME_BIT_PING | XQC_FRAME_BIT_PADDING)
 
 /* Packets above this size on @path tell whether large packets get through:
  * the base size while above it, the floor once at or below it. */

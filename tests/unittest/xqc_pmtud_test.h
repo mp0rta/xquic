@@ -29,5 +29,9 @@ void xqc_test_pmtud_path_challenge_padded_to_1200(void);
 void xqc_test_pmtud_probe_padded_to_probed_size(void);
 void xqc_test_pmtud_new_path_lowers_connection_size(void);
 void xqc_test_pmtud_new_path_not_smaller_keeps_size(void);
+void xqc_test_pmtud_pto_before_1rtt_sends_no_probe(void);
+void xqc_test_pmtud_split_keeps_control_frames(void);
+void xqc_test_pmtud_split_control_only_packet(void);
+void xqc_test_pmtud_mixed_datagram_not_dropped(void);
 
 #endif /* XQC_PMTUD_TEST_H_INCLUDED */

@@ -5942,7 +5942,7 @@ clear_log
 echo -e "PMTUD black hole mid-transfer, stream data split ...\c"
 sudo ${CLIENT_BIN} -s 20480000 -l d -t 10 -E --pmtud 1 -x 806 > stdlog
 result=`grep ">>>>>>>> pass:1" stdlog`
-blackhole=`grep "|PMTUD black hole|" clog`
+blackhole=`grep "|PMTUD black hole|.*|back to:1200|" clog`
 split=`grep "|split lost packet|" clog`
 errlog=`grep_err_log`
 if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$blackhole" ] && [ -n "$split" ]; then
@@ -5985,12 +5985,14 @@ echo -e "PMTUD outage does not go below the base size ...\c"
 sudo ${CLIENT_BIN} -s 10240000 -l d -t 10 -E --pmtud 1 -x 808 > stdlog
 result=`grep ">>>>>>>> pass:1" stdlog`
 floor=`grep "|PMTUD black hole|.*|back to:1200|" clog`
+# the path was suspect during the outage: probes at the base size were lost
+probed=`grep -c "|PMTUD probe lost|.*|size:1298|" clog`
 errlog=`grep_err_log`
-if [ -z "$errlog" ] && [ -n "$result" ] && [ -z "$floor" ]; then
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -z "$floor" ] && [ "$probed" -ge 2 ]; then
     echo ">>>>>>>> pass:1"
     case_print_result "pmtud_outage_stays_at_base" "pass"
 else
-    echo ">>>>>>>> pass:0 (result:${result:+y} floor:${floor:+y} errlog:${errlog:+y})"
+    echo ">>>>>>>> pass:0 (result:${result:+y} floor:${floor:+y} probed:$probed errlog:${errlog:+y})"
     case_print_result "pmtud_outage_stays_at_base" "fail"
 fi
 grep_err_log

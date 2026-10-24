@@ -1625,27 +1625,6 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
         }
     }
 
-    if (blackhole) {
-        xqc_conn_pmtud_on_blackhole(conn, send_ctl->ctl_path, "loss");
-
-    } else if (bh_outage) {
-        xqc_log(conn->log, XQC_LOG_INFO,
-                "|PMTUD|outage, not a black hole|path:%ui|size:%uz|",
-                send_ctl->ctl_path->path_id,
-                send_ctl->ctl_path->curr_pkt_out_size);
-        xqc_send_ctl_pmtud_bh_reset(send_ctl);
-
-    } else {
-        xqc_send_ctl_pmtud_bh_maybe_probe(send_ctl, now);
-    }
-
-    /* the next search attempt one RTT after the loss, without waiting for
-     * the probe timer */
-    if (search_probe_lost && !blackhole) {
-        xqc_timer_set(&conn->conn_timer_manager, XQC_TIMER_PMTUD_PROBING,
-                      now, xqc_max(send_ctl->ctl_srtt, 1));
-    }
-
     /* update statistic */
     send_ctl->ctl_lost_pkts_number += lost_n;
     send_ctl->sampler.loss = lost_n;
@@ -1663,7 +1642,7 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
         xqc_send_ctl_congestion_event(send_ctl, largest_lost->po_sent_time);
 
         if (send_ctl->ctl_first_rtt_sample_time == 0) {
-            return;
+            goto pmtud;
         }
 
         /* Collapse congestion window if persistent congestion */
@@ -1714,6 +1693,30 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                         lost_interval, lost_count, send_count, largest_lost->po_pkt.pkt_num, largest_lost->po_sent_time, send_ctl->ctl_srtt,
                         send_ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(send_ctl->ctl_cong), bw, now - conn->conn_create_time);
         }
+    }
+
+pmtud:
+    /* After the last use of largest_lost: splitting packets after a black
+     * hole takes packets from the free list, which can hold it now. */
+    if (blackhole) {
+        xqc_conn_pmtud_on_blackhole(conn, send_ctl->ctl_path, "loss");
+
+    } else if (bh_outage) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|PMTUD|outage, not a black hole|path:%ui|size:%uz|",
+                send_ctl->ctl_path->path_id,
+                send_ctl->ctl_path->curr_pkt_out_size);
+        xqc_send_ctl_pmtud_bh_reset(send_ctl);
+
+    } else {
+        xqc_send_ctl_pmtud_bh_maybe_probe(send_ctl, now);
+    }
+
+    /* the next search attempt one RTT after the loss, without waiting for
+     * the probe timer */
+    if (search_probe_lost && !blackhole) {
+        xqc_timer_set(&conn->conn_timer_manager, XQC_TIMER_PMTUD_PROBING,
+                      now, xqc_max(send_ctl->ctl_srtt, 1));
     }
 }
 

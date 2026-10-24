@@ -470,6 +470,22 @@ xqc_test_pmtud_blackhole_probes_one_rtt_apart(void)
     xqc_engine_destroy(conn->engine);
 }
 
+/* a suspect path with 1-RTT data in flight and nothing acked */
+static void
+xqc_test_pmtud_arm_pto(xqc_connection_t *conn)
+{
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+
+    conn->conn_flag |= XQC_CONN_FLAG_CAN_SEND_1RTT
+                       | XQC_CONN_FLAG_HANDSHAKE_COMPLETED
+                       | XQC_CONN_FLAG_HANDSHAKE_CONFIRMED;
+    send_ctl->ctl_bytes_in_flight = 1400;
+    send_ctl->ctl_bytes_ack_eliciting_inflight[XQC_PNS_APP_DATA] = 1400;
+    send_ctl->ctl_bh_suspect_time = 1;
+    send_ctl->ctl_bh_probe_time = 1;
+    send_ctl->ctl_bh_probes_sent = 1;
+}
+
 /* a suspect path where nothing is acked any more: the PTO sends the next
  * probe, or nothing would */
 void
@@ -478,11 +494,7 @@ xqc_test_pmtud_pto_on_suspect_path_sends_probe(void)
     xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
     CU_ASSERT_FATAL(conn != NULL);
     xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
-    conn->conn_flag |= XQC_CONN_FLAG_CAN_SEND_1RTT
-                       | XQC_CONN_FLAG_HANDSHAKE_COMPLETED;
-    send_ctl->ctl_bh_suspect_time = 1;
-    send_ctl->ctl_bh_probe_time = 1;
-    send_ctl->ctl_bh_probes_sent = 1;
+    xqc_test_pmtud_arm_pto(conn);
 
     xqc_timer_loss_detection_timeout(XQC_TIMER_LOSS_DETECTION, 1000000,
                                      send_ctl);
@@ -650,6 +662,140 @@ xqc_test_pmtud_new_path_not_smaller_keeps_size(void)
 
     CU_ASSERT_EQUAL(conn->pkt_out_size, PMTUD_BASE);
     CU_ASSERT_EQUAL(conn->max_pkt_out_size, 1350);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* without 1-RTT keys, a PTO sends no PMTUD probe, which is a 1-RTT packet */
+void
+xqc_test_pmtud_pto_before_1rtt_sends_no_probe(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+    xqc_test_pmtud_arm_pto(conn);
+    conn->conn_flag &= ~XQC_CONN_FLAG_CAN_SEND_1RTT;
+
+    xqc_timer_loss_detection_timeout(XQC_TIMER_LOSS_DETECTION, 1000000,
+                                     send_ctl);
+
+    CU_ASSERT_EQUAL(send_ctl->ctl_bh_probes_sent, 1);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* the lost packets in the lost list: each fits, and the frames they carry */
+static void
+xqc_test_pmtud_lost_list(xqc_connection_t *conn, size_t *stream_bytes,
+    int *rest_count, int *rest_with_stream)
+{
+    xqc_list_head_t *pos;
+
+    *stream_bytes = 0;
+    *rest_count = 0;
+    *rest_with_stream = 0;
+    xqc_list_for_each(pos, &conn->conn_send_queue->sndq_lost_packets) {
+        xqc_packet_out_t *npo = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+        CU_ASSERT(npo->po_used_size <= conn->pkt_out_size);
+        if (npo->po_frame_types & XQC_FRAME_BIT_MAX_DATA) {
+            (*rest_count)++;
+            CU_ASSERT(npo->po_origin == NULL);
+            if (npo->po_frame_types & XQC_FRAME_BIT_STREAM) {
+                (*rest_with_stream)++;
+            }
+
+        } else if (npo->po_stream_frames[0].ps_is_used) {
+            *stream_bytes += npo->po_stream_frames[0].ps_length;
+        }
+    }
+}
+
+/* a lost STREAM packet that also carries MAX_DATA: the stream data is
+ * split, and MAX_DATA goes in a packet of its own, not lost with the rest */
+void
+xqc_test_pmtud_split_keeps_control_frames(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE,
+                                                 PMTUD_BASE);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_stream_t *stream = xqc_create_stream_with_conn(conn,
+        XQC_UNDEFINE_STREAM_ID, XQC_CLI_BID, NULL, NULL);
+    CU_ASSERT_FATAL(stream != NULL);
+
+    unsigned char data[1340];
+    memset(data, 'y', sizeof(data));
+    xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, 1, 1400, 10,
+                                                  XQC_FALSE);
+    CU_ASSERT_FATAL(po != NULL);
+    po->po_used_size = 0;
+    po->po_frame_types = 0;
+    size_t written = 0;
+    int n = xqc_gen_stream_frame(po, stream->stream_id, 0, 0, data,
+                                 sizeof(data), &written);
+    CU_ASSERT_FATAL(n > 0 && written == sizeof(data));
+    po->po_used_size += n;
+    po->po_used_size += xqc_gen_max_data_frame(po, 1 << 20);
+    CU_ASSERT_FATAL(po->po_used_size > conn->pkt_out_size);
+    xqc_conn_increase_unacked_stream_ref(conn, po);
+
+    CU_ASSERT_EQUAL(xqc_conn_pmtud_split_lost(conn, po), XQC_OK);
+
+    size_t total;
+    int rest, rest_stream;
+    xqc_test_pmtud_lost_list(conn, &total, &rest, &rest_stream);
+    CU_ASSERT_EQUAL(total, sizeof(data));
+    CU_ASSERT_EQUAL(rest, 1);
+    CU_ASSERT_EQUAL(rest_stream, 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* a lost packet of control frames only, padded beyond the current size:
+ * resent without the padding */
+void
+xqc_test_pmtud_split_control_only_packet(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE,
+                                                 PMTUD_BASE);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, 1, 1400, 10,
+                                                  XQC_FALSE);
+    CU_ASSERT_FATAL(po != NULL);
+    po->po_used_size = 0;
+    po->po_frame_types = 0;
+    po->po_used_size += xqc_gen_max_data_frame(po, 1 << 20);
+    po->po_padding = po->po_buf + po->po_used_size;
+    memset(po->po_padding, 0, 1390 - po->po_used_size);
+    po->po_used_size = 1390;
+    po->po_frame_types |= XQC_FRAME_BIT_PADDING;
+
+    CU_ASSERT_EQUAL(xqc_conn_pmtud_split_lost(conn, po), XQC_OK);
+
+    size_t total;
+    int rest, rest_stream;
+    xqc_test_pmtud_lost_list(conn, &total, &rest, &rest_stream);
+    CU_ASSERT_EQUAL(rest, 1);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* a DATAGRAM sharing a packet with other frames is neither dropped nor
+ * split: the datagram frame cannot be cut out */
+void
+xqc_test_pmtud_mixed_datagram_not_dropped(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE,
+                                                 PMTUD_BASE);
+    CU_ASSERT_FATAL(conn != NULL);
+
+    xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, 1, 1400, 10,
+                                                  XQC_FALSE);
+    CU_ASSERT_FATAL(po != NULL);
+    po->po_frame_types = XQC_FRAME_BIT_DATAGRAM | XQC_FRAME_BIT_NEW_TOKEN;
+
+    CU_ASSERT(!xqc_conn_pmtud_drop_oversize(conn, po));
+    CU_ASSERT_EQUAL(xqc_conn_pmtud_split_lost(conn, po), -XQC_EPARAM);
 
     xqc_engine_destroy(conn->engine);
 }

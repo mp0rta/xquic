@@ -2153,12 +2153,92 @@ xqc_conn_pmtud_dgram_lost(xqc_connection_t *conn, xqc_packet_out_t *po)
 }
 
 /*
+ * The repairable frames of @po other than STREAM, in a packet of their own
+ * that fits: a copy of @po with its STREAM frames, ACK and padding cut out.
+ * It is not tied to @po as a copy, because @po is marked done once its
+ * stream data is split, and a copy of a done packet is never sent.
+ */
+static xqc_int_t
+xqc_conn_pmtud_rest_packet(xqc_connection_t *conn, xqc_packet_out_t *po)
+{
+    xqc_send_queue_t *sq = conn->conn_send_queue;
+    xqc_packet_out_t *rest = xqc_packet_out_get(sq);
+    xqc_po_stream_frame_t *f;
+    int n = 0;
+
+    if (rest == NULL) {
+        return -XQC_EMALLOC;
+    }
+
+    xqc_packet_out_copy(rest, po);
+    rest->po_origin->po_origin_ref_cnt--;
+    rest->po_origin = NULL;
+    xqc_packet_out_remove_ack_frame(rest);
+    if (rest->po_padding != NULL
+        && rest->po_padding < rest->po_buf + rest->po_used_size)
+    {
+        rest->po_used_size = rest->po_padding - rest->po_buf;
+    }
+    rest->po_padding = NULL;
+
+    /* last first, so the offsets of the earlier ones still hold */
+    for (int i = XQC_MAX_STREAM_FRAME_IN_PO - 1; i >= 0; i--) {
+        f = &rest->po_stream_frames[i];
+        if (!f->ps_is_used || f->ps_is_reset) {
+            continue;
+        }
+        size_t start = f->ps_type_offset;
+        size_t end = (xqc_conn_stream_frame_data(rest, f) - rest->po_buf)
+                     + f->ps_length;
+        if (end > rest->po_used_size) {
+            end = rest->po_used_size;
+        }
+        memmove(rest->po_buf + start, rest->po_buf + end,
+                rest->po_used_size - end);
+        rest->po_used_size -= end - start;
+        for (int j = i + 1; j < XQC_MAX_STREAM_FRAME_IN_PO; j++) {
+            if (rest->po_stream_frames[j].ps_is_used
+                && rest->po_stream_frames[j].ps_type_offset > start)
+            {
+                rest->po_stream_frames[j].ps_type_offset -= end - start;
+                rest->po_stream_frames[j].ps_length_offset -= end - start;
+            }
+        }
+        f->ps_is_used = 0;
+    }
+
+    /* the RESET_STREAM entries stay, packed at the front */
+    for (int i = 0; i < XQC_MAX_STREAM_FRAME_IN_PO; i++) {
+        if (rest->po_stream_frames[i].ps_is_used) {
+            rest->po_stream_frames[n++] = rest->po_stream_frames[i];
+        }
+    }
+    for (int i = n; i < XQC_MAX_STREAM_FRAME_IN_PO; i++) {
+        memset(&rest->po_stream_frames[i], 0, sizeof(xqc_po_stream_frame_t));
+    }
+    rest->po_frame_types &= ~(XQC_FRAME_BIT_STREAM | XQC_FRAME_BIT_PADDING);
+
+    if (!XQC_NEED_REPAIR(rest->po_frame_types)) {
+        xqc_send_queue_insert_free(rest, &sq->sndq_free_packets, sq);
+        return XQC_OK;
+    }
+
+    xqc_send_queue_insert_lost(&rest->po_list, &sq->sndq_lost_packets);
+    sq->sndq_packets_used++;
+    xqc_log(conn->log, XQC_LOG_DEBUG, "|PMTUD|lost packet rest|pkt_num:%ui|size:%ud|frame:%s|",
+            po->po_pkt.pkt_num, rest->po_used_size,
+            xqc_frame_type_2_str(conn->engine, rest->po_frame_types));
+    return XQC_OK;
+}
+
+/*
  * PMTUD shrank the packet size after @po was sent, so a copy of the lost
  * @po would not fit any more: write its stream data into new packets of
- * the current size instead. Only for packets carrying nothing but STREAM,
- * ACK, PING and PADDING frames. The new packets take the stream refs before
- * @po gives its own back, and @po is marked acked so that none of its other
- * copies counts them again. XQC_OK if @po can be dropped.
+ * the current size instead, and its other repairable frames into one more
+ * (xqc_conn_pmtud_rest_packet). Not for packets with a DATAGRAM, which is
+ * not resent. The new packets take the stream refs before @po gives its
+ * own back, and @po is marked acked so that none of its other copies
+ * counts them again. XQC_OK if @po can be dropped.
  */
 xqc_int_t
 xqc_conn_pmtud_split_lost(xqc_connection_t *conn, xqc_packet_out_t *po)
@@ -2172,10 +2252,17 @@ xqc_conn_pmtud_split_lost(xqc_connection_t *conn, xqc_packet_out_t *po)
         || po->po_buf_size <= conn->pkt_out_size
         || po->po_used_size <= conn->pkt_out_size
         || po->po_pkt.pkt_type != XQC_PTYPE_SHORT_HEADER
-        || !(po->po_frame_types & XQC_FRAME_BIT_STREAM)
-        || (po->po_frame_types & ~allowed))
+        || (po->po_frame_types & XQC_FRAME_BIT_DATAGRAM)
+        || !XQC_NEED_REPAIR(po->po_frame_types))
     {
         return -XQC_EPARAM;
+    }
+
+    if (po->po_frame_types & ~allowed) {
+        xqc_int_t ret = xqc_conn_pmtud_rest_packet(conn, po);
+        if (ret != XQC_OK) {
+            return ret;
+        }
     }
 
     for (int i = 0; i < XQC_MAX_STREAM_FRAME_IN_PO; i++) {
@@ -2240,8 +2327,7 @@ xqc_conn_pmtud_split_lost(xqc_connection_t *conn, xqc_packet_out_t *po)
 xqc_bool_t
 xqc_conn_pmtud_drop_oversize(xqc_connection_t *conn, xqc_packet_out_t *po)
 {
-    xqc_frame_type_bit_t dgram = XQC_FRAME_BIT_DATAGRAM | XQC_FRAME_BIT_ACK
-        | XQC_FRAME_BIT_ACK_MP | XQC_FRAME_BIT_PING | XQC_FRAME_BIT_PADDING;
+    xqc_frame_type_bit_t dgram = XQC_PMTUD_DGRAM_ONLY;
     xqc_path_ctx_t *path;
 
     if (!conn->enable_pmtud
@@ -2342,7 +2428,11 @@ xqc_conn_pmtud_drop_inflight(xqc_connection_t *conn, xqc_path_ctx_t *path)
             xqc_send_queue_remove_unacked(po, sq);
             xqc_send_queue_insert_free(po, &sq->sndq_free_packets, sq);
 
-        } else if (po->po_frame_types & XQC_FRAME_BIT_DATAGRAM) {
+        } else if ((po->po_frame_types & XQC_FRAME_BIT_DATAGRAM)
+                   && !(po->po_frame_types & ~XQC_PMTUD_DGRAM_ONLY))
+        {
+            /* a packet with only a DATAGRAM (and ACK, PING, PADDING):
+             * nothing in it is resent, report it lost */
             xqc_conn_pmtud_dgram_lost(conn, po);
             xqc_send_queue_maybe_remove_unacked(po, sq, NULL);
 
