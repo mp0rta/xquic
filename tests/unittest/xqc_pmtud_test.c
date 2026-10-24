@@ -846,3 +846,99 @@ xqc_test_pmtud_off_control_frame_shares_datagram(void)
 
     xqc_engine_destroy(conn->engine);
 }
+
+/* a lost oversize STREAM packet built at 1400 bytes, @extra frame bits
+ * added, on a fresh stream */
+static xqc_packet_out_t *
+xqc_test_pmtud_stream_packet(xqc_connection_t *conn, xqc_stream_t **stream)
+{
+    *stream = xqc_create_stream_with_conn(conn, XQC_UNDEFINE_STREAM_ID,
+                                          XQC_CLI_BID, NULL, NULL);
+    if (*stream == NULL) {
+        return NULL;
+    }
+    unsigned char data[1340];
+    memset(data, 'z', sizeof(data));
+    xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, 1, 1400, 10,
+                                                  XQC_FALSE);
+    if (po == NULL) {
+        return NULL;
+    }
+    po->po_used_size = 0;
+    po->po_frame_types = 0;
+    size_t written = 0;
+    int n = xqc_gen_stream_frame(po, (*stream)->stream_id, 0, 0, data,
+                                 sizeof(data), &written);
+    if (n < 0) {
+        return NULL;
+    }
+    po->po_used_size += n;
+    return po;
+}
+
+/* a RESET_STREAM entry is not split as stream data: it goes with the
+ * rest packet, and no empty STREAM frame is made from it */
+void
+xqc_test_pmtud_split_skips_reset_stream(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, PMTUD_BASE);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_stream_t *stream;
+    xqc_packet_out_t *po = xqc_test_pmtud_stream_packet(conn, &stream);
+    CU_ASSERT_FATAL(po != NULL);
+    /* a RESET_STREAM entry after the STREAM frame */
+    po->po_stream_frames[1].ps_stream_id = stream->stream_id;
+    po->po_stream_frames[1].ps_is_reset = 1;
+    po->po_stream_frames[1].ps_is_used = 1;
+    po->po_frame_types |= XQC_FRAME_BIT_RESET_STREAM;
+    xqc_conn_increase_unacked_stream_ref(conn, po);
+
+    CU_ASSERT_EQUAL(xqc_conn_pmtud_split_lost(conn, po), XQC_OK);
+
+    int empty = 0, resets = 0;
+    xqc_list_head_t *pos;
+    xqc_list_for_each(pos, &conn->conn_send_queue->sndq_lost_packets) {
+        xqc_packet_out_t *npo = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+        if (npo->po_frame_types & XQC_FRAME_BIT_RESET_STREAM) {
+            resets++;
+            CU_ASSERT(npo->po_stream_frames[0].ps_is_reset);
+        } else if (npo->po_stream_frames[0].ps_is_used
+                   && npo->po_stream_frames[0].ps_length == 0)
+        {
+            empty++;
+        }
+    }
+    CU_ASSERT_EQUAL(resets, 1);
+    CU_ASSERT_EQUAL(empty, 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* a rest packet with nothing to resend goes back to the free list without
+ * unbalancing the count of packets in use */
+void
+xqc_test_pmtud_unneeded_rest_keeps_packet_count(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, PMTUD_BASE);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_stream_t *stream;
+    xqc_packet_out_t *po = xqc_test_pmtud_stream_packet(conn, &stream);
+    CU_ASSERT_FATAL(po != NULL);
+    /* a frame outside the split set that needs no repair */
+    po->po_frame_types |= XQC_FRAME_BIT_CONNECTION_CLOSE;
+    xqc_conn_increase_unacked_stream_ref(conn, po);
+    xqc_send_queue_t *sq = conn->conn_send_queue;
+    uint64_t used = sq->sndq_packets_used;
+
+    CU_ASSERT_EQUAL(xqc_conn_pmtud_split_lost(conn, po), XQC_OK);
+
+    uint64_t added = 0;
+    xqc_list_head_t *pos;
+    xqc_list_for_each(pos, &sq->sndq_lost_packets) {
+        added++;
+    }
+    CU_ASSERT(added >= 2);
+    CU_ASSERT_EQUAL(sq->sndq_packets_used, used + added);
+
+    xqc_engine_destroy(conn->engine);
+}

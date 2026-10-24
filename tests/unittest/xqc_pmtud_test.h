@@ -35,5 +35,7 @@ void xqc_test_pmtud_split_control_only_packet(void);
 void xqc_test_pmtud_mixed_datagram_not_dropped(void);
 void xqc_test_pmtud_control_frame_not_added_to_datagram(void);
 void xqc_test_pmtud_off_control_frame_shares_datagram(void);
+void xqc_test_pmtud_split_skips_reset_stream(void);
+void xqc_test_pmtud_unneeded_rest_keeps_packet_count(void);
 
 #endif /* XQC_PMTUD_TEST_H_INCLUDED */

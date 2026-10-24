@@ -2219,6 +2219,8 @@ xqc_conn_pmtud_rest_packet(xqc_connection_t *conn, xqc_packet_out_t *po)
     rest->po_frame_types &= ~(XQC_FRAME_BIT_STREAM | XQC_FRAME_BIT_PADDING);
 
     if (!XQC_NEED_REPAIR(rest->po_frame_types)) {
+        /* xqc_packet_out_get did not count it, insert_free uncounts it */
+        sq->sndq_packets_used++;
         xqc_send_queue_insert_free(rest, &sq->sndq_free_packets, sq);
         return XQC_OK;
     }
@@ -2273,6 +2275,10 @@ xqc_conn_pmtud_split_lost(xqc_connection_t *conn, xqc_packet_out_t *po)
 
         if (!f->ps_is_used) {
             break;
+        }
+        /* a RESET_STREAM, carried by the rest packet */
+        if (f->ps_is_reset) {
+            continue;
         }
         if (xqc_find_stream_by_id(f->ps_stream_id, conn->streams_hash) == NULL) {
             continue; /* the stream is gone, its data with it */
