@@ -964,3 +964,45 @@ xqc_test_pmtud_blackhole_above_conn_size_clamps_probe(void)
 
     xqc_engine_destroy(conn->engine);
 }
+
+/* the first path grew to 1400 while a second path, at @state, starts at
+ * the base size: the size of the connection after the update */
+static size_t
+xqc_test_pmtud_mss_with_second_path(xqc_path_state_t state)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, PMTUD_BASE);
+    CU_ASSERT_FATAL(conn != NULL);
+    CU_ASSERT_FATAL(conn->conn_initial_path->path_state == XQC_PATH_STATE_ACTIVE);
+    conn->conn_initial_path->path_max_pkt_out_size = PMTUD_CAP;
+    CURR(conn) = 1400;
+
+    xqc_path_ctx_t path;
+    memset(&path, 0, sizeof(path));
+    path.path_id = 1;
+    path.path_state = state;
+    path.curr_pkt_out_size = PMTUD_BASE;
+    path.path_max_pkt_out_size = PMTUD_CAP;
+    xqc_list_add_tail(&path.path_list, &conn->conn_paths_list);
+
+    xqc_conn_try_to_update_mss(conn);
+    size_t size = conn->pkt_out_size;
+
+    xqc_list_del_init(&path.path_list);
+    xqc_engine_destroy(conn->engine);
+    return size;
+}
+
+/* a path still being validated carries no data, so it does not hold the
+ * connection at the base size */
+void
+xqc_test_pmtud_validating_path_not_in_mss(void)
+{
+    CU_ASSERT_EQUAL(xqc_test_pmtud_mss_with_second_path(XQC_PATH_STATE_VALIDATING), 1400);
+}
+
+/* a validated path at the base size still holds the connection there */
+void
+xqc_test_pmtud_active_path_in_mss(void)
+{
+    CU_ASSERT_EQUAL(xqc_test_pmtud_mss_with_second_path(XQC_PATH_STATE_ACTIVE), PMTUD_BASE);
+}

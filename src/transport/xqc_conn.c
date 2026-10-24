@@ -2096,7 +2096,12 @@ xqc_conn_try_to_update_mss(xqc_connection_t *conn)
     {
         path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
 
-        if (path->path_state >= XQC_PATH_STATE_CLOSING) {
+        /* only paths that carry data: a path still being validated sends
+         * nothing but PATH_CHALLENGE and PATH_RESPONSE, at 1200 bytes, and
+         * brings the size down once validated (xqc_conn_pmtud_on_new_path).
+         * Counting it here would hold the connection at its starting size
+         * for as long as it does not validate. */
+        if (path->path_state != XQC_PATH_STATE_ACTIVE) {
             continue;
         }
 
