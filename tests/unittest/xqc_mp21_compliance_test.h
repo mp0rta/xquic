@@ -115,4 +115,9 @@ void xqc_test_mp21_paths_blocked_reports_raised_peer_limit(void);
 void xqc_test_mp21_max_path_id_grant_adds_cid_sets(void);
 void xqc_test_mp21_path_new_cid_before_max_path_id(void);
 
+/* draft-21 §3.4: a path ID abandoned before the MAX_PATH_ID allowing it
+ * stays abandoned. */
+void xqc_test_mp21_path_abandon_before_max_path_id(void);
+void xqc_test_mp21_path_abandon_rejected_without_cid_set(void);
+
 #endif /* _XQC_MP21_COMPLIANCE_TEST_H */

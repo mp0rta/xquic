@@ -2313,6 +2313,24 @@ xqc_process_path_abandon_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
         xqc_log(conn->log, XQC_LOG_WARN,
                 "|no context for abandoned path|path_id:%ui|pi_path_id:%ui|", path_id,
                 packet_in->pi_path_id);
+
+        /*
+         * draft-ietf-quic-multipath-21 Section 3.4: the peer may abandon a
+         * path ID that no path used, and the path ID MUST NOT be reused. A
+         * path ID above the peer's limit has no connection ID sets yet, or
+         * only the one that keeps the peer's connection IDs: add them, so
+         * that the path ID stays abandoned when a MAX_PATH_ID allows it
+         * instead of becoming the next one to get our connection IDs and to
+         * open a path.
+         */
+        if (xqc_cid_set_add_path(&conn->dcid_set, path_id) != XQC_OK
+            || xqc_cid_set_add_path(&conn->scid_set, path_id) != XQC_OK)
+        {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|xqc_cid_set_add_path error|path:%ui|", path_id);
+            return -XQC_EMALLOC;
+        }
+
         xqc_cid_set_update_state(&conn->dcid_set, path_id, XQC_CID_SET_ABANDONED);
         xqc_cid_set_update_state(&conn->scid_set, path_id, XQC_CID_SET_ABANDONED);
         return XQC_OK; /* ignore */
