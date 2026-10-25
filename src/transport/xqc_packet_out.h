@@ -243,6 +243,8 @@ xqc_packet_out_t *xqc_write_one_repair_packet(xqc_connection_t *conn, xqc_int_t 
 
 int xqc_write_pmtud_ping_to_packet(xqc_path_ctx_t *path, size_t probing_size, xqc_pkt_type_t pkt_type);
 
+int xqc_write_pmtud_bh_probe(xqc_path_ctx_t *path, size_t probing_size);
+
 xqc_int_t xqc_write_mp_new_conn_id_frame_to_packet(xqc_connection_t *conn, uint64_t retire_prior_to, uint64_t path_id);
 
 xqc_int_t xqc_write_mp_retire_conn_id_frame_to_packet(xqc_connection_t *conn, uint64_t seq_num, uint64_t path_id);

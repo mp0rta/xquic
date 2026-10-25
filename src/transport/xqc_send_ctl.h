@@ -119,6 +119,17 @@ typedef struct xqc_send_ctl_s {
 
     unsigned                    ctl_pto_count;
 
+    /* PMTUD black hole detection (RFC 8899 s4.3): the largest 1-RTT packet
+     * number acked among large packets (xqc_pmtud_big_size), and how many such
+     * packets sent after it were lost since. Enough of them make the path
+     * suspect; probes at the current size then confirm it or not. */
+    xqc_packet_number_t         ctl_largest_big_acked;
+    unsigned                    ctl_big_lost_cnt;
+    xqc_usec_t                  ctl_bh_suspect_time;
+    xqc_usec_t                  ctl_bh_probe_time;
+    unsigned                    ctl_bh_probes_sent;
+    unsigned                    ctl_bh_probes_lost;
+
     unsigned                    ctl_send_count;
     unsigned                    ctl_lost_count;
     unsigned                    ctl_tlp_count;
@@ -338,5 +349,12 @@ xqc_int_t xqc_send_ctl_detect_optimistic_ack_attack(xqc_send_ctl_t *send_ctl,
 
 void xqc_send_ctl_set_next_pn_for_packet(xqc_connection_t *conn, xqc_pn_ctl_t *pn_ctl,  
     xqc_packet_out_t *packet_out, xqc_usec_t current_time);
+
+void xqc_send_ctl_pmtud_bh_reset(xqc_send_ctl_t *send_ctl);
+
+void xqc_send_ctl_pmtud_bh_probe(xqc_send_ctl_t *send_ctl, xqc_usec_t now);
+
+void xqc_send_ctl_pmtud_bh_maybe_probe(xqc_send_ctl_t *send_ctl,
+    xqc_usec_t now);
 
 #endif /* _XQC_SEND_CTL_H_INCLUDED_ */

@@ -1423,21 +1423,17 @@ void
 xqc_gen_reset_token(xqc_cid_t *cid, unsigned char *token, int token_len, char *key,
                     size_t keylen)
 {
-    unsigned char *input = cid->cid_buf;
-    int input_len = cid->cid_len;
     unsigned char output[EVP_MAX_MD_SIZE];
-    int output_len = EVP_MAX_MD_SIZE;
-    const EVP_MD *engine = NULL;
-    engine = EVP_md5();
-    HMAC_CTX *ctx = HMAC_CTX_new();
-    HMAC_CTX_reset(ctx);
-    HMAC_Init_ex(ctx, key, keylen, engine, NULL);
-    HMAC_Update(ctx, input, input_len);
+    unsigned int output_len = 0;
 
-    HMAC_Final(ctx, output, &output_len);
-    HMAC_CTX_free(ctx);
+    /* one-shot HMAC: no context to allocate, so no allocation to fail */
+    if (HMAC(EVP_md5(), key, keylen, cid->cid_buf, cid->cid_len, output, &output_len) == NULL) {
+        output_len = 0;
+    }
 
-    memcpy(token, output, output_len < token_len ? output_len : token_len);
+    size_t n = xqc_min((size_t)output_len, (size_t)token_len);
+    memset(token, 0, token_len);
+    memcpy(token, output, n);
 }
 
 /*

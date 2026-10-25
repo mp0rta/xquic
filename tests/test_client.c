@@ -274,6 +274,7 @@ uint64_t g_last_sock_op_time;
  * 735/736 for max_pkt_out_size at and above its cap
  * 800/801 for MASQUE e2e testcases
  * 802/803 for the end-of-pass per-path app-limited check
+ * 900/901 for cert_verify_failed_notify on a rejected / accepted certificate
  */
 int g_test_case;
 int g_ipv6;
@@ -494,6 +495,60 @@ xqc_client_silent_dropped(uint64_t path_id)
     }
 
     return g_silent.all_paths || path_id == g_silent.path_id;
+}
+
+/* cases 804-805: a path that drops every datagram above 1300 bytes, which
+ * only PMTUD probes exceed. 805 also drops one ordinary full-size packet,
+ * a real loss next to the probe losses. */
+#define XQC_TEST_CASE_PATH_MTU 1300
+
+static int
+xqc_client_mtu_dropped(const unsigned char *buf, size_t size)
+{
+    static int full_pkts = 0;
+    static int big_pkts = 0;
+
+    /* case 806: the path shrinks during the transfer, after 300 datagrams
+     * above 1300 bytes got through, and drops every one of them from then on */
+    if (g_test_case == 806) {
+        return size > XQC_TEST_CASE_PATH_MTU && ++big_pkts > 300;
+    }
+
+    /* case 807: the path is smaller than the base size (1298) from the
+     * start: only datagrams up to 1260 bytes get through */
+    if (g_test_case == 807) {
+        return size > 1260;
+    }
+
+    /* case 808: an outage at the base size: after 300 short header
+     * packets, every datagram is lost for one second */
+    if (g_test_case == 808) {
+        static uint64_t outage_start = 0;
+        if (outage_start == 0) {
+            if ((buf[0] & 0x80) == 0 && ++full_pkts == 300) {
+                outage_start = xqc_now();
+            }
+            return outage_start != 0;
+        }
+        return xqc_now() - outage_start < 1000000;
+    }
+
+    if (g_test_case != 804 && g_test_case != 805) {
+        return 0;
+    }
+
+    if (size > XQC_TEST_CASE_PATH_MTU) {
+        return 1;
+    }
+
+    /* the 20th full-size short header packet */
+    if (g_test_case == 805 && (buf[0] & 0x80) == 0 && size >= 1000
+        && ++full_pkts == 20)
+    {
+        return 1;
+    }
+
+    return 0;
 }
 
 static void
@@ -1216,6 +1271,11 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
     memcpy(send_buf, buf, send_buf_size);
     xqc_test_record_udp_payload(size);
 
+    /* cases 804-808 */
+    if (xqc_client_mtu_dropped(buf, size)) {
+        return size;
+    }
+
     /* make initial packet loss to test 0rtt buffer */
     if (g_test_case == 39) {
         g_test_case = -1;
@@ -1363,6 +1423,19 @@ xqc_client_write_socket_ex(uint64_t path_id,
 
     /* cases 1300-1301: the packet is lost without any error */
     if (xqc_client_silent_dropped(path_id)) {
+        return size;
+    }
+
+    /* cases 804-808 */
+    if (xqc_client_mtu_dropped(buf, size)) {
+        return size;
+    }
+
+    /* cases 809-810: the second path carries only 1300 bytes, less than
+     * what the first one was found to carry */
+    if ((g_test_case == 809 || g_test_case == 810) && path_id == 1
+        && size > 1300)
+    {
         return size;
     }
 
@@ -2019,7 +2092,9 @@ xqc_client_create_conn_socket(user_conn_t *user_conn)
 void
 xqc_client_set_path_debug_timer(user_conn_t *user_conn)
 {
-    if (g_debug_path || g_test_case == 110) {
+    if (g_debug_path || g_test_case == 110
+        || (g_test_case == 810 && g_client_path[1].is_in_used == 0))
+    {
         if (user_conn->ev_path == NULL) {
             user_conn->ev_path = event_new(eb, -1, 0, xqc_client_path_callback, user_conn);
         }
@@ -4279,7 +4354,8 @@ xqc_client_path_callback(int fd, short what, void *arg)
         xqc_client_set_path_debug_timer(user_conn);
     }
 
-    if (b_add_path == 0) {
+    /* case 810: one path added, none removed */
+    if (b_add_path == 0 && g_test_case != 810) {
         static int base = 0;
         int path_index = rand() % 2;
         base++;
@@ -4542,6 +4618,12 @@ xqc_client_cert_verify(const unsigned char *certs[],
     return 0;
 }
 
+void
+xqc_client_cert_verify_failed_notify(int x509_err, void *conn_user_data)
+{
+    printf("cert_verify_failed_notify|x509_err:%d|\n", x509_err);
+}
+
 void 
 xqc_client_ready_to_create_path(const xqc_cid_t *cid, 
     void *conn_user_data)
@@ -4554,7 +4636,8 @@ xqc_client_ready_to_create_path(const xqc_cid_t *cid,
         return;
     }
 
-    if (g_test_case != 110) {
+    /* case 810: the second path comes later, from the path debug timer */
+    if (g_test_case != 110 && g_test_case != 810) {
         for (int i = 0; i < g_multi_interface_cnt; i++) {
             if (g_client_path[i].is_in_used == 1) {
                 continue;
@@ -5358,6 +5441,7 @@ int main(int argc, char *argv[]) {
         .ready_to_create_path_notify = xqc_client_ready_to_create_path,
         .path_removed_notify = xqc_client_path_removed,
         .conn_closing = xqc_client_conn_closing_notify,
+        .cert_verify_failed_notify = xqc_client_cert_verify_failed_notify,
     };
 
     xqc_cong_ctrl_callback_t cong_ctrl;
@@ -5525,9 +5609,14 @@ int main(int argc, char *argv[]) {
         conn_settings.datagram_redundant_probe = 30000;
     }
 
-    if (g_test_case == 703) {
+    if (g_test_case == 703 || g_test_case == 900) {
         g_verify_cert = 1;
         g_verify_cert_allow_self_sign = 0;
+    }
+
+    if (g_test_case == 901) {
+        g_verify_cert = 1;
+        g_verify_cert_allow_self_sign = 1;
     }
 
     g_conn_settings = &conn_settings;
@@ -5610,6 +5699,21 @@ int main(int argc, char *argv[]) {
 
     if (g_test_case == 736) {
         conn_settings.max_pkt_out_size = 1500;
+    }
+
+    /* cases 807-810: mqvpn's base size, and no search above it in 808 */
+    if (g_test_case == 807 || g_test_case == 808
+        || g_test_case == 809 || g_test_case == 810)
+    {
+        conn_settings.max_pkt_out_size = 1298;
+    }
+    /* case 810: the second path once the first has grown, after
+     * XQC_PMTUD_START_DELAY (multipath waits that long to start PMTUD) */
+    if (g_test_case == 810) {
+        g_path_timeout = 7000000;
+    }
+    if (g_test_case == 808) {
+        conn_settings.probing_pkt_out_size = 1298;
     }
     
 
