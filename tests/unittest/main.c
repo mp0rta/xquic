@@ -207,6 +207,8 @@ main(int argc, char *argv[])
                         xqc_test_h3_single_vint_frame_length_error)
         || !CU_add_test(pSuite, "xqc_test_tls", xqc_test_tls)
         || !CU_add_test(pSuite, "xqc_test_h3_stream", xqc_test_stream)
+        || !CU_add_test(pSuite, "xqc_test_h3_conn_create_three_uni_streams", xqc_test_h3_conn_create_three_uni_streams)
+        || !CU_add_test(pSuite, "xqc_test_h3_conn_create_fails_without_uni_streams", xqc_test_h3_conn_create_fails_without_uni_streams)
         || !CU_add_test(pSuite, "xqc_test_h3_critical_stream_close", xqc_test_h3_critical_stream_close)
         || !CU_add_test(pSuite, "xqc_test_h3_second_control_stream_rejected", xqc_test_h3_second_control_stream_rejected)
         || !CU_add_test(pSuite, "xqc_test_h3_reserved_uni_stream_accepted",

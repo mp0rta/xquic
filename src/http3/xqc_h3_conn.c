@@ -674,6 +674,23 @@ xqc_h3_conn_send_settings(xqc_h3_conn_t *h3c)
 }
 
 
+/*
+ * Destroy a uni stream created on an h3 connection, with its transport
+ * stream. The transport stream is detached from the h3 stream first:
+ * otherwise its close notification would reach the h3 stream once freed.
+ */
+static void
+xqc_h3_conn_destroy_uni_stream(xqc_h3_stream_t *h3s)
+{
+    xqc_stream_t *stream = h3s->stream;
+
+    stream->stream_flag &= ~XQC_STREAM_FLAG_HAS_H3;
+    stream->user_data = NULL;
+    xqc_h3_stream_destroy(h3s);
+    xqc_destroy_stream(stream);
+}
+
+
 xqc_h3_stream_t *
 xqc_h3_conn_create_uni_stream(xqc_h3_conn_t *h3c, xqc_h3_stream_type_t h3s_type)
 {
@@ -718,10 +735,9 @@ xqc_h3_conn_create_uni_stream(xqc_h3_conn_t *h3c, xqc_h3_stream_type_t h3s_type)
 
 error:
     if (NULL != h3s) {
-        xqc_h3_stream_destroy(h3s);
-    }
+        xqc_h3_conn_destroy_uni_stream(h3s);
 
-    if (stream) {
+    } else if (stream) {
         xqc_destroy_stream(stream);
     }
 
@@ -924,7 +940,8 @@ xqc_h3_conn_create_notify(xqc_connection_t *conn, const xqc_cid_t *cid,
         xqc_h3_conn_create_uni_stream(h3c, XQC_H3_STREAM_TYPE_CONTROL);
     if (NULL == h3c->control_stream_out) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|create control stream error|");
-        return XQC_ERROR;
+        ret = XQC_ERROR;
+        goto fail;
     }
 
     /* qpack encoder stream */
@@ -932,7 +949,8 @@ xqc_h3_conn_create_notify(xqc_connection_t *conn, const xqc_cid_t *cid,
         xqc_h3_conn_create_uni_stream(h3c, XQC_H3_STREAM_TYPE_QPACK_ENCODER);
     if (NULL == h3c->qenc_stream) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|create qpack encoder stream error|");
-        return XQC_ERROR;
+        ret = XQC_ERROR;
+        goto fail;
     }
 
     /* qpack decoder stream */
@@ -940,18 +958,45 @@ xqc_h3_conn_create_notify(xqc_connection_t *conn, const xqc_cid_t *cid,
         xqc_h3_conn_create_uni_stream(h3c, XQC_H3_STREAM_TYPE_QPACK_DECODER);
     if (NULL == h3c->qdec_stream) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|create qpack decoder stream error|");
-        return XQC_ERROR;
+        ret = XQC_ERROR;
+        goto fail;
     }
 
     /* send SETTINGS */
     ret = xqc_h3_conn_send_settings(h3c);
     if (ret) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_h3_conn_send_settings error|");
-        return ret;
+        goto fail;
     }
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|create h3 conn success|");
     return XQC_OK;
+
+fail:
+    /*
+     * The transport layer notifies no close for a connection whose
+     * conn_create_notify failed, so undo the h3 connection here, the uni
+     * streams first, as they refer to it. The application is not notified:
+     * it learns about the failure from the transport layer, a server with
+     * server_refuse and a client from xqc_connect(), and h3_conn_close_notify
+     * too would hand the same user data to a second callback.
+     */
+    if (h3c->qdec_stream) {
+        xqc_h3_conn_destroy_uni_stream(h3c->qdec_stream);
+    }
+
+    if (h3c->qenc_stream) {
+        xqc_h3_conn_destroy_uni_stream(h3c->qenc_stream);
+    }
+
+    if (h3c->control_stream_out) {
+        xqc_h3_conn_destroy_uni_stream(h3c->control_stream_out);
+    }
+
+    xqc_conn_set_alp_user_data(conn, NULL);
+    h3c->flags &= ~XQC_H3_CONN_FLAG_UPPER_CONN_EXIST;
+    xqc_h3_conn_destroy(h3c);
+    return ret;
 }
 
 

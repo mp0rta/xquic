@@ -63,4 +63,8 @@ void xqc_test_h3_blocked_stream_limit_uses_local();
 /* ALIBABA-2026-42073004: SETTINGS frame size limit */
 void xqc_test_h3_settings_frame_size_limit();
 
+/* the h3 connection needs three uni streams (RFC 9114 Section 6.2) */
+void xqc_test_h3_conn_create_three_uni_streams(void);
+void xqc_test_h3_conn_create_fails_without_uni_streams(void);
+
 #endif // XQUIC_XQC_H3_TEST_H
