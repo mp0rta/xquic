@@ -45,5 +45,6 @@ void xqc_test_pmtud_no_ack_into_packet_above_path_size(void);
 void xqc_test_pmtud_pto_copy_fits_path_size(void);
 void xqc_test_pmtud_smaller_ack_keeps_larger_loss(void);
 void xqc_test_pmtud_ack_spill_losses_make_path_suspect(void);
+void xqc_test_pmtud_smaller_spill_ack_keeps_larger_loss(void);
 
 #endif /* XQC_PMTUD_TEST_H_INCLUDED */

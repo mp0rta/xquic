@@ -120,16 +120,18 @@ typedef struct xqc_send_ctl_s {
     unsigned                    ctl_pto_count;
 
     /* PMTUD black hole detection (RFC 8899 s4.3): the largest 1-RTT packet
-     * number acked among large packets (xqc_pmtud_big_size), and among those
-     * that also took the ACK room above the current size (a probe or a full
-     * packet with an ACK frame), how many large packets sent after it were
-     * lost since, and the largest of them. Enough of them make the path
-     * suspect; probes at the current size then confirm it or not. A path
-     * that shrank by less than XQC_ACK_SPACE still carries full packets
-     * without an ACK frame: only a packet as large as the lost ones counts
-     * against their loss. */
+     * number acked among large packets (xqc_pmtud_big_size), and for each
+     * size in the ACK room above the current size (a probe or a full packet
+     * with an ACK frame), among those at least that large: entry i is for
+     * ctl_spill_acked_curr + 1 + i bytes. Then how many large packets sent
+     * after those were lost since, and the largest of them. Enough of them
+     * make the path suspect; probes at the current size then confirm it or
+     * not. A path that shrank by less than XQC_ACK_SPACE still carries the
+     * smaller packets: only a packet as large as a lost one counts against
+     * its loss. */
     xqc_packet_number_t         ctl_largest_big_acked;
-    xqc_packet_number_t         ctl_largest_spill_acked;
+    xqc_packet_number_t         ctl_spill_acked[XQC_ACK_SPACE];
+    size_t                      ctl_spill_acked_curr;
     unsigned                    ctl_big_lost_cnt;
     size_t                      ctl_big_lost_size;
     xqc_usec_t                  ctl_bh_suspect_time;
