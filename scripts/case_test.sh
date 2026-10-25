@@ -6040,6 +6040,32 @@ else
 fi
 grep_err_log
 
+# ── PMTUD: the path shrinks by 8 bytes (case ID 811)
+# A link turning to PPPoE loses 8 bytes. Full packets without an ACK frame
+# still get through, the ones with it (up to 16 bytes larger) do not. With
+# datagrams echoed both ways, the client attaches ACKs to full packets all
+# the time, so those losses keep coming until the black hole is found. The
+# ACKs of the smaller packets must not hide them: the size goes down and
+# the drops stop (without the fix: no black hole, 1000+ drops in 15 s).
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e -Q 65535 -U 1 --pmtud 1 > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "PMTUD path shrinks by 8 bytes ...\c"
+sudo ${CLIENT_BIN} -s 51200000 -l d -t 15 -E -Q 65535 -U 1 -T 1 --pmtud 1 -x 811 > stdlog
+blackhole=`grep "|PMTUD black hole|" clog`
+dropped=`grep -c "\[case 811\] dropped" stdlog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$blackhole" ] && [ "$dropped" -lt 100 ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "pmtud_path_shrinks_by_8_bytes" "pass"
+else
+    echo ">>>>>>>> pass:0 (blackhole:${blackhole:+y} dropped:${dropped} errlog:${errlog:+y})"
+    case_print_result "pmtud_path_shrinks_by_8_bytes" "fail"
+fi
+grep_err_log
+
 killall test_server 2> /dev/null
 
 cd -

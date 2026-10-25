@@ -364,6 +364,10 @@ main(int argc, char *argv[])
                         xqc_test_pmtud_no_ack_into_packet_above_path_size)
         || !CU_add_test(pSuite, "xqc_test_pmtud_pto_copy_fits_path_size",
                         xqc_test_pmtud_pto_copy_fits_path_size)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_smaller_ack_keeps_larger_loss",
+                        xqc_test_pmtud_smaller_ack_keeps_larger_loss)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_ack_spill_losses_make_path_suspect",
+                        xqc_test_pmtud_ack_spill_losses_make_path_suspect)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)

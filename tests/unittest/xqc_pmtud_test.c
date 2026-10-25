@@ -1089,3 +1089,72 @@ xqc_test_pmtud_pto_copy_fits_path_size(void)
 
     xqc_engine_destroy(conn->engine);
 }
+
+/* a full packet that carried an ACK frame, XQC_ACK_SPACE over its buffer */
+static xqc_packet_out_t *
+xqc_test_pmtud_ack_spill(xqc_connection_t *conn, xqc_packet_number_t pn,
+    size_t buf)
+{
+    xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, pn, buf, 10, XQC_FALSE);
+    if (po != NULL) {
+        po->po_frame_types = XQC_FRAME_BIT_DATAGRAM | XQC_FRAME_BIT_ACK;
+        po->po_used_size = buf + XQC_ACK_SPACE;
+    }
+    return po;
+}
+
+/* The path shrank by less than XQC_ACK_SPACE: full packets with an ACK
+ * frame are lost, full ones without get through. Their ACKs must not erase
+ * the losses; one as large as the lost packets does. */
+void
+xqc_test_pmtud_smaller_ack_keeps_larger_loss(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+
+    CU_ASSERT_FATAL(xqc_test_pmtud_ack_spill(conn, 1, 1400) != NULL);
+    xqc_test_pmtud_detect(conn);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_cnt, 1);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_size, 1400 + XQC_ACK_SPACE);
+
+    xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, 60, 1400, 10, XQC_FALSE);
+    CU_ASSERT_FATAL(po != NULL);
+    xqc_send_ctl_on_packet_acked(send_ctl, po, 1000000, 1);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_cnt, 1);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_size, 1400 + XQC_ACK_SPACE);
+    CU_ASSERT_EQUAL(send_ctl->ctl_largest_spill_acked, 0);
+
+    po = xqc_test_pmtud_ack_spill(conn, 61, 1400);
+    CU_ASSERT_FATAL(po != NULL);
+    xqc_send_ctl_on_packet_acked(send_ctl, po, 1000000, 1);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_cnt, 0);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_size, 0);
+    CU_ASSERT_EQUAL(send_ctl->ctl_largest_spill_acked, 61);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* losses of full packets with an ACK frame, while full ones without are
+ * acked between them, still make the path suspect */
+void
+xqc_test_pmtud_ack_spill_losses_make_path_suspect(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+
+    for (int i = 1; i <= XQC_PMTUD_BLACKHOLE_LOSSES; i++) {
+        CU_ASSERT_FATAL(xqc_test_pmtud_ack_spill(conn, 2 * i, 1400) != NULL);
+        xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, 2 * i + 1, 1400,
+                                                      10, XQC_FALSE);
+        CU_ASSERT_FATAL(po != NULL);
+        xqc_send_ctl_on_packet_acked(send_ctl, po, 1000000, 1);
+    }
+    xqc_test_pmtud_detect(conn);
+
+    CU_ASSERT(send_ctl->ctl_bh_suspect_time != 0);
+    CU_ASSERT_EQUAL(CURR(conn), 1400);
+
+    xqc_engine_destroy(conn->engine);
+}

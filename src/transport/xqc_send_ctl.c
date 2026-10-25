@@ -213,6 +213,7 @@ xqc_send_ctl_reset(xqc_send_ctl_t *send_ctl)
 
     send_ctl->ctl_pto_count = 0;
     send_ctl->ctl_largest_big_acked = 0;
+    send_ctl->ctl_largest_spill_acked = 0;
     xqc_send_ctl_pmtud_bh_reset(send_ctl);
     send_ctl->ctl_minrtt = XQC_MAX_UINT32_VALUE;
     send_ctl->ctl_srtt = conn->conn_settings.initial_rtt;
@@ -1498,11 +1499,17 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                     && send_ctl->ctl_bh_suspect_time == 0
                     && po->po_used_size > xqc_pmtud_big_size(conn,
                                               send_ctl->ctl_path->curr_pkt_out_size)
-                    && po->po_pkt.pkt_num > send_ctl->ctl_largest_big_acked
-                    && ++send_ctl->ctl_big_lost_cnt >= XQC_PMTUD_BLACKHOLE_LOSSES)
+                    && po->po_pkt.pkt_num
+                       > (po->po_used_size > send_ctl->ctl_path->curr_pkt_out_size
+                          ? send_ctl->ctl_largest_spill_acked
+                          : send_ctl->ctl_largest_big_acked))
                 {
-                    send_ctl->ctl_bh_suspect_time = now;
-                    send_ctl->ctl_bh_probe_time = now;
+                    send_ctl->ctl_big_lost_size =
+                        xqc_max(send_ctl->ctl_big_lost_size, po->po_used_size);
+                    if (++send_ctl->ctl_big_lost_cnt >= XQC_PMTUD_BLACKHOLE_LOSSES) {
+                        send_ctl->ctl_bh_suspect_time = now;
+                        send_ctl->ctl_bh_probe_time = now;
+                    }
                 }
 
                 /* reinjection */
@@ -1838,6 +1845,7 @@ void
 xqc_send_ctl_pmtud_bh_reset(xqc_send_ctl_t *send_ctl)
 {
     send_ctl->ctl_big_lost_cnt = 0;
+    send_ctl->ctl_big_lost_size = 0;
     send_ctl->ctl_bh_suspect_time = 0;
     send_ctl->ctl_bh_probe_time = 0;
     send_ctl->ctl_bh_probes_sent = 0;
@@ -1982,17 +1990,35 @@ xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl,
         }
 
         /* a large packet got through, of any kind, a probe included (its
-         * PING is small, its size is the padded buffer): no black hole */
+         * PING is small, its size is the padded buffer): no black hole,
+         * if it was as large as the large packets lost since the last one.
+         * A full packet without an ACK frame is 16 bytes (XQC_ACK_SPACE)
+         * below one with it, and gets through a path that shrank by less:
+         * it must not hide the loss of the larger ones. */
         if (do_cc && packet_out->po_pkt.pkt_pns == XQC_PNS_APP_DATA) {
             size_t curr = send_ctl->ctl_path->curr_pkt_out_size;
             size_t big = xqc_pmtud_big_size(conn, curr);
-            if ((packet_out->po_used_size > big
-                 || ((packet_out->po_flag & XQC_POF_PMTUD_PROBING)
-                     && packet_out->po_buf_size > big))
-                && packet_out->po_pkt.pkt_num > send_ctl->ctl_largest_big_acked)
+            size_t size = packet_out->po_used_size;
+            if ((packet_out->po_flag & XQC_POF_PMTUD_PROBING)
+                && packet_out->po_buf_size > size)
             {
-                send_ctl->ctl_largest_big_acked = packet_out->po_pkt.pkt_num;
-                xqc_send_ctl_pmtud_bh_reset(send_ctl);
+                size = packet_out->po_buf_size;
+            }
+            xqc_packet_number_t pn = packet_out->po_pkt.pkt_num;
+            if (size > big) {
+                /* newer than the last ack of its size class */
+                xqc_bool_t newer = size > curr
+                                   ? pn > send_ctl->ctl_largest_spill_acked
+                                   : pn > send_ctl->ctl_largest_big_acked;
+                if (size > curr && pn > send_ctl->ctl_largest_spill_acked) {
+                    send_ctl->ctl_largest_spill_acked = pn;
+                }
+                if (pn > send_ctl->ctl_largest_big_acked) {
+                    send_ctl->ctl_largest_big_acked = pn;
+                }
+                if (newer && size >= send_ctl->ctl_big_lost_size) {
+                    xqc_send_ctl_pmtud_bh_reset(send_ctl);
+                }
             }
         }
 

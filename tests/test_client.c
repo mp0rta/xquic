@@ -514,6 +514,28 @@ xqc_client_mtu_dropped(const unsigned char *buf, size_t size)
         return size > XQC_TEST_CASE_PATH_MTU && ++big_pkts > 300;
     }
 
+    /* case 811: the path shrinks by 8 bytes, as a link turning to PPPoE
+     * does: once PMTUD has grown the packets and 300 datagrams above 1400
+     * bytes got through, only those up to the largest size so far minus 8
+     * do. Full packets without an ACK frame still fit, the ones with it
+     * (up to 16 bytes more) do not. Each drop is printed: the case counts
+     * them. */
+    if (g_test_case == 811) {
+        static size_t max_size = 0;
+        static int grown = 0;
+        if (grown < 300) {
+            max_size = size > max_size ? size : max_size;
+            grown += size > 1400;
+            return 0;
+        }
+        if (size > max_size - 8) {
+            static int dropped = 0;
+            printf("[case 811] dropped:%d size:%zu\n", ++dropped, size);
+            return 1;
+        }
+        return 0;
+    }
+
     /* case 807: the path is smaller than the base size (1298) from the
      * start: only datagrams up to 1260 bytes get through */
     if (g_test_case == 807) {
@@ -5701,9 +5723,9 @@ int main(int argc, char *argv[]) {
         conn_settings.max_pkt_out_size = 1500;
     }
 
-    /* cases 807-810: mqvpn's base size, and no search above it in 808 */
+    /* cases 807-811: mqvpn's base size, and no search above it in 808 */
     if (g_test_case == 807 || g_test_case == 808
-        || g_test_case == 809 || g_test_case == 810)
+        || g_test_case == 809 || g_test_case == 810 || g_test_case == 811)
     {
         conn_settings.max_pkt_out_size = 1298;
     }
