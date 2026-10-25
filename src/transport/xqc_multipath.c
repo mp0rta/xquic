@@ -727,8 +727,10 @@ xqc_conn_create_path(xqc_engine_t *engine, const xqc_cid_t *scid, uint64_t *new_
         xqc_usec_t pto = xqc_conn_get_max_pto(conn);
         if (conn->last_paths_blocked_sent_us == 0
             || (now - conn->last_paths_blocked_sent_us) >= pto) {
-            uint64_t observed_cap = xqc_max(conn->remote_settings.init_max_path_id,
-                                            conn->local_max_path_id);
+            /* §4.7: the limit the peer set (its initial_max_path_id or
+             * latest MAX_PATH_ID), not ours; a value above the maximum it
+             * advertised is a PROTOCOL_VIOLATION there */
+            uint64_t observed_cap = conn->remote_max_path_id;
             if (xqc_write_paths_blocked_frame_to_packet(conn, observed_cap) == XQC_OK) {
                 conn->last_paths_blocked_sent_us = now;
                 xqc_log(conn->log, XQC_LOG_INFO,

@@ -22,6 +22,7 @@
 #include "src/common/xqc_log.h"
 #include "xqc_mp21_compliance_test.h"
 #include "xqc_test_helpers.h"
+#include "xqc_common_test.h"
 #include "src/transport/xqc_frame.h"
 #include "xquic/xqc_errno.h"
 
@@ -2035,4 +2036,112 @@ xqc_test_mp21_gen_paths_blocked_frame(void)
     CU_ASSERT_EQUAL(buf[0], 0x7e); /* 2-byte varint: 0x40 | (0x3e7b>>8) = 0x7e */
     CU_ASSERT_EQUAL(buf[1], 0x7b);
     CU_ASSERT_EQUAL(buf[2], 0x05); /* max_path_id=5, 1-byte varint */
+}
+
+/*
+ * draft-ietf-quic-multipath-21 Section 4.7: the Maximum Path Identifier of
+ * PATHS_BLOCKED is "the maximum path ID that was allowed at the time the
+ * frame was sent", the limit the peer set, and the peer treats a value
+ * above the maximum it advertised as a PROTOCOL_VIOLATION.
+ *
+ * A client connection with no path ID left calls xqc_conn_create_path().
+ * The PATHS_BLOCKED it queues is copied to frame, its length returned and
+ * its Maximum Path Identifier stored in *max_path_id.
+ */
+static size_t
+mp21_create_path_blocked(uint64_t local_max, uint64_t peer_init_max,
+    uint64_t peer_max, unsigned char *frame, size_t frame_size,
+    uint64_t *max_path_id)
+{
+    size_t              len;
+    uint64_t            path_id = 0;
+    xqc_packet_in_t     pi;
+    xqc_packet_out_t   *po;
+    xqc_connection_t   *conn;
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    /* multipath negotiated, and no connection ID for a path ID above 0 */
+    conn->enable_multipath = XQC_CONN_MP_ENABLED;
+    conn->conn_settings.multipath_version = XQC_MULTIPATH_3E;
+    conn->local_max_path_id = local_max;
+    conn->remote_settings.init_max_path_id = peer_init_max;
+    conn->remote_max_path_id = peer_max;
+    conn->curr_max_path_id = xqc_min(local_max, peer_max);
+
+    CU_ASSERT_EQUAL(xqc_conn_create_path(conn->engine,
+                                         &conn->scid_set.user_scid,
+                                         &path_id, 0),
+                    -XQC_EMP_NO_AVAIL_PATH_ID);
+
+    po = xqc_test_find_packet_with_frame(conn, XQC_FRAME_BIT_PATHS_BLOCKED);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(po);
+
+    /* the frame is alone in its packet */
+    len = po->po_buf + po->po_used_size - po->po_payload;
+    CU_ASSERT_FATAL(len <= frame_size);
+    memcpy(frame, po->po_payload, len);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = frame;
+    pi.last = frame + len;
+    CU_ASSERT_EQUAL(xqc_parse_paths_blocked_frame(&pi, max_path_id), XQC_OK);
+
+    xqc_engine_destroy(conn->engine);
+    return len;
+}
+
+/* The client's own limit (8) is above the server's (1): PATHS_BLOCKED
+ * reports 1, and the server accepts it. */
+void
+xqc_test_mp21_paths_blocked_reports_peer_limit(void)
+{
+    size_t              len;
+    uint64_t            max_path_id = 0;
+    xqc_int_t           ret = XQC_ERROR;
+    unsigned char       frame[16];
+    xqc_connection_t   *server;
+
+    len = mp21_create_path_blocked(8, 1, 1, frame, sizeof(frame),
+                                   &max_path_id);
+    CU_ASSERT_EQUAL(max_path_id, 1);
+
+    server = mp21_make_conn_for_blocked(/* local_max */ 1);
+    mp21_run_frame(server, frame, len, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(server->conn_err, 0);
+    xqc_test_mp21_free_conn(server);
+}
+
+/* The server raised its limit from 1 to 3 with MAX_PATH_ID: PATHS_BLOCKED
+ * reports 3, neither its initial_max_path_id nor the client's own limit.
+ * The client's own limit is a PROTOCOL_VIOLATION at that server. */
+void
+xqc_test_mp21_paths_blocked_reports_raised_peer_limit(void)
+{
+    size_t              len;
+    ssize_t             n;
+    uint64_t            max_path_id = 0;
+    xqc_int_t           ret = XQC_ERROR;
+    unsigned char       frame[16];
+    xqc_connection_t   *server;
+
+    len = mp21_create_path_blocked(8, 1, 3, frame, sizeof(frame),
+                                   &max_path_id);
+    CU_ASSERT_EQUAL(max_path_id, 3);
+
+    server = mp21_make_conn_for_blocked(/* local_max */ 3);
+    mp21_run_frame(server, frame, len, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(server->conn_err, 0);
+    xqc_test_mp21_free_conn(server);
+
+    n = xqc_gen_paths_blocked_frame(frame, sizeof(frame), 8);
+    CU_ASSERT_FATAL(n > 0);
+    server = mp21_make_conn_for_blocked(/* local_max */ 3);
+    mp21_run_frame(server, frame, n, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(server->conn_err, TRA_PROTOCOL_VIOLATION);
+    xqc_test_mp21_free_conn(server);
 }

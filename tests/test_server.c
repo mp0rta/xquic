@@ -3110,6 +3110,18 @@ main(int argc, char *argv[])
         conn_settings.max_streams_bidi = 1;
     }
 
+    /*
+     * cases 1303/1304: path IDs 0 and 1 only, below the client's limit;
+     * 1303 grants more path IDs on PATHS_BLOCKED
+     */
+    if (g_test_case == 1303 || g_test_case == 1304) {
+        conn_settings.init_max_path_id = 1;
+    }
+
+    if (g_test_case == 1303) {
+        conn_settings.max_path_id_grant_max_value = 16;
+    }
+
     xqc_config_t config;
     if (xqc_engine_get_default_config(&config, XQC_ENGINE_SERVER) < 0) {
         return -1;

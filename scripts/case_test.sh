@@ -6040,6 +6040,66 @@ else
 fi
 grep_err_log
 
+# ── Multipath: PATHS_BLOCKED reports the server's limit (case IDs 1303/1304)
+# draft-ietf-quic-multipath-21 Section 4.7: its Maximum Path Identifier is
+# the limit the peer set, and a value above the maximum the receiver
+# advertised is a PROTOCOL_VIOLATION. The server allows path IDs 0 and 1,
+# below the client's default limit of 8. The client opens two paths besides
+# its first, so the third one finds no path ID left.
+# 1303 happy path: the server grants more path IDs on PATHS_BLOCKED, the
+# client opens the path it was blocked on, and the transfer completes.
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e -M -x 1303 > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP PATHS_BLOCKED answered by MAX_PATH_ID ...\c"
+sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -i lo -i lo -x 1303 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+sent=`grep "|PATHS_BLOCKED sent|max_path_id:1|" clog`
+granted=`grep "|MAX_PATH_ID auto-grant|" slog`
+opened=`grep "create a new path. index: 2, path_id: 2" stdlog`
+cli_res=`grep -E "xqc_conn_destroy\|.*\|err:0x0\|.*\|mp_enable:1\|create:3\|validated:3\|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$sent" ] && [ -n "$granted" ] \
+    && [ -n "$opened" ] && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_paths_blocked_answered_by_max_path_id" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} sent:${sent:+y} granted:${granted:+y}" \
+        "opened:${opened:+y} cli_res:${cli_res:+y} errlog:${errlog:+y})"
+    case_print_result "MP_paths_blocked_answered_by_max_path_id" "fail"
+fi
+grep_err_log
+
+# 1304 abnormal path: the server grants nothing. The client's third path is
+# refused with -XQC_EMP_NO_AVAIL_PATH_ID (-651), the server accepts its
+# PATHS_BLOCKED instead of closing the connection, and the transfer
+# completes on the two paths the server allows.
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e -M -x 1304 > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP PATHS_BLOCKED at the server's limit keeps the connection ...\c"
+sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -i lo -i lo -x 1304 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+refused=`grep "xqc_conn_create_path err = -651" stdlog`
+accepted=`grep "|PATHS_BLOCKED received|peer_max:1|local_max:1|" slog`
+granted=`grep "|MAX_PATH_ID auto-grant|" slog`
+cli_res=`grep -E "xqc_conn_destroy\|.*\|err:0x0\|.*\|mp_enable:1\|create:2\|validated:2\|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$refused" ] && [ -n "$accepted" ] \
+    && [ -z "$granted" ] && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_paths_blocked_at_server_limit_keeps_connection" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} refused:${refused:+y} accepted:${accepted:+y}" \
+        "granted:${granted:+y} cli_res:${cli_res:+y} errlog:${errlog:+y})"
+    case_print_result "MP_paths_blocked_at_server_limit_keeps_connection" "fail"
+fi
+grep_err_log
+
 killall test_server 2> /dev/null
 
 cd -

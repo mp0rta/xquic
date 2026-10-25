@@ -106,4 +106,8 @@ void xqc_test_mp21_parse_mp_new_retire_conn_id_v21_codepoints(void);
  */
 void xqc_test_mp21_gen_paths_blocked_frame(void);
 
+/* draft-21 §4.7: PATHS_BLOCKED reports the peer's limit. */
+void xqc_test_mp21_paths_blocked_reports_peer_limit(void);
+void xqc_test_mp21_paths_blocked_reports_raised_peer_limit(void);
+
 #endif /* _XQC_MP21_COMPLIANCE_TEST_H */

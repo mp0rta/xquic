@@ -5587,6 +5587,11 @@ int main(int argc, char *argv[]) {
         conn_settings.simulate_ecn = 0;
     }
 
+    /* cases 1303/1304: PATHS_BLOCKED is a draft-21 frame */
+    if (g_test_case == 1303 || g_test_case == 1304) {
+        conn_settings.multipath_version = XQC_MULTIPATH_3E;
+    }
+
     conn_settings.pacing_on = pacing_on;
     conn_settings.proto_version = XQC_VERSION_V1;
     conn_settings.max_datagram_frame_size = g_max_dgram_size;
