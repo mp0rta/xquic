@@ -8,6 +8,7 @@
 #include "xqc_ssl_cbs.h"
 #include "xqc_crypto.h"
 #include "src/common/xqc_common.h"
+#include "src/common/xqc_time.h"
 #include <openssl/rand.h>
 #include <openssl/hmac.h>
 
@@ -76,7 +77,17 @@ SSL_QUIC_METHOD xqc_ssl_quic_method;
 xqc_bool_t
 xqc_tls_check_session_ticket_timeout(SSL_SESSION *session)
 {
-    uint32_t now = (uint32_t)time(NULL);
+    struct timeval tv;
+
+    /*
+     * The ssl library times a session with gettimeofday() (BoringSSL) or
+     * time(), so read gettimeofday(): time() can still return the previous
+     * second for a moment after gettimeofday() has moved to the next one,
+     * as glibc reads a coarser clock for it, and a session saved in that
+     * moment would look issued in the future.
+     */
+    gettimeofday(&tv, NULL);
+    uint32_t now = (uint32_t)tv.tv_sec;
     uint32_t session_time = SSL_get_time(session);
     if (session_time > now) {
         return XQC_FALSE;
