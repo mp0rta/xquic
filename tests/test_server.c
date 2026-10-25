@@ -20,7 +20,9 @@
 #include "platform.h"
 #include "src/http3/xqc_h3_conn.h"
 #include "src/transport/xqc_conn.h"
+#include "src/transport/xqc_engine.h"
 #include "src/transport/xqc_packet_out.h"
+#include "src/transport/xqc_packet_parser.h"
 
 #ifndef XQC_SYS_WINDOWS
 #  include <unistd.h>
@@ -1083,6 +1085,68 @@ xqc_server_h3_conn_create_notify(xqc_h3_conn_t *h3_conn, const xqc_cid_t *cid,
     return 0;
 }
 
+/*
+ * case 751: once the client has acknowledged a connection ID issued by the
+ * server that it has not used, send it a datagram shaped as a stateless
+ * reset (RFC 9000 Section 10.3) that ends with that connection ID's token.
+ * RFC 9000 Section 10.3.1: the client MUST NOT check the tokens of
+ * connection IDs it has not used, so it must keep the connection.
+ */
+static xqc_h3_conn_t *g_sr_unused_h3_conn = NULL;
+static int g_sr_unused_sent = 0;
+
+static void
+xqc_server_send_sr_of_unused_cid(xqc_h3_conn_t *h3_conn)
+{
+    unsigned char           buf[41];
+    ssize_t                 sent;
+    user_conn_t            *user_conn;
+    xqc_connection_t       *conn;
+    xqc_list_head_t        *pos;
+    xqc_cid_inner_t        *inner_cid, *target = NULL;
+    xqc_cid_set_inner_t    *inner_set;
+
+    if (g_sr_unused_sent || h3_conn == NULL) {
+        return;
+    }
+
+    conn = xqc_h3_conn_get_xqc_conn(h3_conn);
+    user_conn = (user_conn_t *)xqc_h3_conn_get_user_data(h3_conn);
+    inner_set = xqc_get_path_cid_set(&conn->scid_set, XQC_INITIAL_PATH_ID);
+    if (user_conn == NULL || inner_set == NULL) {
+        return;
+    }
+
+    xqc_list_for_each(pos, &inner_set->cid_list) {
+        inner_cid = xqc_list_entry(pos, xqc_cid_inner_t, list);
+        if (inner_cid->state == XQC_CID_UNUSED && inner_cid->acked == XQC_CID_ACKED) {
+            target = inner_cid;
+            break;
+        }
+    }
+
+    /* none acknowledged yet: try again on the next read */
+    if (target == NULL) {
+        return;
+    }
+
+    /* short header form and fixed bit, the rest unpredictable */
+    for (size_t i = 0; i < sizeof(buf); i++) {
+        buf[i] = (unsigned char)rand();
+    }
+    buf[0] = 0x40 | (buf[0] & 0x3f);
+    xqc_gen_reset_token(&target->cid, buf + sizeof(buf) - XQC_STATELESS_RESET_TOKENLEN,
+                        XQC_STATELESS_RESET_TOKENLEN, conn->engine->config->reset_token_key,
+                        conn->engine->config->reset_token_keylen);
+
+    sent = sendto(ctx.fd, buf, sizeof(buf), 0, (struct sockaddr *)&user_conn->peer_addr,
+                  user_conn->peer_addrlen);
+    g_sr_unused_sent = 1;
+    printf("[sr-unused-cid-test]|sent|seq:%"PRIu64"|len:%zd|\n",
+           target->cid.cid_seq_num, sent);
+    fflush(stdout);
+}
+
 int
 xqc_server_h3_conn_close_notify(xqc_h3_conn_t *h3_conn, const xqc_cid_t *cid,
                                 void *conn_user_data)
@@ -1090,6 +1154,10 @@ xqc_server_h3_conn_close_notify(xqc_h3_conn_t *h3_conn, const xqc_cid_t *cid,
     DEBUG;
     user_conn_t *user_conn = (user_conn_t *)conn_user_data;
     xqc_conn_stats_t stats = xqc_conn_get_stats(ctx.engine, cid);
+
+    if (h3_conn == g_sr_unused_h3_conn) {
+        g_sr_unused_h3_conn = NULL;
+    }
     printf("send_count:%u, lost_count:%u, tlp_count:%u, recv_count:%u, srtt:%" PRIu64
            " early_data_flag:%d, conn_err:%d, ack_info:%s, conn_info:%s, alpn:%s\n",
            stats.send_count, stats.lost_count, stats.tlp_count, stats.recv_count,
@@ -1165,6 +1233,10 @@ xqc_server_h3_conn_handshake_finished(xqc_h3_conn_t *h3_conn, void *conn_user_da
     xqc_conn_stats_t stats = xqc_conn_get_stats(ctx.engine, &user_conn->cid);
     printf("0rtt_flag:%d\n", stats.early_data_flag);
     printf("h3_datagram_mss:%zd\n", xqc_h3_ext_datagram_get_mss(h3_conn));
+
+    if (g_test_case == 751) {
+        g_sr_unused_h3_conn = h3_conn;
+    }
 
     if (g_test_case == XQC_TEST_CASE_H3_FIELD_SECTION_VALID
         || g_test_case == XQC_TEST_CASE_H3_FIELD_SECTION_OVER_LIMIT)
@@ -1808,6 +1880,10 @@ xqc_server_request_read_notify(xqc_h3_request_t *h3_request,
     }
 
     if (flag & XQC_REQ_NOTIFY_READ_BODY) {
+        if (g_test_case == 751) {
+            xqc_server_send_sr_of_unused_cid(g_sr_unused_h3_conn);
+        }
+
         if (g_echo && user_stream->recv_body == NULL) {
             user_stream->recv_body = malloc(MAX_BUF_SIZE);
             if (user_stream->recv_body == NULL) {
