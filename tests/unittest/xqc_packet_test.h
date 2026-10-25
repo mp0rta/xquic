@@ -12,6 +12,7 @@ void xqc_test_empty_pkt();
 void xqc_test_stateless_reset_parse_boundary(void);
 void xqc_test_ack_room_capped_at_mss(void);
 void xqc_test_ack_refused_by_full_packet_at_cap(void);
+void xqc_test_parse_uint32_high_bytes(void);
 
 
 #endif

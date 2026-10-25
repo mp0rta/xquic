@@ -5383,6 +5383,45 @@ else
     case_print_result "crypto_error_not_fixed_enum" "fail"
 fi
 
+# test 900: the library-side verification rejects the self-signed cert:
+# cert_verify_failed_notify fires exactly once, with X509 error 18, and the
+# connection is still rejected
+killall test_server 2> /dev/null
+clear_log
+echo -e "cert_verify_failed_notify on a rejected cert ...\c"
+${SERVER_BIN} -l d -e > /dev/null &
+sleep 1
+${CLIENT_BIN} -l d -t 1 -E -1 -x 900 > stdlog
+result=`grep -c "cert_verify_failed_notify|" stdlog`
+result18=`grep -c "cert_verify_failed_notify|x509_err:18|" stdlog`
+# the notify only reports: the connection must still close on the rejection
+# (CRYPTO_ERROR 0x112, as case 703 pins)
+rejected=`grep -c "conn_err:274" stdlog`
+if [ "$result" -eq 1 ] && [ "$result18" -eq 1 ] && [ "$rejected" -gt 0 ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "cert_verify_failed_notify_reject" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "cert_verify_failed_notify_reject" "fail"
+fi
+
+# test 901: self-signed allowed, the handshake succeeds: no notify
+killall test_server 2> /dev/null
+clear_log
+echo -e "cert_verify_failed_notify absent on an accepted cert ...\c"
+${SERVER_BIN} -l d -e > /dev/null &
+sleep 1
+${CLIENT_BIN} -s 1024 -l d -t 1 -E -1 -x 901 > stdlog
+passed=`grep ">>>>>>>> pass:1" stdlog`
+result=`grep -c "cert_verify_failed_notify|" stdlog`
+if [ -n "$passed" ] && [ "$result" -eq 0 ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "cert_verify_failed_notify_accept" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "cert_verify_failed_notify_accept" "fail"
+fi
+
 ## RFC 9000 Section 7.4.1: 0-RTT transport parameter validation
 
 # test 701: server reduces max_streams_bidi after first connection,
@@ -5835,6 +5874,169 @@ else
     echo ">>>>>>>> pass:0 (result:${result:+y} failed:${failed:+y} abandoned:${abandoned:+y}" \
         "marked0:${marked0:+y} marked1:${marked1:+y} errlog:${errlog:+y})"
     case_print_result "MP_unvalidated_path_never_marked_app_limited" "fail"
+fi
+grep_err_log
+
+# ── Recovery: a lost PMTUD probe is not a congestion signal (case IDs 804/805)
+# RFC 9000 Section 14.4: the loss of a PMTU probe SHOULD NOT trigger a
+# congestion control reaction. The client path drops every datagram above
+# 1300 bytes, which only PMTUD probes exceed.
+# 804 happy path: the probes are lost, the transfer completes, and no packet
+# is marked lost, so no congestion event starts.
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e --pmtud 1 > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "lost PMTUD probes start no congestion event ...\c"
+sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E --pmtud 1 -x 804 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+probe_lost=`grep "|PMTUD probe lost|" clog`
+marked=`grep "|mark lost|" clog`
+cc_event=`grep "|OnLostDetection|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$probe_lost" ] \
+    && [ -z "$marked" ] && [ -z "$cc_event" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "lost_pmtud_probe_no_congestion_event" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} probe_lost:${probe_lost:+y}" \
+        "marked:${marked:+y} cc_event:${cc_event:+y} errlog:${errlog:+y})"
+    case_print_result "lost_pmtud_probe_no_congestion_event" "fail"
+fi
+grep_err_log
+
+# 805 abnormal path: the same path also drops one ordinary full-size packet.
+# That packet is still marked lost and starts a congestion event, next to
+# the probes that do not.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "a lost data packet still starts a congestion event ...\c"
+sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E --pmtud 1 -x 805 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+probe_lost=`grep "|PMTUD probe lost|" clog`
+marked=`grep "|mark lost|" clog`
+cc_event=`grep "|OnLostDetection|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$probe_lost" ] \
+    && [ -n "$marked" ] && [ -n "$cc_event" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "lost_data_packet_congestion_event" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} probe_lost:${probe_lost:+y}" \
+        "marked:${marked:+y} cc_event:${cc_event:+y} errlog:${errlog:+y})"
+    case_print_result "lost_data_packet_congestion_event" "fail"
+fi
+grep_err_log
+
+# ── PMTUD black hole: the path shrinks mid-transfer (case ID 806)
+# RFC 8899 s4.3: after 300 datagrams above 1300 bytes got through, the
+# client path drops every one of them. The black hole must be detected,
+# the packet size go back to the base and the lost stream packets be split
+# into packets that fit: the transfer completes and the echo matches.
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e --pmtud 1 > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "PMTUD black hole mid-transfer, stream data split ...\c"
+sudo ${CLIENT_BIN} -s 20480000 -l d -t 10 -E --pmtud 1 -x 806 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+blackhole=`grep "|PMTUD black hole|.*|back to:1200|" clog`
+split=`grep "|split lost packet|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$blackhole" ] && [ -n "$split" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "pmtud_blackhole_stream_split" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} blackhole:${blackhole:+y}" \
+        "split:${split:+y} errlog:${errlog:+y})"
+    case_print_result "pmtud_blackhole_stream_split" "fail"
+fi
+grep_err_log
+
+# ── PMTUD below the base size (case IDs 807/808)
+# 807: the path carries only 1260 bytes, less than the base size (1298),
+# from the start. The black hole at the base size is confirmed while the
+# small packets get through, so the size goes down to the floor (1200),
+# the search finds what fits, and the transfer completes.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "PMTUD path smaller than the base size ...\c"
+sudo ${CLIENT_BIN} -s 10240000 -l d -t 10 -E --pmtud 1 -x 807 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+floor=`grep "|PMTUD black hole|.*|back to:1200|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$floor" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "pmtud_path_below_base" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} floor:${floor:+y} errlog:${errlog:+y})"
+    case_print_result "pmtud_path_below_base" "fail"
+fi
+grep_err_log
+
+# 808: an outage at the base size loses packets of every size, the probes
+# sent during it included: it is not a black hole and the size stays at the
+# base.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "PMTUD outage does not go below the base size ...\c"
+sudo ${CLIENT_BIN} -s 10240000 -l d -t 10 -E --pmtud 1 -x 808 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+floor=`grep "|PMTUD black hole|.*|back to:1200|" clog`
+# the path was suspect during the outage: probes at the base size were lost
+probed=`grep -c "|PMTUD probe lost|.*|size:1298|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -z "$floor" ] && [ "$probed" -ge 2 ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "pmtud_outage_stays_at_base" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} floor:${floor:+y} probed:$probed errlog:${errlog:+y})"
+    case_print_result "pmtud_outage_stays_at_base" "fail"
+fi
+grep_err_log
+
+# ── PMTUD with a second, smaller path (case IDs 809/810)
+# 809: the second path carries only 1300 bytes from the start. Its
+# PATH_CHALLENGE is expanded to 1200 bytes (RFC 9000 s8.2.1), not to the
+# size of the first path, so it validates, and the transfer completes.
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e --pmtud 1 -M > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "PMTUD second path smaller than the first validates ...\c"
+sudo ${CLIENT_BIN} -s 10240000 -l d -t 10 -E --pmtud 1 -M -i lo -i lo -x 809 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+validated=`grep "|path validated|path_id:1|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$validated" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "pmtud_smaller_second_path_validates" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} validated:${validated:+y} errlog:${errlog:+y})"
+    case_print_result "pmtud_smaller_second_path_validates" "fail"
+fi
+grep_err_log
+
+# 810: the same second path, added one second in, once the first path has
+# grown: it starts from the base size, the connection goes back down to it
+# and searches again, and the transfer completes.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "PMTUD new path starts from the base size ...\c"
+sudo ${CLIENT_BIN} -s 20480000 -l d -t 15 -E --pmtud 1 -M -i lo -i lo -x 810 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+validated=`grep "|path validated|path_id:1|" clog`
+newpath=`grep "|PMTUD|new path|path:1|size:1298|" clog | grep -v "|was:1298|"`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$validated" ] && [ -n "$newpath" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "pmtud_new_path_starts_at_base" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} validated:${validated:+y} newpath:${newpath:+y} errlog:${errlog:+y})"
+    case_print_result "pmtud_new_path_starts_at_base" "fail"
 fi
 grep_err_log
 

@@ -353,3 +353,18 @@ test_engine_connect()
     return conn;
 }
 
+
+/* A byte >= 0x80 in the top position of a block must not shift into the sign
+ * bit of an int: that is undefined behaviour, and the hashed bytes come from
+ * the network (peer addresses, QPACK header names). */
+void
+xqc_test_murmur_hash2_high_bytes(void)
+{
+    unsigned char all[4] = {0xff, 0xff, 0xff, 0xff};
+    unsigned char high[4] = {0x00, 0x00, 0x00, 0x80};
+    unsigned char text[] = "hello,world";
+
+    CU_ASSERT_EQUAL(xqc_murmur_hash2(all, 4), 0x14acb3daU);
+    CU_ASSERT_EQUAL(xqc_murmur_hash2(high, 4), 0x26de7447U);
+    CU_ASSERT_EQUAL(xqc_murmur_hash2(text, 11), 0xb28179afU);
+}

@@ -89,6 +89,27 @@ xqc_timer_loss_detection_timeout(xqc_timer_type_t type, xqc_usec_t now, void *us
             xqc_path_send_one_or_two_ack_elicit_pkts(path, pns);
         }
 
+        /* Nothing acked for a 1-RTT PTO while sending large packets: with
+         * no small packet in flight there are no ACKs to declare the large
+         * ones lost, so suspect a black hole now and let the probes decide.
+         * On a path already suspect, no ACK processing will send the next
+         * probe: the PTO does. The probes are 1-RTT packets, so not before
+         * 1-RTT keys. */
+        if (conn->enable_pmtud && pns == XQC_PNS_APP_DATA
+            && (conn->conn_flag & XQC_CONN_FLAG_CAN_SEND_1RTT))
+        {
+            if (send_ctl->ctl_bh_suspect_time == 0
+                && path->curr_pkt_out_size
+                   > xqc_pmtud_big_size(conn, path->curr_pkt_out_size))
+            {
+                send_ctl->ctl_bh_suspect_time = now;
+                xqc_send_ctl_pmtud_bh_probe(send_ctl, now);
+
+            } else {
+                xqc_send_ctl_pmtud_bh_maybe_probe(send_ctl, now);
+            }
+        }
+
     } else {
         /* assert(!PeerCompletedAddressValidation()) */
         if (xqc_conn_peer_complete_address_validation(conn)) {
@@ -109,6 +130,7 @@ xqc_timer_loss_detection_timeout(xqc_timer_type_t type, xqc_usec_t now, void *us
 
     send_ctl->ctl_pto_count++;
     conn->max_pto_cnt = xqc_max(send_ctl->ctl_pto_count, conn->max_pto_cnt);
+
     xqc_log(conn->log, XQC_LOG_DEBUG, "|xqc_send_ctl_set_loss_detection_timer|PTO|conn:%p|pto_count:%ud", 
             conn, send_ctl->ctl_pto_count);
     xqc_send_ctl_set_loss_detection_timer(send_ctl);

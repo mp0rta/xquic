@@ -1,0 +1,47 @@
+/**
+ * @copyright Copyright (c) 2026, Abdul Wasey
+ */
+
+#ifndef XQC_PMTUD_TEST_H_INCLUDED
+#define XQC_PMTUD_TEST_H_INCLUDED
+
+void xqc_test_pmtud_big_losses_make_path_suspect(void);
+void xqc_test_pmtud_small_losses_do_not_make_path_suspect(void);
+void xqc_test_pmtud_blackhole_confirmed_by_probes(void);
+void xqc_test_pmtud_search_probe_loss_is_not_blackhole(void);
+void xqc_test_pmtud_blackhole_at_base_goes_to_floor(void);
+void xqc_test_pmtud_outage_at_base_keeps_base(void);
+void xqc_test_pmtud_split_lost_stream_packet(void);
+void xqc_test_pmtud_split_lost_rejects_other_packets(void);
+void xqc_test_pmtud_drop_oversize_datagram(void);
+void xqc_test_pmtud_drop_oversize_keeps_probes_and_fitting(void);
+void xqc_test_pmtud_search_stops_within_precision(void);
+void xqc_test_pmtud_search_probes_wide_range(void);
+void xqc_test_pmtud_outage_is_not_blackhole(void);
+void xqc_test_pmtud_acked_large_data_clears_suspicion(void);
+void xqc_test_pmtud_acked_small_data_keeps_suspicion(void);
+void xqc_test_pmtud_blackhole_probes_one_rtt_apart(void);
+void xqc_test_pmtud_pto_on_suspect_path_sends_probe(void);
+void xqc_test_pmtud_lost_search_probe_retries_soon(void);
+void xqc_test_pmtud_stale_probe_loss_does_not_retry(void);
+void xqc_test_pmtud_dgram_with_copy_lost_once(void);
+void xqc_test_pmtud_path_challenge_padded_to_1200(void);
+void xqc_test_pmtud_probe_padded_to_probed_size(void);
+void xqc_test_pmtud_new_path_lowers_connection_size(void);
+void xqc_test_pmtud_new_path_not_smaller_keeps_size(void);
+void xqc_test_pmtud_pto_before_1rtt_sends_no_probe(void);
+void xqc_test_pmtud_split_keeps_control_frames(void);
+void xqc_test_pmtud_split_control_only_packet(void);
+void xqc_test_pmtud_mixed_datagram_not_dropped(void);
+void xqc_test_pmtud_control_frame_not_added_to_datagram(void);
+void xqc_test_pmtud_off_control_frame_shares_datagram(void);
+void xqc_test_pmtud_split_skips_reset_stream(void);
+void xqc_test_pmtud_unneeded_rest_keeps_packet_count(void);
+void xqc_test_pmtud_blackhole_above_conn_size_clamps_probe(void);
+void xqc_test_pmtud_validating_path_not_in_mss(void);
+void xqc_test_pmtud_active_path_in_mss(void);
+void xqc_test_pmtud_dgram_on_validating_path_fits_its_size(void);
+void xqc_test_pmtud_no_ack_into_packet_above_path_size(void);
+void xqc_test_pmtud_pto_copy_fits_path_size(void);
+
+#endif /* XQC_PMTUD_TEST_H_INCLUDED */
