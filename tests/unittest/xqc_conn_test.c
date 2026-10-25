@@ -1238,3 +1238,67 @@ xqc_test_conn_closed_path_still_counted(void)
 
     xqc_engine_destroy(conn->engine);
 }
+
+
+/*
+ * The peer's connection ID 1 for path ID 0, unused until it is taken
+ * with xqc_get_unused_cid(), and the stateless reset token it came with.
+ */
+static void
+xqc_test_sr_peer_cid(xqc_connection_t *conn, uint8_t *sr_token)
+{
+    xqc_cid_t   cid;
+
+    memset(&cid, 0, sizeof(cid));
+    cid.cid_len = 8;
+    memset(cid.cid_buf, 0x5a, cid.cid_len);
+    cid.cid_seq_num = 1;
+    memset(sr_token, 0xa5, XQC_STATELESS_RESET_TOKENLEN);
+    memcpy(cid.sr_token, sr_token, XQC_STATELESS_RESET_TOKENLEN);
+
+    CU_ASSERT_FATAL(xqc_cid_set_insert_cid(&conn->dcid_set, &cid, XQC_CID_UNUSED,
+                                           conn->local_settings.active_connection_id_limit,
+                                           XQC_INITIAL_PATH_ID) == XQC_OK);
+}
+
+/*
+ * RFC 9000 Section 10.3.1: "An endpoint MUST NOT check for any stateless
+ * reset tokens associated with connection IDs it has not used". The
+ * token of the peer's connection ID 1, unused, resets nothing.
+ */
+void
+xqc_test_stateless_reset_token_of_unused_cid(void)
+{
+    xqc_connection_t   *conn = test_engine_connect();
+    uint8_t             sr_token[XQC_STATELESS_RESET_TOKENLEN];
+
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_test_sr_peer_cid(conn, sr_token);
+
+    xqc_conn_handle_stateless_reset(conn, sr_token);
+    CU_ASSERT(conn->conn_state < XQC_CONN_STATE_DRAINING);
+    CU_ASSERT(conn->conn_err == 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* once that connection ID is in use, its token resets the connection */
+void
+xqc_test_stateless_reset_token_of_used_cid(void)
+{
+    xqc_cid_t           cid;
+    xqc_connection_t   *conn = test_engine_connect();
+    uint8_t             sr_token[XQC_STATELESS_RESET_TOKENLEN];
+
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_test_sr_peer_cid(conn, sr_token);
+
+    CU_ASSERT(xqc_get_unused_cid(&conn->dcid_set, &cid, XQC_INITIAL_PATH_ID) == XQC_OK);
+    CU_ASSERT(cid.cid_seq_num == 1);
+
+    CU_ASSERT(xqc_conn_handle_stateless_reset(conn, sr_token) == XQC_OK);
+    CU_ASSERT(conn->conn_state == XQC_CONN_STATE_DRAINING);
+    CU_ASSERT(conn->conn_err == XQC_ESTATELESS_RESET);
+
+    xqc_engine_destroy(conn->engine);
+}
