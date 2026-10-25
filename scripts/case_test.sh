@@ -6100,6 +6100,44 @@ else
 fi
 grep_err_log
 
+# ── Multipath: a MAX_PATH_ID grant within the client's limit (case ID 1306)
+# draft-ietf-quic-multipath-21 Section 3.2.1: connection IDs are issued for
+# the unused path IDs up to the lower of both limits. The server keeps the
+# default limit of 8 and grants up to 16 on PATHS_BLOCKED; the client allows
+# 16 and opens nine paths besides its first, so the last one finds no path
+# ID left. The grant does not exceed the client's limit, so the client sends
+# no MAX_PATH_ID back: the server provisions the path IDs it granted itself,
+# keeps the client's connection IDs for them instead of retiring them, and
+# the client opens the path it was blocked on.
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e -M -x 1306 > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP MAX_PATH_ID grant within the client's limit ...\c"
+sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -i lo -i lo -i lo -i lo \
+    -i lo -i lo -i lo -i lo -i lo -x 1306 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+sent=`grep "|PATHS_BLOCKED sent|max_path_id:8|" clog`
+granted=`grep "|MAX_PATH_ID auto-grant|new_local_max:16|" slog`
+reciprocal=`grep "|MAX_PATH_ID reciprocal grant|" clog`
+retired=`grep "smaller than largest_retire_prior_to" slog`
+opened=`grep "create a new path. index: 9, path_id: 9" stdlog`
+cli_res=`grep -E "xqc_conn_destroy\|.*\|err:0x0\|.*\|mp_enable:1\|create:10\|validated:10\|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$sent" ] && [ -n "$granted" ] \
+    && [ -z "$reciprocal" ] && [ -z "$retired" ] && [ -n "$opened" ] \
+    && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_max_path_id_grant_within_client_limit" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} sent:${sent:+y} granted:${granted:+y}" \
+        "reciprocal:${reciprocal:+y} retired:${retired:+y} opened:${opened:+y}" \
+        "cli_res:${cli_res:+y} errlog:${errlog:+y})"
+    case_print_result "MP_max_path_id_grant_within_client_limit" "fail"
+fi
+grep_err_log
+
 killall test_server 2> /dev/null
 
 cd -

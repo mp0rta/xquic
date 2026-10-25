@@ -110,4 +110,9 @@ void xqc_test_mp21_gen_paths_blocked_frame(void);
 void xqc_test_mp21_paths_blocked_reports_peer_limit(void);
 void xqc_test_mp21_paths_blocked_reports_raised_peer_limit(void);
 
+/* draft-21 §3.2.1: the connection ID sets of granted path IDs, and
+ * connection IDs that come before the MAX_PATH_ID allowing their path ID. */
+void xqc_test_mp21_max_path_id_grant_adds_cid_sets(void);
+void xqc_test_mp21_path_new_cid_before_max_path_id(void);
+
 #endif /* _XQC_MP21_COMPLIANCE_TEST_H */

@@ -2396,6 +2396,7 @@ xqc_process_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
     xqc_int_t ret = XQC_ERROR;
     xqc_cid_t new_conn_cid;
     uint64_t retire_prior_to, curr_rpi;
+    int64_t largest_rpi;
 
     xqc_cid_inner_t *inner_cid;
     xqc_list_head_t *pos, *next;
@@ -2436,13 +2437,28 @@ xqc_process_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
         return -XQC_EPROTO;
     }
 
-    curr_rpi = xqc_cid_set_get_largest_seq_or_rpt(&conn->dcid_set, path_id);
-    if (curr_rpi < 0) {
+    /*
+     * draft-ietf-quic-multipath-21 Section 3.2.1: the peer may issue
+     * connection IDs for any path ID up to our limit. Those for a path ID
+     * above its own limit can come before the MAX_PATH_ID that raises it,
+     * so before that path ID has connection ID sets here. Store them in a
+     * set of their own instead of retiring them.
+     */
+    ret = xqc_cid_set_add_path(&conn->dcid_set, path_id);
+    if (ret != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|xqc_cid_set_add_path error|path:%ui|", path_id);
+        return ret;
+    }
+
+    largest_rpi = xqc_cid_set_get_largest_seq_or_rpt(&conn->dcid_set, path_id);
+    if (largest_rpi < 0) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|current retire_prior_to error:%i|path:%ui|",
-                curr_rpi, path_id);
+                largest_rpi, path_id);
         XQC_CONN_ERR(conn, TRA_INTERNAL_ERROR);
         return -XQC_EPROTO;
     }
+    curr_rpi = largest_rpi;
 
     if (new_conn_cid.cid_seq_num < curr_rpi) {
         /*
@@ -2646,7 +2662,7 @@ xqc_int_t
 xqc_process_max_path_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 {
     xqc_int_t ret = XQC_ERROR;
-    uint64_t max_path_id, new_max_path_id;
+    uint64_t max_path_id;
 
     ret = xqc_parse_max_path_id_frame(packet_in, &max_path_id);
     if (ret != XQC_OK) {
@@ -2691,14 +2707,9 @@ xqc_process_max_path_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
                 "|MAX_PATH_ID reciprocal grant|new_local_max:%ui|", max_path_id);
     }
 
-    new_max_path_id = xqc_min(conn->local_max_path_id, conn->remote_max_path_id);
-    if (new_max_path_id > conn->curr_max_path_id) {
-        if (xqc_conn_add_path_cid_sets(conn, conn->curr_max_path_id + 1,
-                                       new_max_path_id) != XQC_OK) {
-            xqc_log(conn->log, XQC_LOG_ERROR, "|add_path_cid_sets_error|");
-            return -XQC_EMALLOC;
-        }
-        conn->curr_max_path_id = new_max_path_id;
+    if (xqc_conn_update_curr_max_path_id(conn) != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|add_path_cid_sets_error|");
+        return -XQC_EMALLOC;
     }
 
     return ret;

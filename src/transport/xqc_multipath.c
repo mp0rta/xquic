@@ -137,6 +137,24 @@ xqc_conn_is_path_abandoned(xqc_connection_t *conn, uint64_t path_id)
             ? XQC_TRUE : XQC_FALSE;
 }
 
+xqc_int_t
+xqc_conn_update_curr_max_path_id(xqc_connection_t *conn)
+{
+    uint64_t new_max = xqc_min(conn->local_max_path_id,
+                               conn->remote_max_path_id);
+
+    if (new_max > conn->curr_max_path_id) {
+        if (xqc_conn_add_path_cid_sets(conn, conn->curr_max_path_id + 1,
+                                       new_max) != XQC_OK)
+        {
+            return -XQC_EMALLOC;
+        }
+        conn->curr_max_path_id = new_max;
+    }
+
+    return XQC_OK;
+}
+
 /* draft-21 §3.2.1 / §4.6 mp21 L2 M3 — MAX_PATH_ID credit grant gate.
  *
  * Spec §2.1 / §4.6 verbatim: "endpoints can send the MAX_PATH_ID frame
@@ -173,7 +191,22 @@ xqc_try_grant_max_path_id(xqc_connection_t *conn)
     if (new_max > cap) {
         new_max = cap;
     }
+
+    /*
+     * draft-ietf-quic-multipath-21 Section 3.2.1: connection IDs are issued
+     * for the unused path IDs up to the lower of both limits, and only path
+     * IDs with connection ID sets get them. Add the sets now, as a received
+     * MAX_PATH_ID does: a peer whose own limit is at or above new_max sends
+     * no MAX_PATH_ID back that would add them.
+     */
+    uint64_t old_max = conn->local_max_path_id;
     conn->local_max_path_id = new_max;
+    if (xqc_conn_update_curr_max_path_id(conn) != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|add_path_cid_sets_error|");
+        conn->local_max_path_id = old_max;
+        return 0;
+    }
+
     conn->last_max_path_id_grant_us = now;
     return new_max;
 }
