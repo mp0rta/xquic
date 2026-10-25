@@ -8,6 +8,11 @@
 #include "src/transport/xqc_cid.h"
 #include "src/transport/xqc_conn.h"
 #include "src/transport/xqc_send_ctl.h"
+#include "src/transport/xqc_frame.h"
+#include "src/transport/xqc_frame_parser.h"
+#include "src/transport/xqc_packet_in.h"
+#include "src/transport/xqc_packet_out.h"
+#include "src/transport/xqc_multipath.h"
 
 #define XQC_TEST_CID_1 "xquictestconnid1"
 #define XQC_TEST_CID_2 "xquictestconnid2"
@@ -746,5 +751,102 @@ xqc_test_cid_abandoned_set_back_on_list(void)
     CU_ASSERT(scid_set->set_cnt[XQC_CID_SET_ABANDONED] == abandoned);
     CU_ASSERT_PTR_EQUAL(xqc_get_path_cid_set(scid_set, 1), set1);
 
+    xqc_engine_destroy(conn->engine);
+}
+
+
+/*
+ * A multipath connection at limits of 3, with the connection ID sets of
+ * path IDs 1 and 2, and one connection ID of ours, sequence 0, issued for
+ * path ID 1 only.
+ */
+static xqc_connection_t *
+xqc_test_mp_retire_conn(void)
+{
+    xqc_cid_t           cid;
+    xqc_connection_t   *conn = test_engine_connect();
+
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->enable_multipath = XQC_CONN_MP_ENABLED;
+    conn->conn_settings.multipath_version = XQC_MULTIPATH_3E;
+    conn->local_max_path_id = 3;
+    conn->remote_max_path_id = 3;
+    conn->curr_max_path_id = 2;
+    CU_ASSERT_FATAL(xqc_conn_add_path_cid_sets(conn, 1, 2) == XQC_OK);
+
+    CU_ASSERT_FATAL(xqc_generate_cid(conn->engine, NULL, &cid, 0) == XQC_OK);
+    CU_ASSERT_FATAL(xqc_cid_set_insert_cid(&conn->scid_set, &cid, XQC_CID_UNUSED,
+                                           conn->remote_settings.active_connection_id_limit, 1)
+                    == XQC_OK);
+    return conn;
+}
+
+/* the peer's PATH_RETIRE_CONNECTION_ID for seq_num of path_id */
+static xqc_int_t
+xqc_test_mp_retire_cid(xqc_connection_t *conn, uint64_t seq_num, uint64_t path_id)
+{
+    ssize_t             n;
+    unsigned char       buf[64];
+    xqc_packet_in_t     pi;
+    xqc_packet_out_t    po;
+
+    memset(&po, 0, sizeof(po));
+    po.po_buf = buf;
+    po.po_buf_cap = sizeof(buf);
+    po.po_buf_size = sizeof(buf);
+    n = xqc_gen_mp_retire_conn_id_frame(conn, &po, seq_num, path_id);
+    CU_ASSERT_FATAL(n > 0);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + n;
+    pi.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+    return xqc_process_frames(conn, &pi);
+}
+
+/*
+ * draft-ietf-quic-multipath-21 Section 4.5 applies RFC 9000 Section 19.16
+ * per path: the connection ID issued for path ID 1 is retired.
+ */
+void
+xqc_test_mp_retire_cid_issued(void)
+{
+    xqc_cid_inner_t    *inner_cid;
+    xqc_connection_t   *conn = xqc_test_mp_retire_conn();
+
+    CU_ASSERT(xqc_test_mp_retire_cid(conn, 0, 1) == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+    inner_cid = xqc_get_inner_cid_by_seq(&conn->scid_set, 0, 1);
+    CU_ASSERT_FATAL(inner_cid != NULL);
+    CU_ASSERT(inner_cid->state == XQC_CID_RETIRED);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/*
+ * A retirement on a path ID that no connection ID was issued for names a
+ * sequence number greater than any sent, sequence 0 included: a
+ * PROTOCOL_VIOLATION, whether the path ID has connection ID sets (2) or
+ * not yet (3).
+ */
+void
+xqc_test_mp_retire_cid_not_issued(void)
+{
+    uint64_t            path_id;
+    xqc_connection_t   *conn;
+
+    for (path_id = 2; path_id <= 3; path_id++) {
+        conn = xqc_test_mp_retire_conn();
+        CU_ASSERT(xqc_test_mp_retire_cid(conn, 0, path_id) != XQC_OK);
+        CU_ASSERT(conn->conn_err == TRA_PROTOCOL_VIOLATION);
+        xqc_engine_destroy(conn->engine);
+    }
+
+    /* the frames of an abandoned path ID are still ignored, even where the
+     * bitmap of abandoned path IDs does not reach */
+    conn = xqc_test_mp_retire_conn();
+    xqc_cid_set_update_state(&conn->scid_set, 2, XQC_CID_SET_ABANDONED);
+    CU_ASSERT(xqc_test_mp_retire_cid(conn, 0, 2) == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
     xqc_engine_destroy(conn->engine);
 }
