@@ -881,7 +881,6 @@ xqc_conn_create(xqc_engine_t *engine, xqc_cid_t *dcid, xqc_cid_t *scid,
     xc->log->scid = xc->scid_set.original_scid_str;
 
     xqc_init_list_head(&xc->conn_paths_list);
-    xqc_init_list_head(&xc->conn_closed_paths_list);
     xqc_init_list_head(&xc->conn_write_streams);
     xqc_init_list_head(&xc->conn_read_streams);
     xqc_init_list_head(&xc->conn_closing_streams);
