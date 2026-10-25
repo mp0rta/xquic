@@ -5,9 +5,15 @@
 #include <CUnit/CUnit.h>
 #include "xqc_cid_test.h"
 #include "xqc_common_test.h"
+#include "xqc_test_helpers.h"
 #include "src/transport/xqc_cid.h"
 #include "src/transport/xqc_conn.h"
 #include "src/transport/xqc_send_ctl.h"
+#include "src/transport/xqc_frame.h"
+#include "src/transport/xqc_frame_parser.h"
+#include "src/transport/xqc_packet_in.h"
+#include "src/transport/xqc_packet_out.h"
+#include "src/transport/xqc_multipath.h"
 
 #define XQC_TEST_CID_1 "xquictestconnid1"
 #define XQC_TEST_CID_2 "xquictestconnid2"
@@ -210,6 +216,146 @@ xqc_test_cid()
     xqc_test_retire_cid();
     xqc_test_recv_retire_cid();
     xqc_test_retire_cid_with_odcid_in_set();
+}
+
+
+/*
+ * The peer's NEW_CONNECTION_ID (path_id 0, mp 0) or PATH_NEW_CONNECTION_ID
+ * for seq_num, with retire_prior_to, processed by conn.
+ */
+static xqc_int_t
+xqc_test_rpt_new_cid(xqc_connection_t *conn, xqc_bool_t mp, uint64_t path_id,
+    uint64_t seq_num, uint64_t retire_prior_to)
+{
+    ssize_t             n;
+    xqc_cid_t           cid;
+    unsigned char       buf[128];
+    uint8_t             sr_token[XQC_STATELESS_RESET_TOKENLEN];
+    xqc_packet_in_t     pi;
+    xqc_packet_out_t    po;
+
+    memset(&cid, 0, sizeof(cid));
+    cid.cid_len = 8;
+    memset(cid.cid_buf, 0x30 + (int) (path_id * 16 + seq_num), cid.cid_len);
+    cid.cid_seq_num = seq_num;
+    memset(sr_token, 0x70 + (int) (path_id * 16 + seq_num), sizeof(sr_token));
+
+    memset(&po, 0, sizeof(po));
+    po.po_buf = buf;
+    po.po_buf_cap = sizeof(buf);
+    po.po_buf_size = sizeof(buf);
+    if (mp) {
+        n = xqc_gen_mp_new_conn_id_frame(conn, &po, &cid, retire_prior_to, sr_token,
+                                         path_id);
+
+    } else {
+        n = xqc_gen_new_conn_id_frame(&po, &cid, retire_prior_to, sr_token);
+    }
+    CU_ASSERT_FATAL(n > 0);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = buf;
+    pi.last = buf + n;
+    pi.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+    return xqc_process_frames(conn, &pi);
+}
+
+static xqc_cid_state_t
+xqc_test_rpt_state(xqc_connection_t *conn, uint64_t path_id, uint64_t seq_num)
+{
+    xqc_cid_inner_t *inner_cid;
+
+    inner_cid = xqc_get_inner_cid_by_seq(&conn->dcid_set, seq_num, path_id);
+    CU_ASSERT_FATAL(inner_cid != NULL);
+    return inner_cid->state;
+}
+
+/*
+ * RFC 9000 Section 5.1.1: "An endpoint MAY send connection IDs that
+ * temporarily exceed a peer's limit if the NEW_CONNECTION_ID frame also
+ * requires the retirement of any excess". At a limit of 2, the peer
+ * replaces all its connection IDs with a Retire Prior To of 3: they are
+ * retired, the new one is stored and taken in use.
+ */
+void
+xqc_test_retire_prior_to_full_set(void)
+{
+    uint64_t            seq;
+    xqc_connection_t   *conn = test_engine_connect();
+
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->local_settings.active_connection_id_limit = 2;
+
+    CU_ASSERT(xqc_test_rpt_new_cid(conn, XQC_FALSE, 0, 1, 0) == XQC_OK);
+    CU_ASSERT(xqc_test_rpt_new_cid(conn, XQC_FALSE, 0, 2, 0) == XQC_OK);
+    CU_ASSERT(xqc_test_rpt_new_cid(conn, XQC_FALSE, 0, 3, 3) == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+
+    for (seq = 0; seq < 3; seq++) {
+        CU_ASSERT(xqc_test_rpt_state(conn, 0, seq) == XQC_CID_RETIRED);
+    }
+    CU_ASSERT(xqc_test_rpt_state(conn, 0, 3) == XQC_CID_USED);
+    CU_ASSERT(conn->conn_initial_path->path_dcid.cid_seq_num == 3);
+    CU_ASSERT(xqc_test_count_packets_with_frame(conn,
+                                                XQC_FRAME_BIT_RETIRE_CONNECTION_ID)
+              == 3);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/*
+ * A Retire Prior To that leaves more than the limit active is still a
+ * CONNECTION_ID_LIMIT_ERROR: retiring the handshake connection ID, which
+ * the limit does not count, makes no room.
+ */
+void
+xqc_test_retire_prior_to_still_over_limit(void)
+{
+    xqc_connection_t   *conn = test_engine_connect();
+
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->local_settings.active_connection_id_limit = 2;
+
+    CU_ASSERT(xqc_test_rpt_new_cid(conn, XQC_FALSE, 0, 1, 0) == XQC_OK);
+    CU_ASSERT(xqc_test_rpt_new_cid(conn, XQC_FALSE, 0, 2, 0) == XQC_OK);
+    CU_ASSERT(xqc_test_rpt_new_cid(conn, XQC_FALSE, 0, 3, 1) == -XQC_EPROTO);
+    CU_ASSERT(conn->conn_err == TRA_CONNECTION_ID_LIMIT_ERROR);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/*
+ * draft-ietf-quic-multipath-21 Section 4.4 applies the same per path: at a
+ * limit of 2, the peer replaces both connection IDs of path ID 1.
+ */
+void
+xqc_test_mp_retire_prior_to_full_set(void)
+{
+    xqc_connection_t   *conn = test_engine_connect();
+
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->local_settings.active_connection_id_limit = 2;
+    conn->enable_multipath = XQC_CONN_MP_ENABLED;
+    conn->conn_settings.multipath_version = XQC_MULTIPATH_3E;
+    conn->local_max_path_id = 1;
+    conn->remote_max_path_id = 1;
+    conn->curr_max_path_id = 1;
+    CU_ASSERT_FATAL(xqc_conn_add_path_cid_sets(conn, 1, 1) == XQC_OK);
+
+    CU_ASSERT(xqc_test_rpt_new_cid(conn, XQC_TRUE, 1, 0, 0) == XQC_OK);
+    CU_ASSERT(xqc_test_rpt_new_cid(conn, XQC_TRUE, 1, 1, 0) == XQC_OK);
+    CU_ASSERT(xqc_test_rpt_new_cid(conn, XQC_TRUE, 1, 2, 2) == XQC_OK);
+    CU_ASSERT(conn->conn_err == 0);
+
+    CU_ASSERT(xqc_test_rpt_state(conn, 1, 0) == XQC_CID_RETIRED);
+    CU_ASSERT(xqc_test_rpt_state(conn, 1, 1) == XQC_CID_RETIRED);
+    CU_ASSERT(xqc_test_rpt_state(conn, 1, 2) == XQC_CID_UNUSED);
+    CU_ASSERT(xqc_cid_set_get_unused_cnt(&conn->dcid_set, 1) == 1);
+    CU_ASSERT(xqc_test_count_packets_with_frame(conn,
+                                                XQC_FRAME_BIT_MP_RETIRE_CONNECTION_ID)
+              == 2);
+
+    xqc_engine_destroy(conn->engine);
 }
 
 /*
