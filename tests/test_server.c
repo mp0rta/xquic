@@ -2971,6 +2971,11 @@ main(int argc, char *argv[])
         conn_settings.enable_multipath = g_enable_multipath;
     }
 
+    /* cases 1307-1308: path IDs 0 and 1 only */
+    if (g_test_case == 1307 || g_test_case == 1308) {
+        conn_settings.init_max_path_id = 1;
+    }
+
     /* enable_reinjection */
     if (g_enable_reinjection == 1) {
         conn_settings.reinj_ctl_callback = xqc_default_reinj_ctl_cb;

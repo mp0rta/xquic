@@ -22,6 +22,7 @@
 #include "src/common/xqc_log.h"
 #include "xqc_mp21_compliance_test.h"
 #include "xqc_test_helpers.h"
+#include "xqc_common_test.h"
 #include "src/transport/xqc_frame.h"
 #include "xquic/xqc_errno.h"
 
@@ -1530,6 +1531,64 @@ xqc_test_mp21_solo_frame_in_datagram_no_pv(void)
     CU_ASSERT_EQUAL(conn->conn_err, TRA_PROTOCOL_VIOLATION);
     CU_ASSERT_EQUAL(fbits, 0);
     xqc_test_mp21_free_conn(conn);
+}
+
+/*
+ * A client connection that negotiated multipath with version, at limits
+ * of 1 on both sides and with no connection ID for path ID 1, asks for a
+ * new path: there is no path ID left. The caller destroys the engine.
+ */
+static xqc_connection_t *
+mp21_create_path_without_path_id(xqc_multipath_version_t version)
+{
+    uint64_t            path_id = 0;
+    xqc_connection_t   *conn;
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    conn->enable_multipath = XQC_CONN_MP_ENABLED;
+    conn->conn_settings.multipath_version = version;
+    conn->local_max_path_id = 1;
+    conn->remote_settings.init_max_path_id = 1;
+    conn->remote_max_path_id = 1;
+    conn->curr_max_path_id = 1;
+
+    CU_ASSERT_EQUAL(xqc_conn_create_path(conn->engine,
+                                         &conn->scid_set.user_scid,
+                                         &path_id, 0),
+                    -XQC_EMP_NO_AVAIL_PATH_ID);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    return conn;
+}
+
+/* draft-ietf-quic-multipath-21 Section 4.7: a path that cannot be opened
+ * for lack of a path ID is reported with PATHS_BLOCKED. */
+void
+xqc_test_mp21_paths_blocked_sent_on_draft21(void)
+{
+    xqc_connection_t   *conn;
+
+    conn = mp21_create_path_without_path_id(XQC_MULTIPATH_3E);
+    CU_ASSERT_PTR_NOT_NULL(xqc_test_find_packet_with_frame(conn,
+                                           XQC_FRAME_BIT_PATHS_BLOCKED));
+    CU_ASSERT_NOT_EQUAL(conn->last_paths_blocked_sent_us, 0);
+    xqc_engine_destroy(conn->engine);
+}
+
+/* Draft-10 has no PATHS_BLOCKED frame, and a draft-10 peer closes the
+ * connection on a frame type it does not know (RFC 9000 Section 12.4):
+ * the path is refused without one. */
+void
+xqc_test_mp21_paths_blocked_not_sent_on_draft10(void)
+{
+    xqc_connection_t   *conn;
+
+    conn = mp21_create_path_without_path_id(XQC_MULTIPATH_10);
+    CU_ASSERT_PTR_NULL(xqc_test_find_packet_with_frame(conn,
+                                       XQC_FRAME_BIT_PATHS_BLOCKED));
+    CU_ASSERT_EQUAL(conn->last_paths_blocked_sent_us, 0);
+    xqc_engine_destroy(conn->engine);
 }
 
 /* mp21 L2 M3 — MAX_PATH_ID credit grant tests. Tests exercise the
