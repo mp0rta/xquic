@@ -1020,6 +1020,14 @@ xqc_engine_main_logic(xqc_engine_t *engine)
                 xqc_conn_send_packets(conn);
             }
 
+            /* the sends above may have drained the DATAGRAM backlog: notify
+             * now rather than on the next pass, and send what the
+             * application wrote from the callback */
+            if (xqc_datagram_notify_backlog_drained(conn)) {
+                xqc_conn_schedule_packets_to_paths(conn);
+                xqc_conn_send_packets(conn);
+            }
+
             if (XQC_LIKELY(conn->conn_state != XQC_CONN_STATE_CLOSED)) {
                 conn->next_tick_time = xqc_conn_next_wakeup_time(conn);
                 if (XQC_LIKELY(conn->next_tick_time != 0)) {

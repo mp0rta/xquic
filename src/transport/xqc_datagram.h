@@ -28,8 +28,9 @@ void xqc_datagram_record_mss(xqc_connection_t *conn);
 void xqc_datagram_notify_write(xqc_connection_t *conn);
 
 /* The DATAGRAM backlog drained after a write was refused at
- * max_dgram_unsent_packets: notify the application it can write again. */
-void xqc_datagram_notify_backlog_drained(xqc_connection_t *conn);
+ * max_dgram_unsent_packets: notify the application it can write again.
+ * Returns XQC_TRUE when it notified. */
+xqc_bool_t xqc_datagram_notify_backlog_drained(xqc_connection_t *conn);
 
 xqc_int_t xqc_datagram_notify_loss(xqc_connection_t *conn, xqc_packet_out_t *po);
 

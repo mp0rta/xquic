@@ -2220,6 +2220,56 @@ if [ -f xqc_token ]; then
     rm -f xqc_token
 fi
 
+# DATAGRAM backlog cap above the burst (case ID 212): 1 MB of datagrams
+# with max_dgram_unsent_packets 4096 is never refused, and all of it is
+# sent and echoed back
+killall test_server 2> /dev/null
+stdbuf -oL ${SERVER_BIN} -l d -Q 65535 -e -U 1 -x 212 > svr_stdlog &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "datagram backlog cap not reached ...\c"
+${CLIENT_BIN} -l d -T 1 -s 1048576 -U 1 -Q 65535 -x 212 > stdlog
+refused=`grep -c "retry_datagram_send_later" stdlog`
+dgram_res=`grep -o "recv_dgram_bytes:[0-9]*|sent_dgram_bytes:[0-9]*|lost_dgram_bytes:[0-9]*" stdlog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ "$refused" -eq 0 ] \
+    && [ "$dgram_res" == "recv_dgram_bytes:1048576|sent_dgram_bytes:1048576|lost_dgram_bytes:0" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "datagram_backlog_cap_not_reached" "pass"
+else
+    echo ">>>>>>>> pass:0 (refused:${refused} ${dgram_res} errlog:${errlog:+y})"
+    case_print_result "datagram_backlog_cap_not_reached" "fail"
+fi
+
+# DATAGRAM backlog cap far below the burst (case ID 213): with
+# max_dgram_unsent_packets 8, writes are refused with -XQC_EAGAIN at the
+# cap, each refusal is followed by dgram_write_notify, and the client still
+# sends all of 1 MB, which is echoed back
+killall test_server 2> /dev/null
+stdbuf -oL ${SERVER_BIN} -l d -Q 65535 -e -U 1 -x 213 > svr_stdlog &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "datagram backlog cap refuses then recovers ...\c"
+${CLIENT_BIN} -l d -T 1 -s 1048576 -U 1 -Q 65535 -x 213 > stdlog
+refused=`grep -c "retry_datagram_send_later" stdlog`
+notified=`grep -c "\[dgram\]|dgram_write|" stdlog`
+at_cap=`grep -a -c "|datagram backlog full|dgram_unsent:8|cap:8|" clog`
+dgram_res=`grep -o "recv_dgram_bytes:[0-9]*|sent_dgram_bytes:[0-9]*|lost_dgram_bytes:[0-9]*" stdlog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ "$refused" -gt 0 ] && [ "$at_cap" -eq "$refused" ] \
+    && [ "$notified" -ge "$refused" ] \
+    && [ "$dgram_res" == "recv_dgram_bytes:1048576|sent_dgram_bytes:1048576|lost_dgram_bytes:0" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "datagram_backlog_cap_refuses_then_recovers" "pass"
+else
+    echo ">>>>>>>> pass:0 (refused:${refused} at_cap:${at_cap} notified:${notified} ${dgram_res} errlog:${errlog:+y})"
+    case_print_result "datagram_backlog_cap_refuses_then_recovers" "fail"
+fi
+killall test_server 2> /dev/null
+rm -rf tp_localhost test_session xqc_token
+
 stdbuf -oL ${SERVER_BIN} -l d -Q 1000 -x 200 > svr_stdlog &
 sleep 1
 clear_log

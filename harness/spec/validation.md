@@ -65,7 +65,7 @@ in `scripts/case_test.sh`, `tests/test_client.c`, or `tests/test_server.c`.
 | `[1, 99]` | Legacy cross-layer QUIC, TLS, HTTP/3, and callback cases | `1-53`, `55-57`, `80`, `99` |
 | `[100, 149]` | Multipath QUIC and path management | `100-110` |
 | `[150, 199]` | HTTP/3 and QPACK settings | `150-153` |
-| `[200, 299]` | QUIC DATAGRAM and HTTP/3 datagram | `200-211` |
+| `[200, 299]` | QUIC DATAGRAM and HTTP/3 datagram | `200-213` |
 | `[300, 399]` | HTTP/3 extension bytestream | `300-315` |
 | `[400, 499]` | Transport connection settings and extensions | `400`, `450-455` |
 | `[500, 599]` | Frozen legacy cross-layer overflow | `500-502` |

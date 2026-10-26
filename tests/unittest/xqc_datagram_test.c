@@ -235,7 +235,7 @@ xqc_test_datagram_backlog_cap()
     CU_ASSERT_EQUAL(xqc_send_queue_get_dgram_unsent_num(sq), 3);
 
     /* 3 left is above half the cap: no notify yet */
-    xqc_datagram_notify_backlog_drained(conn);
+    CU_ASSERT(!xqc_datagram_notify_backlog_drained(conn));
     CU_ASSERT_EQUAL(g_dgram_write_notified, 0);
     CU_ASSERT(sq->sndq_dgram_backlog_full);
 
@@ -247,10 +247,10 @@ xqc_test_datagram_backlog_cap()
     CU_ASSERT_EQUAL(xqc_send_queue_get_dgram_unsent_num(sq), 2);
 
     /* half the cap: notified once */
-    xqc_datagram_notify_backlog_drained(conn);
+    CU_ASSERT(xqc_datagram_notify_backlog_drained(conn));
     CU_ASSERT_EQUAL(g_dgram_write_notified, 1);
     CU_ASSERT(!sq->sndq_dgram_backlog_full);
-    xqc_datagram_notify_backlog_drained(conn);
+    CU_ASSERT(!xqc_datagram_notify_backlog_drained(conn));
     CU_ASSERT_EQUAL(g_dgram_write_notified, 1);
 
     /* cap 0 is no cap, whatever is unsent */

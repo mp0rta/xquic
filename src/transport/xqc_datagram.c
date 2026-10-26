@@ -29,20 +29,21 @@ xqc_datagram_backlog_full(xqc_connection_t *conn)
 
 /* Notify once the backlog is down to half the cap, so the application
  * does not wake up for every packet sent at the cap. */
-void
+xqc_bool_t
 xqc_datagram_notify_backlog_drained(xqc_connection_t *conn)
 {
     xqc_send_queue_t *sq = conn->conn_send_queue;
     uint32_t cap = conn->conn_settings.max_dgram_unsent_packets;
 
     if (!sq->sndq_dgram_backlog_full) {
-        return;
+        return XQC_FALSE;
     }
     if (cap && xqc_send_queue_get_dgram_unsent_num(sq) > cap / 2) {
-        return;
+        return XQC_FALSE;
     }
     sq->sndq_dgram_backlog_full = XQC_FALSE;
     xqc_datagram_notify_write(conn);
+    return XQC_TRUE;
 }
 
 xqc_datagram_0rtt_buffer_t* 
