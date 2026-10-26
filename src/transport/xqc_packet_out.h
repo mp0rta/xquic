@@ -51,6 +51,7 @@ typedef enum {
     XQC_POF_SPURIOUS_LOSS       = 1 << 20,
     XQC_POF_USE_FEC             = 1 << 21,
     XQC_POF_STREAM_NO_LEN       = 1 << 22,  /* for stream without LEN bit, shouldn't attach different frame to it */
+    XQC_POF_DGRAM_UNSENT        = 1 << 23, /* counted in sndq_dgram_unsent until sent or freed; FIXED: reset when copy */
 } xqc_packet_out_flag_t;
 
 typedef struct xqc_po_stream_frame_s {

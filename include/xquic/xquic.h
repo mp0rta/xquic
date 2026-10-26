@@ -1472,6 +1472,17 @@ typedef struct xqc_conn_settings_s {
      */
     uint32_t max_stream_unsent_packets;
     /**
+     * Cap on DATAGRAM packets written but not sent yet, checked before a
+     * DATAGRAM write. 0 (default) = no cap. At the cap, the datagram send
+     * calls return -XQC_EAGAIN, and dgram_write_notify is called once half
+     * of them have been sent. Datagrams have no flow control, so without a
+     * cap a sender faster than the paths fills the send queue up to
+     * sndq_packets_used_max, and every later packet waits behind it. Only
+     * DATAGRAM packets count, so stream data waiting behind its own cap
+     * (max_stream_unsent_packets) does not hold datagrams back.
+     */
+    uint32_t max_dgram_unsent_packets;
+    /**
      * Max buffered out-of-order STREAM frame nodes per stream (reassembly
      * cap, CWE-770 mitigation per RFC 9000 §21.7).
      *

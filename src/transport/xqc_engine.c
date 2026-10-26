@@ -760,6 +760,7 @@ xqc_engine_process_conn(xqc_connection_t *conn, xqc_usec_t now)
                     conn->conn_flag &= ~XQC_CONN_FLAG_DGRAM_WAIT_FOR_1RTT;
                 }
             }
+            xqc_datagram_notify_backlog_drained(conn);
 
         } else {
             xqc_log(conn->log, XQC_LOG_DEBUG, "|xqc_send_queue_can_write false|");
@@ -879,6 +880,24 @@ xqc_engine_check_app_limit_after_send(xqc_connection_t *conn)
     }
 }
 
+/*
+ * The sends just made may have drained the DATAGRAM backlog: notify now
+ * rather than on the next engine pass, and send what the application wrote
+ * from the callback (it cannot run the engine itself, the engine is running).
+ * Called by both xqc_engine_main_logic() and xqc_engine_conn_logic().
+ */
+static void
+xqc_engine_dgram_notify_after_send(xqc_connection_t *conn)
+{
+    if (conn->conn_state == XQC_CONN_STATE_CLOSED) {
+        return;
+    }
+    if (xqc_datagram_notify_backlog_drained(conn)) {
+        xqc_conn_schedule_packets_to_paths(conn);
+        xqc_conn_send_packets(conn);
+    }
+}
+
 void 
 xqc_engine_conn_logic(xqc_engine_t *engine, xqc_connection_t *conn)
 {
@@ -915,6 +934,8 @@ xqc_engine_conn_logic(xqc_engine_t *engine, xqc_connection_t *conn)
             xqc_conn_reinject_unack_packets(conn, XQC_REINJ_UNACK_AFTER_SEND);
             xqc_conn_send_packets(conn);
         }
+
+        xqc_engine_dgram_notify_after_send(conn);
 
         if (XQC_LIKELY(conn->conn_state != XQC_CONN_STATE_CLOSED)) {
             conn->next_tick_time = xqc_conn_next_wakeup_time(conn);
@@ -1018,6 +1039,8 @@ xqc_engine_main_logic(xqc_engine_t *engine)
                 xqc_conn_reinject_unack_packets(conn, XQC_REINJ_UNACK_AFTER_SEND);
                 xqc_conn_send_packets(conn);
             }
+
+            xqc_engine_dgram_notify_after_send(conn);
 
             if (XQC_LIKELY(conn->conn_state != XQC_CONN_STATE_CLOSED)) {
                 conn->next_tick_time = xqc_conn_next_wakeup_time(conn);
