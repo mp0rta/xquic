@@ -2220,16 +2220,16 @@ if [ -f xqc_token ]; then
     rm -f xqc_token
 fi
 
-# DATAGRAM backlog cap above the burst (case ID 212): 1 MB of datagrams
+# DATAGRAM backlog cap above the burst (case ID 1200): 1 MB of datagrams
 # with max_dgram_unsent_packets 4096 is never refused, and all of it is
 # sent and echoed back
 killall test_server 2> /dev/null
-stdbuf -oL ${SERVER_BIN} -l d -Q 65535 -e -U 1 -x 212 > svr_stdlog &
+stdbuf -oL ${SERVER_BIN} -l d -Q 65535 -e -U 1 -x 1200 > svr_stdlog &
 sleep 1
 rm -rf tp_localhost test_session xqc_token
 clear_log
 echo -e "datagram backlog cap not reached ...\c"
-${CLIENT_BIN} -l d -T 1 -s 1048576 -U 1 -Q 65535 -x 212 > stdlog
+${CLIENT_BIN} -l d -T 1 -s 1048576 -U 1 -Q 65535 -x 1200 > stdlog
 refused=`grep -c "retry_datagram_send_later" stdlog`
 dgram_res=`grep -o "recv_dgram_bytes:[0-9]*|sent_dgram_bytes:[0-9]*|lost_dgram_bytes:[0-9]*" stdlog`
 errlog=`grep_err_log`
@@ -2242,17 +2242,17 @@ else
     case_print_result "datagram_backlog_cap_not_reached" "fail"
 fi
 
-# DATAGRAM backlog cap far below the burst (case ID 213): with
+# DATAGRAM backlog cap far below the burst (case ID 1201): with
 # max_dgram_unsent_packets 8, writes are refused with -XQC_EAGAIN at the
 # cap, each refusal is followed by dgram_write_notify, and the client still
 # sends all of 1 MB, which is echoed back
 killall test_server 2> /dev/null
-stdbuf -oL ${SERVER_BIN} -l d -Q 65535 -e -U 1 -x 213 > svr_stdlog &
+stdbuf -oL ${SERVER_BIN} -l d -Q 65535 -e -U 1 -x 1201 > svr_stdlog &
 sleep 1
 rm -rf tp_localhost test_session xqc_token
 clear_log
 echo -e "datagram backlog cap refuses then recovers ...\c"
-${CLIENT_BIN} -l d -T 1 -s 1048576 -U 1 -Q 65535 -x 213 > stdlog
+${CLIENT_BIN} -l d -T 1 -s 1048576 -U 1 -Q 65535 -x 1201 > stdlog
 refused=`grep -c "retry_datagram_send_later" stdlog`
 notified=`grep -c "\[dgram\]|dgram_write|" stdlog`
 at_cap=`grep -a -c "|datagram backlog full|dgram_unsent:8|cap:8|" clog`

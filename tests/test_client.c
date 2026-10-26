@@ -5701,12 +5701,12 @@ int main(int argc, char *argv[]) {
         conn_settings.max_pkt_out_size = 1500;
     }
 
-    /* cases 212-213: a DATAGRAM backlog cap the burst stays under (212)
-     * or goes far over (213) */
-    if (g_test_case == 212) {
+    /* cases 1200-1201: a DATAGRAM backlog cap the burst stays under (1200)
+     * or goes far over (1201) */
+    if (g_test_case == 1200) {
         conn_settings.max_dgram_unsent_packets = 4096;
     }
-    if (g_test_case == 213) {
+    if (g_test_case == 1201) {
         conn_settings.max_dgram_unsent_packets = 8;
     }
 
