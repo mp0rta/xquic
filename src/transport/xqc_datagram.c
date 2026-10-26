@@ -12,6 +12,39 @@
 #include "src/transport/xqc_engine.h"
 
 
+/* The DATAGRAM backlog cap (max_dgram_unsent_packets) is reached. */
+static xqc_bool_t
+xqc_datagram_backlog_full(xqc_connection_t *conn)
+{
+    uint32_t cap = conn->conn_settings.max_dgram_unsent_packets;
+
+    if (cap && xqc_send_queue_get_dgram_unsent_num(conn->conn_send_queue) >= cap) {
+        xqc_log(conn->log, XQC_LOG_DEBUG, "|datagram backlog full|dgram_unsent:%ui|cap:%ud|",
+                xqc_send_queue_get_dgram_unsent_num(conn->conn_send_queue), cap);
+        conn->conn_send_queue->sndq_dgram_backlog_full = XQC_TRUE;
+        return XQC_TRUE;
+    }
+    return XQC_FALSE;
+}
+
+/* Notify once the backlog is down to half the cap, so the application
+ * does not wake up for every packet sent at the cap. */
+void
+xqc_datagram_notify_backlog_drained(xqc_connection_t *conn)
+{
+    xqc_send_queue_t *sq = conn->conn_send_queue;
+    uint32_t cap = conn->conn_settings.max_dgram_unsent_packets;
+
+    if (!sq->sndq_dgram_backlog_full) {
+        return;
+    }
+    if (cap && xqc_send_queue_get_dgram_unsent_num(sq) > cap / 2) {
+        return;
+    }
+    sq->sndq_dgram_backlog_full = XQC_FALSE;
+    xqc_datagram_notify_write(conn);
+}
+
 xqc_datagram_0rtt_buffer_t* 
 xqc_datagram_create_0rtt_buffer(void *data, size_t data_len, 
     uint64_t dgram_id, xqc_data_qos_level_t qos_level)
@@ -245,6 +278,10 @@ xqc_int_t xqc_datagram_send(xqc_connection_t *conn, void *data,
         }
     }
 
+    if (xqc_datagram_backlog_full(conn)) {
+        return -XQC_EAGAIN;
+    }
+
     if (!xqc_send_queue_can_write(conn->conn_send_queue)) {
         conn->conn_send_queue->sndq_full = XQC_TRUE;
         xqc_log(conn->log, XQC_LOG_DEBUG, "|too many packets used|ctl_packets_used:%ud|", conn->conn_send_queue->sndq_packets_used);
@@ -368,6 +405,10 @@ xqc_datagram_send_on_path(xqc_connection_t *conn, void *data,
         xqc_log(conn->log, XQC_LOG_DEBUG,
                 "|path_send_requires_1rtt|path_id:%ui|", path_id);
         conn->conn_flag |= XQC_CONN_FLAG_DGRAM_WAIT_FOR_1RTT;
+        return -XQC_EAGAIN;
+    }
+
+    if (xqc_datagram_backlog_full(conn)) {
         return -XQC_EAGAIN;
     }
 
@@ -521,6 +562,11 @@ xqc_datagram_send_multiple_internal(xqc_connection_t *conn,
             xqc_log(conn->log, XQC_LOG_INFO, "|datagram_is_too_large|data_len:%ud|",
                     data_len);
             return -XQC_EDGRAM_TOO_LARGE;
+        }
+
+        if (xqc_datagram_backlog_full(conn)) {
+            ret = -XQC_EAGAIN;
+            break;
         }
 
         if (!xqc_send_queue_can_write(conn->conn_send_queue)) {
