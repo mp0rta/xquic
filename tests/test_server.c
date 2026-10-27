@@ -402,6 +402,8 @@ xqc_server_datagram_mss_updated_callback(xqc_connection_t *conn, size_t mss,
  * probe a failed path do not count. The bytes are counted once a packet's
  * frames are processed, so each sample covers the packets before the
  * current one, and the last sample is taken when the connection closes.
+ * If there are more runs than fit, the report says "overflow" instead, so
+ * that neither case can pass on a partial list.
  */
 #define XQC_TEST_DGRAM_PATHS_MAX    8
 #define XQC_TEST_DGRAM_RUNS_MAX     32
@@ -410,6 +412,7 @@ static uint64_t g_dgram_path_bytes[XQC_TEST_DGRAM_PATHS_MAX];
 static uint64_t g_dgram_run_path[XQC_TEST_DGRAM_RUNS_MAX];
 static uint64_t g_dgram_run_count[XQC_TEST_DGRAM_RUNS_MAX];
 static int      g_dgram_runs;
+static int      g_dgram_runs_overflow;
 
 static int
 xqc_server_dgram_path_case(void)
@@ -438,6 +441,9 @@ xqc_server_dgram_path_sample(const xqc_cid_t *cid)
             g_dgram_run_path[g_dgram_runs] = id;
             g_dgram_run_count[g_dgram_runs] = 1;
             g_dgram_runs++;
+
+        } else {
+            g_dgram_runs_overflow = 1;
         }
     }
     free(stats.paths_info);
@@ -447,6 +453,11 @@ static void
 xqc_server_dgram_path_report(const xqc_cid_t *cid)
 {
     xqc_server_dgram_path_sample(cid);
+    if (g_dgram_runs_overflow) {
+        printf("[dgram]|recv_paths|overflow|\n");
+        return;
+    }
+
     printf("[dgram]|recv_paths|");
     for (int i = 0; i < g_dgram_runs; i++) {
         printf("%s%"PRIu64":%"PRIu64, i ? "," : "", g_dgram_run_path[i],
