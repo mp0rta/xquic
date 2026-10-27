@@ -395,11 +395,75 @@ xqc_server_datagram_mss_updated_callback(xqc_connection_t *conn, size_t mss,
     }
 }
 
+/*
+ * Cases 1311-1312: record which path the client's datagrams arrive on, as a
+ * list of runs, "path:count" each. A path's received application bytes grow
+ * only with packets that carry STREAM or DATAGRAM frames, so the PINGs that
+ * probe a failed path do not count. The bytes are counted once a packet's
+ * frames are processed, so each sample covers the packets before the
+ * current one, and the last sample is taken when the connection closes.
+ */
+#define XQC_TEST_DGRAM_PATHS_MAX    8
+#define XQC_TEST_DGRAM_RUNS_MAX     32
+
+static uint64_t g_dgram_path_bytes[XQC_TEST_DGRAM_PATHS_MAX];
+static uint64_t g_dgram_run_path[XQC_TEST_DGRAM_RUNS_MAX];
+static uint64_t g_dgram_run_count[XQC_TEST_DGRAM_RUNS_MAX];
+static int      g_dgram_runs;
+
+static int
+xqc_server_dgram_path_case(void)
+{
+    return g_test_case == 1311 || g_test_case == 1312;
+}
+
+static void
+xqc_server_dgram_path_sample(const xqc_cid_t *cid)
+{
+    xqc_conn_stats_t stats = xqc_conn_get_stats(ctx.engine, cid);
+
+    for (uint32_t i = 0; i < stats.paths_info_count; i++) {
+        uint64_t id = stats.paths_info[i].path_id;
+        uint64_t bytes = stats.paths_info[i].path_recv_bytes;
+
+        if (id >= XQC_TEST_DGRAM_PATHS_MAX || bytes == g_dgram_path_bytes[id]) {
+            continue;
+        }
+        g_dgram_path_bytes[id] = bytes;
+
+        if (g_dgram_runs > 0 && g_dgram_run_path[g_dgram_runs - 1] == id) {
+            g_dgram_run_count[g_dgram_runs - 1]++;
+
+        } else if (g_dgram_runs < XQC_TEST_DGRAM_RUNS_MAX) {
+            g_dgram_run_path[g_dgram_runs] = id;
+            g_dgram_run_count[g_dgram_runs] = 1;
+            g_dgram_runs++;
+        }
+    }
+    free(stats.paths_info);
+}
+
+static void
+xqc_server_dgram_path_report(const xqc_cid_t *cid)
+{
+    xqc_server_dgram_path_sample(cid);
+    printf("[dgram]|recv_paths|");
+    for (int i = 0; i < g_dgram_runs; i++) {
+        printf("%s%"PRIu64":%"PRIu64, i ? "," : "", g_dgram_run_path[i],
+               g_dgram_run_count[i]);
+    }
+    printf("|\n");
+}
+
 static void
 xqc_server_datagram_read_callback(xqc_connection_t *conn, void *user_data,
                                   const void *data, size_t data_len, uint64_t dgram_ts)
 {
     user_conn_t *user_conn = (user_conn_t *)user_data;
+
+    if (xqc_server_dgram_path_case()) {
+        xqc_server_dgram_path_sample(&user_conn->cid);
+    }
 
     if (g_send_dgram) {
         if (g_echo) {
@@ -802,6 +866,10 @@ xqc_server_conn_close_notify(xqc_connection_t *conn, const xqc_cid_t *cid,
            "cnt:%zu|\n",
            user_conn->dgram_blk->data_recv, user_conn->dgram_blk->data_sent,
            user_conn->dgram_blk->data_lost, user_conn->dgram_blk->dgram_lost);
+
+    if (xqc_server_dgram_path_case()) {
+        xqc_server_dgram_path_report(cid);
+    }
 
     if (user_conn->dgram_blk) {
         if (user_conn->dgram_blk->data) {
