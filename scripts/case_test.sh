@@ -4299,6 +4299,55 @@ else
 fi
 grep_err_log
 
+# ── WLB: a path that failed silently gets PING probes, never payload
+# (case IDs 1311/1312). One pinned datagram flow, as a tunnel sends one inner
+# TCP flow. The client counts the datagram-sized packets it sends on the
+# failed path once WLB has evicted it (lost_dgrams); every one is lost.
+# 1311 happy path: the path comes back after a 4 s outage, and WLB's probe
+# puts it back into use within a second (back_ms). Without the probe the
+# backed-off PTO takes about 3 s.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP WLB takes a path back after a silent outage ...\c"
+sudo ${CLIENT_BIN} -l d -t 3 -M -i lo -i lo -x 1311 -Q 65535 -U 1 -T 1 -e 1000 --epoch_timeout 20000 > stdlog
+result=`grep "\[dgram\]|wlb_outage|" stdlog`
+lost=`echo "$result" | sed -n 's/.*|lost_dgrams:\([0-9]*\)|.*/\1/p'`
+back=`echo "$result" | sed -n 's/.*|back_ms:\([0-9]*\)|.*/\1/p'`
+probe=`grep "|wlb|evicted_probe|" clog`
+cli_res=`grep -E "xqc_conn_destroy.*mp_enable:1" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ "$lost" = "0" ] && [ -n "$back" ] && [ "$back" -lt 1500 ] \
+    && [ -n "$probe" ] && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_wlb_takes_path_back_after_silent_outage" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "MP_wlb_takes_path_back_after_silent_outage" "fail"
+fi
+grep_err_log
+
+# 1312 abnormal path: the path never comes back. WLB keeps probing it, the
+# flow moves to the other path, and no datagram is sent on the dead one.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP WLB sends no datagram on a dead path ...\c"
+sudo ${CLIENT_BIN} -l d -t 3 -M -i lo -i lo -x 1312 -Q 65535 -U 1 -T 1 -e 1000 --epoch_timeout 20000 > stdlog
+result=`grep "\[dgram\]|wlb_outage|" stdlog`
+lost=`echo "$result" | sed -n 's/.*|lost_dgrams:\([0-9]*\)|.*/\1/p'`
+max_gap=`grep "\[dgram\]|silent_path|sent:" stdlog | sed -n 's/.*|max_gap_ms:\([0-9]*\)|.*/\1/p'`
+probe=`grep "|wlb|evicted_probe|" clog`
+cli_res=`grep -E "xqc_conn_destroy.*mp_enable:1" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ "$lost" = "0" ] && [ -n "$max_gap" ] && [ "$max_gap" -lt 1000 ] \
+    && [ -n "$probe" ] && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_wlb_sends_no_datagram_on_dead_path" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "MP_wlb_sends_no_datagram_on_dead_path" "fail"
+fi
+grep_err_log
+
 
 killall test_server
 stdbuf -oL ${SERVER_BIN} -l d -e -M -Q 65535 -U 1 --pmtud 1 -x 200 > svr_stdlog &
