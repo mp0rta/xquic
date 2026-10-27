@@ -497,6 +497,70 @@ xqc_client_silent_dropped(uint64_t path_id)
     return g_silent.all_paths || path_id == g_silent.path_id;
 }
 
+/*
+ * Cases 1313 and 1314: a path stops delivering during a stream transfer.
+ * The client uploads a body and the server echoes it. Once the client has
+ * received XQC_TEST_DEAD_PATH_PKTS full-size short header packets on the
+ * initial path, every packet sent or received on that path is dropped
+ * without an error, as on a dead link, with echo data in flight on it.
+ *   1313: two paths; the count starts once the second path has answered,
+ *         so it is active. The initial path is dead for the rest of the
+ *         run, and the second path keeps working.
+ *   1314: one path; it is dead for XQC_TEST_DEAD_PATH_US, then comes back.
+ */
+#define XQC_TEST_DEAD_PATH_PKTS         20
+#define XQC_TEST_DEAD_PATH_PEER_PKTS    3
+#define XQC_TEST_DEAD_PATH_US           1000000
+
+static xqc_usec_t g_dead_path_start;
+static int g_dead_path_peer_pkts;   /* received on the second path */
+static int g_dead_path_full_pkts;   /* counted on the initial path */
+
+static int
+xqc_client_dead_path_case(void)
+{
+    return g_test_case == 1313 || g_test_case == 1314;
+}
+
+static int
+xqc_client_dead_path_dropped(uint64_t path_id)
+{
+    if (!xqc_client_dead_path_case() || g_dead_path_start == 0
+        || path_id != 0)
+    {
+        return 0;
+    }
+
+    return g_test_case == 1313
+           || xqc_now() - g_dead_path_start < XQC_TEST_DEAD_PATH_US;
+}
+
+static void
+xqc_client_dead_path_on_recv(uint64_t path_id, const unsigned char *buf,
+    size_t size)
+{
+    if (!xqc_client_dead_path_case() || g_dead_path_start != 0) {
+        return;
+    }
+
+    if (path_id != 0) {
+        g_dead_path_peer_pkts++;
+        return;
+    }
+
+    if ((g_test_case == 1313
+         && g_dead_path_peer_pkts < XQC_TEST_DEAD_PATH_PEER_PKTS)
+        || (buf[0] & 0x80) != 0 || size < 1000)
+    {
+        return;
+    }
+
+    if (++g_dead_path_full_pkts == XQC_TEST_DEAD_PATH_PKTS) {
+        g_dead_path_start = xqc_now();
+        printf("[stream]|dead_path|start|path:0|\n");
+    }
+}
+
 /* cases 804-805: a path that drops every datagram above 1300 bytes, which
  * only PMTUD probes exceed. 805 also drops one ordinary full-size packet,
  * a real loss next to the probe losses. */
@@ -1271,6 +1335,11 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
     memcpy(send_buf, buf, send_buf_size);
     xqc_test_record_udp_payload(size);
 
+    /* cases 1313-1314: the only path is path 0 */
+    if (xqc_client_dead_path_dropped(0)) {
+        return size;
+    }
+
     /* cases 804-808 */
     if (xqc_client_mtu_dropped(buf, size)) {
         return size;
@@ -1423,6 +1492,11 @@ xqc_client_write_socket_ex(uint64_t path_id,
 
     /* cases 1300-1301: the packet is lost without any error */
     if (xqc_client_silent_dropped(path_id)) {
+        return size;
+    }
+
+    /* cases 1313-1314 */
+    if (xqc_client_dead_path_dropped(path_id)) {
         return size;
     }
 
@@ -4055,6 +4129,12 @@ xqc_client_socket_read_handler(user_conn_t *user_conn, int fd)
         if (xqc_client_silent_dropped(path_id)) {
             continue;
         }
+
+        /* cases 1313-1314 */
+        if (xqc_client_dead_path_dropped(path_id)) {
+            continue;
+        }
+        xqc_client_dead_path_on_recv(path_id, packet_buf, recv_size);
 
         if (g_test_case == 6) { /* socket recv fail */
             g_test_case = -1;
