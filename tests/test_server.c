@@ -2971,6 +2971,14 @@ main(int argc, char *argv[])
         conn_settings.enable_multipath = g_enable_multipath;
     }
 
+    /*
+     * cases 1309-1310: path IDs 0 to 3 for the client, which allows 0 and 1:
+     * connection IDs are issued for path IDs 0 and 1 only
+     */
+    if (g_test_case == 1309 || g_test_case == 1310) {
+        conn_settings.init_max_path_id = 3;
+    }
+
     /* enable_reinjection */
     if (g_enable_reinjection == 1) {
         conn_settings.reinj_ctl_callback = xqc_default_reinj_ctl_cb;

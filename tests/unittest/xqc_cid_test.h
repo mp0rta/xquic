@@ -33,5 +33,9 @@ void xqc_test_cid_abandoned_set_off_list(void);
 /* a set that leaves ABANDONED goes back to cid_set_list */
 void xqc_test_cid_abandoned_set_back_on_list(void);
 
+void xqc_test_mp_retire_cid_issued(void);
+
+void xqc_test_mp_retire_cid_not_issued(void);
+
 #endif
 

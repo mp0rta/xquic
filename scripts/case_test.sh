@@ -4299,6 +4299,62 @@ else
 fi
 grep_err_log
 
+# ── Multipath: retiring the server's connection IDs (case IDs 1309/1310)
+# The server allows path IDs 0 to 3, the client 0 and 1, so the server
+# issues connection IDs for path IDs 0 and 1 only (draft-21).
+# 1310 happy path: the client retires a connection ID of path ID 1 that it
+# received and never used; the server accepts it and the request completes.
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e -M -x 1310 > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP retirement of an issued connection ID is accepted ...\c"
+sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -x 1310 > stdlog
+retired=`grep "\[mp-retire-test\]|retired|path:1|seq:[0-9]*|ret:0|" stdlog`
+result=`grep ">>>>>>>> pass:1" stdlog`
+rejected=`grep -E "\|no scid issued\||\|no match seq_num\|" slog`
+conn_err_zero=`grep -E "conn_err:0[^0-9]" stdlog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$retired" ] && [ -n "$result" ] && [ -z "$rejected" ] \
+    && [ -n "$conn_err_zero" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_retire_issued_cid_accepted" "pass"
+else
+    echo ">>>>>>>> pass:0 (retired:${retired:+y} result:${result:+y} rejected:${rejected:+y}" \
+        "conn_err_zero:${conn_err_zero:+y} errlog:${errlog:+y})"
+    case_print_result "MP_retire_issued_cid_accepted" "fail"
+fi
+grep_err_log
+
+# 1309 abnormal path: the client retires sequence number 0 of path ID 2,
+# within the server's limit but with no connection ID issued, a sequence
+# number greater than any sent (RFC 9000 Section 19.16,
+# draft-ietf-quic-multipath-21 Section 4.5): the server closes the
+# connection with PROTOCOL_VIOLATION.
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e -M -x 1309 > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP retirement on a path ID with no connection ID issued is rejected ...\c"
+sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -x 1309 > stdlog
+sent=`grep "\[mp-retire-test\]|sent|path:2|seq:0|ret:0|" stdlog`
+rejected=`grep "|no scid issued|seq:0|path:2|" slog`
+protocol_violation=`grep -E "(conn errno:10|conn_err:10)" stdlog`
+transport_type=`grep "conn_err_type:1" stdlog`
+result=`grep ">>>>>>>> pass:1" stdlog`
+if [ -n "$sent" ] && [ -n "$rejected" ] && [ -n "$protocol_violation" ] \
+    && [ -n "$transport_type" ] && [ -z "$result" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_retire_on_path_without_cid_rejected" "pass"
+else
+    echo ">>>>>>>> pass:0 (sent:${sent:+y} rejected:${rejected:+y}" \
+        "protocol_violation:${protocol_violation:+y} transport_type:${transport_type:+y}" \
+        "result:${result:+y})"
+    case_print_result "MP_retire_on_path_without_cid_rejected" "fail"
+fi
+
 
 killall test_server
 stdbuf -oL ${SERVER_BIN} -l d -e -M -Q 65535 -U 1 --pmtud 1 -x 200 > svr_stdlog &

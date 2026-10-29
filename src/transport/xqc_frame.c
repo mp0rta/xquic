@@ -2558,6 +2558,7 @@ xqc_process_mp_retire_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *pac
 {
     xqc_int_t ret = XQC_ERROR;
     uint64_t seq_num = 0, largest_scid_seq_num = 0, path_id;
+    xqc_cid_set_inner_t *inner_set;
 
     ret = xqc_parse_mp_retire_conn_id_frame(packet_in, &seq_num, &path_id);
     if (ret != XQC_OK) {
@@ -2575,15 +2576,26 @@ xqc_process_mp_retire_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *pac
         if (g == XQC_MP_RECV_GATE_IGNORE) return XQC_OK;
     }
 
-    largest_scid_seq_num = xqc_cid_set_get_largest_seq_or_rpt(&conn->scid_set, path_id);
-    if (largest_scid_seq_num < 0) {
-        xqc_log(conn->log, XQC_LOG_ERROR,
-                "|current largest_scid_seq_num error:%i|path:%ui|", largest_scid_seq_num,
-                path_id);
-        XQC_CONN_ERR(conn, TRA_INTERNAL_ERROR);
+    /*
+     * draft-ietf-quic-multipath-21 Section 4.5 applies RFC 9000 Section
+     * 19.16 per path: with no connection ID issued for the path ID, which
+     * a missing or empty set means (retired ones stay in it), any sequence
+     * number is greater than any previously sent. An abandoned path ID,
+     * which the gate above ignores while its bitmap records it, keeps the
+     * handling below.
+     */
+    inner_set = xqc_get_path_cid_set(&conn->scid_set, path_id);
+    if (inner_set == NULL
+        || (xqc_list_empty(&inner_set->cid_list)
+            && inner_set->set_state != XQC_CID_SET_ABANDONED))
+    {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|no scid issued|seq:%ui|path:%ui|",
+                seq_num, path_id);
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
         return -XQC_EPROTO;
     }
 
+    largest_scid_seq_num = inner_set->largest_scid_seq_num;
     if (seq_num > largest_scid_seq_num) {
         /*
          * Receipt of a RETIRE_CONNECTION_ID frame containing a sequence number

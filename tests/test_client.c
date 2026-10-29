@@ -295,6 +295,8 @@ int g_header_cnt = 0;
 int g_ping_id = 1;
 int g_enable_multipath = 0;
 xqc_multipath_version_t g_multipath_version = XQC_MULTIPATH_10;
+/* case 1310: the path ID 1 retirement was sent */
+static int g_mp_retire_done = 0;
 int g_enable_fec = 0;
 int g_enable_reinjection = 0;
 int g_verify_cert = 0;
@@ -2473,6 +2475,18 @@ xqc_client_h3_conn_handshake_finished(xqc_h3_conn_t *h3_conn, void *user_data)
         printf("[initial-salt-test] handshake ok, conn_err:%d\n", stats.conn_err);
     }
 
+    /*
+     * case 1309: retire sequence number 0 of path ID 2, within the server's
+     * limit but with no connection ID issued (RFC 9000 Section 19.16,
+     * draft-ietf-quic-multipath-21 Section 4.5)
+     */
+    if (g_test_case == 1309) {
+        xqc_int_t ret = xqc_write_mp_retire_conn_id_frame_to_packet(
+            xqc_h3_conn_get_xqc_conn(h3_conn), 0, 2);
+        printf("[mp-retire-test]|sent|path:2|seq:0|ret:%d|\n", ret);
+        fflush(stdout);
+    }
+
     if (g_test_case == XQC_TEST_CASE_H3_RESERVED_UNI_STREAM) {
         xqc_client_send_test_uni_stream(h3_conn,
                 (xqc_h3_stream_type_t)0x21);
@@ -3630,6 +3644,33 @@ xqc_client_request_read_notify(xqc_h3_request_t *h3_request, xqc_request_notify_
     /* stream read notify fail */
     if (g_test_case == 12) {
         return -1;
+    }
+
+    /*
+     * case 1310: once the client holds an unused connection ID of path ID
+     * 1, which it never opens, retire it: the server issued it, so the
+     * retirement is valid and the connection goes on
+     */
+    if (g_test_case == 1310 && !g_mp_retire_done) {
+        xqc_connection_t *conn = xqc_h3_conn_get_xqc_conn(user_stream->user_conn->h3_conn);
+        xqc_cid_set_inner_t *inner_set = xqc_get_path_cid_set(&conn->dcid_set, 1);
+        xqc_list_head_t *pos;
+        xqc_cid_inner_t *inner_cid;
+
+        if (inner_set != NULL) {
+            xqc_list_for_each(pos, &inner_set->cid_list) {
+                inner_cid = xqc_list_entry(pos, xqc_cid_inner_t, list);
+                if (inner_cid->state == XQC_CID_UNUSED) {
+                    xqc_int_t ret = xqc_write_mp_retire_conn_id_frame_to_packet(
+                        conn, inner_cid->cid.cid_seq_num, 1);
+                    printf("[mp-retire-test]|retired|path:1|seq:%"PRIu64"|ret:%d|\n",
+                           inner_cid->cid.cid_seq_num, ret);
+                    fflush(stdout);
+                    g_mp_retire_done = 1;
+                    break;
+                }
+            }
+        }
     }
 
     /* MASQUE: handle tunnel response (200 headers + capsules on body) */
@@ -5565,6 +5606,15 @@ int main(int argc, char *argv[]) {
         conn_settings.extended_ack_features = 2;
         conn_settings.max_receive_timestamps_per_ack = 0;
         conn_settings.receive_timestamps_exponent = 0;
+    }
+
+    /*
+     * cases 1309-1310: draft-21, path IDs 0 and 1 for the server, which
+     * allows 0 to 3: it issues connection IDs for path IDs 0 and 1 only
+     */
+    if (g_test_case == 1309 || g_test_case == 1310) {
+        conn_settings.multipath_version = XQC_MULTIPATH_3E;
+        conn_settings.init_max_path_id = 1;
     }
 
     /* MASQUE E2E test cases */
