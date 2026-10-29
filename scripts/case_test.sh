@@ -4299,6 +4299,107 @@ else
 fi
 grep_err_log
 
+# ── Multipath: a dead path's stream data is sent again on the paths that
+# work (case IDs 1313/1314)
+# 1313 happy path: during the echo of a 4 MB body, the initial path stops
+# delivering in both directions and stays dead, while the second path keeps
+# working. The server re-queues the echo data in flight on the dead path
+# after its third PTO there, and the echo completes on the second path.
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e -M > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP stream data of a dead path resent on the working path ...\c"
+sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -i lo -i lo -x 1313 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+requeued=`grep "|path:0|pto_count:[0-9]*|inflight:[0-9]*|requeue unacked|" slog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$requeued" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_dead_path_stream_data_resent_on_working_path" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} requeued:${requeued:+y} errlog:${errlog:+y})"
+    case_print_result "MP_dead_path_stream_data_resent_on_working_path" "fail"
+fi
+grep_err_log
+
+# 1314 abnormal path: the same outage on a multipath connection with one
+# path, for one second. The server's PTOs on that path reach three, but no
+# other path works, so nothing is re-queued; the data is sent again on the
+# same path once it is back, and the echo completes.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP stream data of the only path kept through an outage ...\c"
+sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -i lo -x 1314 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+ptos=`grep "xqc_timer_loss_detection_timeout|xqc_send_ctl_set_loss_detection_timer|PTO|.*|pto_count:3" slog`
+mp=`grep -E "xqc_conn_destroy.*mp_enable:1" clog`
+requeued=`grep "requeue unacked" slog clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$ptos" ] \
+    && [ -n "$mp" ] && [ -z "$requeued" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_only_path_stream_data_kept_through_outage" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} ptos:${ptos:+y}" \
+        "mp:${mp:+y} requeued:${requeued:+y} errlog:${errlog:+y})"
+    case_print_result "MP_only_path_stream_data_kept_through_outage" "fail"
+fi
+grep_err_log
+
+# ── Multipath: minrtt keeps new data off a dead path (case IDs 1315/1316)
+# 1315 happy path: the outage of 1313. After the server re-queues the data
+# in flight on the dead path, its minrtt scheduler skips that path, even
+# while the second path is blocked by its cwnd, so no STREAM data is sent on
+# the dead path again and the echo completes on the second path.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP minrtt keeps stream data off a dead path ...\c"
+sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -i lo -i lo -x 1315 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+requeued=`grep "|path:0|pto_count:[0-9]*|inflight:[0-9]*|requeue unacked|" slog`
+skipped=`grep "|path:0|dead path skipped|" slog`
+resent=`awk '/requeue unacked/ { r = 1 } r && /xqc_minrtt_scheduler_get_path\|best path:0\|frame_type:STREAM/ { n++ } END { print n + 0 }' slog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$requeued" ] \
+    && [ -n "$skipped" ] && [ "$resent" = "0" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_minrtt_skips_dead_path" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} requeued:${requeued:+y}" \
+        "skipped:${skipped:+y} stream_on_dead_path:${resent} errlog:${errlog:+y})"
+    case_print_result "MP_minrtt_skips_dead_path" "fail"
+fi
+grep_err_log
+
+# 1316 abnormal path: the outage of 1314, on a multipath connection with a
+# single path. Its PTOs reach three, but no other path works, so minrtt
+# keeps using it, and the echo completes once the path is back.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP minrtt keeps the only path through an outage ...\c"
+sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -i lo -x 1316 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+ptos=`grep "xqc_timer_loss_detection_timeout|xqc_send_ctl_set_loss_detection_timer|PTO|.*|pto_count:3" slog`
+mp=`grep -E "xqc_conn_destroy.*mp_enable:1" clog`
+skipped=`grep "dead path skipped" slog clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$ptos" ] \
+    && [ -n "$mp" ] && [ -z "$skipped" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_minrtt_keeps_only_path_through_outage" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} ptos:${ptos:+y}" \
+        "mp:${mp:+y} skipped:${skipped:+y} errlog:${errlog:+y})"
+    case_print_result "MP_minrtt_keeps_only_path_through_outage" "fail"
+fi
+grep_err_log
+
 
 killall test_server
 stdbuf -oL ${SERVER_BIN} -l d -e -M -Q 65535 -U 1 --pmtud 1 -x 200 > svr_stdlog &
