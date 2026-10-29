@@ -369,6 +369,12 @@ main(int argc, char *argv[])
                         xqc_test_path_requeue_unacked_on_pto)
         || !CU_add_test(pSuite, "xqc_test_path_requeue_needs_a_working_path",
                         xqc_test_path_requeue_needs_a_working_path)
+        || !CU_add_test(pSuite, "xqc_test_minrtt_skips_dead_path",
+                        xqc_test_minrtt_skips_dead_path)
+        || !CU_add_test(pSuite, "xqc_test_minrtt_keeps_path_without_alternative",
+                        xqc_test_minrtt_keeps_path_without_alternative)
+        || !CU_add_test(pSuite, "xqc_test_minrtt_probes_dead_path",
+                        xqc_test_minrtt_probes_dead_path)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)

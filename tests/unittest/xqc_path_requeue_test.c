@@ -13,6 +13,7 @@
 #include "src/transport/xqc_send_ctl.h"
 #include "src/transport/xqc_send_queue.h"
 #include "src/transport/xqc_multipath.h"
+#include "src/transport/scheduler/xqc_scheduler_minrtt.h"
 
 /*
  * A second path on a real connection: one path silently stops delivering
@@ -158,5 +159,128 @@ xqc_test_path_requeue_needs_a_working_path(void)
     xqc_path_requeue_unacked_on_pto(t.dead);
     CU_ASSERT_EQUAL(requeue_test_list_len(&sq->sndq_lost_packets), 0);
 
+    requeue_test_teardown(&t);
+}
+
+/* minrtt's choice for a new STREAM packet, cwnd checked */
+static xqc_path_ctx_t *
+requeue_test_minrtt_pick(requeue_test_t *t, xqc_packet_out_t *po,
+                         xqc_bool_t *cc_blocked)
+{
+    return xqc_minrtt_scheduler_cb.xqc_scheduler_get_path(NULL, t->conn, po,
+                                                          1, 0, cc_blocked);
+}
+
+/* After the third PTO in a row the dead path's data went to the other path,
+ * so its cwnd has room again, and it still has the lowest RTT. While the
+ * working path is blocked by its cwnd, minrtt must wait for it, not send
+ * new data on the dead path, where it would only be lost too. */
+void
+xqc_test_minrtt_skips_dead_path(void)
+{
+    requeue_test_t t;
+    xqc_bool_t cc_blocked = XQC_FALSE;
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    xqc_path_ctx_t *alive = requeue_test_add_path(&t, 0);
+    CU_ASSERT_FATAL(alive != NULL);
+    xqc_packet_out_t *po = requeue_test_stream_in_flight(&t, alive, 1);
+    CU_ASSERT_FATAL(po != NULL);
+
+    t.dead->path_send_ctl->ctl_srtt = 10000;
+    alive->path_send_ctl->ctl_srtt = 40000;
+    t.dead->path_send_ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+
+    /* the working path has room: it is used */
+    CU_ASSERT_EQUAL(requeue_test_minrtt_pick(&t, po, &cc_blocked), alive);
+
+    /* the working path is blocked by its cwnd: wait */
+    alive->path_schedule_bytes = 100 * 1000 * 1000;
+    CU_ASSERT_EQUAL(requeue_test_minrtt_pick(&t, po, &cc_blocked), NULL);
+    CU_ASSERT_EQUAL(cc_blocked, XQC_TRUE);
+
+    /* the dead path answered a probe: it is the lowest RTT path again */
+    t.dead->path_send_ctl->ctl_pto_count = 0;
+    CU_ASSERT_EQUAL(requeue_test_minrtt_pick(&t, po, &cc_blocked), t.dead);
+
+    alive->path_schedule_bytes = 0;
+    requeue_test_teardown(&t);
+}
+
+/* When no other path works either, a path with PTOs is not skipped: there
+ * is nothing better, and it may come back. */
+void
+xqc_test_minrtt_keeps_path_without_alternative(void)
+{
+    requeue_test_t t;
+    xqc_bool_t cc_blocked = XQC_FALSE;
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    xqc_path_ctx_t *other = requeue_test_add_path(&t, XQC_PATH_REQUEUE_PTO_THRESH);
+    CU_ASSERT_FATAL(other != NULL);
+    xqc_packet_out_t *po = requeue_test_stream_in_flight(&t, other, 1);
+    CU_ASSERT_FATAL(po != NULL);
+
+    t.dead->path_send_ctl->ctl_srtt = 10000;
+    other->path_send_ctl->ctl_srtt = 40000;
+    t.dead->path_send_ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+
+    CU_ASSERT_EQUAL(requeue_test_minrtt_pick(&t, po, &cc_blocked), t.dead);
+
+    requeue_test_teardown(&t);
+}
+
+/* PINGs queued for @path on the probe list */
+static int
+requeue_test_probe_pings(requeue_test_t *t, xqc_path_ctx_t *path)
+{
+    int n = 0;
+    xqc_list_head_t *pos, *next;
+    xqc_list_for_each_safe(pos, next,
+                           &t->conn->conn_send_queue->sndq_pto_probe_packets)
+    {
+        xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+        if (po->po_path_id == path->path_id
+            && (po->po_frame_types & XQC_FRAME_BIT_PING))
+        {
+            n++;
+        }
+    }
+    return n;
+}
+
+/* A dead path that minrtt skips is sent a PING, so that it can be used
+ * again once it answers: once per interval, not once per send round. A path
+ * that is skipped for nothing (no working alternative) is not probed by the
+ * scheduler. */
+void
+xqc_test_minrtt_probes_dead_path(void)
+{
+    requeue_test_t t;
+    char state[64] = {0};
+    CU_ASSERT_FATAL(xqc_minrtt_scheduler_cb.xqc_scheduler_size() <= sizeof(state));
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    xqc_path_ctx_t *alive = requeue_test_add_path(&t, 0);
+    CU_ASSERT_FATAL(alive != NULL);
+    t.dead->path_send_ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+
+    xqc_minrtt_scheduler_cb.xqc_scheduler_handle_conn_event(state, t.conn,
+        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, alive), 0);
+
+    /* the next send round, right after: no second PING */
+    xqc_minrtt_scheduler_cb.xqc_scheduler_handle_conn_event(state, t.conn,
+        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
+
+    requeue_test_teardown(&t);
+
+    /* no working alternative: the path is not skipped, so not probed */
+    char state2[64] = {0};
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    CU_ASSERT_FATAL(requeue_test_add_path(&t, XQC_PATH_REQUEUE_PTO_THRESH) != NULL);
+    t.dead->path_send_ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    xqc_minrtt_scheduler_cb.xqc_scheduler_handle_conn_event(state2, t.conn,
+        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 0);
     requeue_test_teardown(&t);
 }

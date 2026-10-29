@@ -456,8 +456,6 @@ void
 xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path)
 {
     xqc_connection_t *conn = path->parent_conn;
-    xqc_list_head_t *pos, *next;
-    xqc_path_ctx_t *other;
     unsigned pto_count;
 
     if (!conn->enable_multipath || path->path_state != XQC_PATH_STATE_ACTIVE) {
@@ -475,6 +473,24 @@ xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path)
         return;
     }
 
+    if (xqc_path_has_working_alternative(path)) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|path:%ui|pto_count:%ud|inflight:%ud|requeue unacked|",
+                path->path_id, pto_count,
+                path->path_send_ctl->ctl_bytes_in_flight);
+        xqc_path_move_unack_packets_from_conn(path, conn);
+    }
+}
+
+/* Is another active path still working, i.e. not frozen, without a socket
+ * error, and with fewer than XQC_PATH_REQUEUE_PTO_THRESH PTOs in a row? */
+xqc_bool_t
+xqc_path_has_working_alternative(xqc_path_ctx_t *path)
+{
+    xqc_connection_t *conn = path->parent_conn;
+    xqc_list_head_t *pos, *next;
+    xqc_path_ctx_t *other;
+
     xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
         other = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
         if (other != path
@@ -484,14 +500,24 @@ xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path)
             && xqc_send_ctl_get_effective_pto_count(other->path_send_ctl)
                < XQC_PATH_REQUEUE_PTO_THRESH)
         {
-            xqc_log(conn->log, XQC_LOG_INFO,
-                    "|path:%ui|pto_count:%ud|inflight:%ud|requeue unacked|",
-                    path->path_id, pto_count,
-                    path->path_send_ctl->ctl_bytes_in_flight);
-            xqc_path_move_unack_packets_from_conn(path, conn);
-            return;
+            return XQC_TRUE;
         }
     }
+    return XQC_FALSE;
+}
+
+/* A path that timed out XQC_PATH_REQUEUE_PTO_THRESH times in a row while
+ * another path works: its unacknowledged data was moved to the other paths
+ * (xqc_path_requeue_unacked_on_pto), and new data sent on it would most
+ * likely be lost too. Its PTO probes are sent on it directly, not through
+ * the scheduler, so it is used again once one of them is acknowledged. */
+xqc_bool_t
+xqc_path_is_dead_with_alternative(xqc_path_ctx_t *path)
+{
+    return path->parent_conn->enable_multipath
+        && xqc_send_ctl_get_effective_pto_count(path->path_send_ctl)
+           >= XQC_PATH_REQUEUE_PTO_THRESH
+        && xqc_path_has_working_alternative(path);
 }
 
 void

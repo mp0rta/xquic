@@ -363,6 +363,10 @@ xqc_int_t xqc_path_standby_probe(xqc_path_ctx_t *path);
 
 void xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path);
 
+xqc_bool_t xqc_path_has_working_alternative(xqc_path_ctx_t *path);
+
+xqc_bool_t xqc_path_is_dead_with_alternative(xqc_path_ctx_t *path);
+
 xqc_path_perf_class_t xqc_path_get_perf_class(xqc_path_ctx_t *path);
 
 double xqc_path_recent_loss_rate(xqc_path_ctx_t *path);
