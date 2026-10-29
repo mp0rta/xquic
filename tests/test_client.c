@@ -507,6 +507,9 @@ xqc_client_silent_dropped(uint64_t path_id)
  *         so it is active. The initial path is dead for the rest of the
  *         run, and the second path keeps working.
  *   1314: one path; it is dead for XQC_TEST_DEAD_PATH_US, then comes back.
+ * Cases 1315 and 1316 run the same outages as 1313 and 1314, and check
+ * that the server's minrtt scheduler skips the dead path (1315) or keeps
+ * the only path (1316).
  */
 #define XQC_TEST_DEAD_PATH_PKTS         20
 #define XQC_TEST_DEAD_PATH_PEER_PKTS    3
@@ -519,7 +522,14 @@ static int g_dead_path_full_pkts;   /* counted on the initial path */
 static int
 xqc_client_dead_path_case(void)
 {
-    return g_test_case == 1313 || g_test_case == 1314;
+    return g_test_case >= 1313 && g_test_case <= 1316;
+}
+
+/* 1313 and 1315: two paths, the initial one dead for the rest of the run */
+static int
+xqc_client_dead_path_two_paths(void)
+{
+    return g_test_case == 1313 || g_test_case == 1315;
 }
 
 static int
@@ -531,7 +541,7 @@ xqc_client_dead_path_dropped(uint64_t path_id)
         return 0;
     }
 
-    return g_test_case == 1313
+    return xqc_client_dead_path_two_paths()
            || xqc_now() - g_dead_path_start < XQC_TEST_DEAD_PATH_US;
 }
 
@@ -548,7 +558,7 @@ xqc_client_dead_path_on_recv(uint64_t path_id, const unsigned char *buf,
         return;
     }
 
-    if ((g_test_case == 1313
+    if ((xqc_client_dead_path_two_paths()
          && g_dead_path_peer_pkts < XQC_TEST_DEAD_PATH_PEER_PKTS)
         || (buf[0] & 0x80) != 0 || size < 1000)
     {
@@ -1335,7 +1345,7 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
     memcpy(send_buf, buf, send_buf_size);
     xqc_test_record_udp_payload(size);
 
-    /* cases 1313-1314: the only path is path 0 */
+    /* cases 1313-1316: the only path is path 0 */
     if (xqc_client_dead_path_dropped(0)) {
         return size;
     }
@@ -1495,7 +1505,7 @@ xqc_client_write_socket_ex(uint64_t path_id,
         return size;
     }
 
-    /* cases 1313-1314 */
+    /* cases 1313-1316 */
     if (xqc_client_dead_path_dropped(path_id)) {
         return size;
     }
@@ -4130,7 +4140,7 @@ xqc_client_socket_read_handler(user_conn_t *user_conn, int fd)
             continue;
         }
 
-        /* cases 1313-1314 */
+        /* cases 1313-1316 */
         if (xqc_client_dead_path_dropped(path_id)) {
             continue;
         }
