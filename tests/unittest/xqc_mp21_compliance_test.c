@@ -15,6 +15,7 @@
 #include "src/transport/xqc_multipath.h"
 #include "src/transport/xqc_cid.h"
 #include "src/transport/xqc_send_ctl.h"
+#include "src/transport/xqc_send_queue.h"
 #include "src/transport/xqc_recv_record.h"
 #include "src/transport/xqc_transport_params.h"
 #include "src/tls/xqc_crypto.h"
@@ -2093,4 +2094,441 @@ xqc_test_mp21_gen_paths_blocked_frame(void)
     CU_ASSERT_EQUAL(buf[0], 0x7e); /* 2-byte varint: 0x40 | (0x3e7b>>8) = 0x7e */
     CU_ASSERT_EQUAL(buf[1], 0x7b);
     CU_ASSERT_EQUAL(buf[2], 0x05); /* max_path_id=5, 1-byte varint */
+}
+
+/*
+ * draft-ietf-quic-multipath-21 Section 4.7: the Maximum Path Identifier of
+ * PATHS_BLOCKED is "the maximum path ID that was allowed at the time the
+ * frame was sent", the limit the peer set, and the peer treats a value
+ * above the maximum it advertised as a PROTOCOL_VIOLATION.
+ *
+ * A client connection with no path ID left calls xqc_conn_create_path().
+ * The PATHS_BLOCKED it queues is copied to frame, its length returned and
+ * its Maximum Path Identifier stored in *max_path_id.
+ */
+static size_t
+mp21_create_path_blocked(uint64_t local_max, uint64_t peer_init_max,
+    uint64_t peer_max, unsigned char *frame, size_t frame_size,
+    uint64_t *max_path_id)
+{
+    size_t              len;
+    uint64_t            path_id = 0;
+    xqc_packet_in_t     pi;
+    xqc_packet_out_t   *po;
+    xqc_connection_t   *conn;
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    /* multipath negotiated, and no connection ID for a path ID above 0 */
+    conn->enable_multipath = XQC_CONN_MP_ENABLED;
+    conn->conn_settings.multipath_version = XQC_MULTIPATH_3E;
+    conn->local_max_path_id = local_max;
+    conn->remote_settings.init_max_path_id = peer_init_max;
+    conn->remote_max_path_id = peer_max;
+    conn->curr_max_path_id = xqc_min(local_max, peer_max);
+
+    CU_ASSERT_EQUAL(xqc_conn_create_path(conn->engine,
+                                         &conn->scid_set.user_scid,
+                                         &path_id, 0),
+                    -XQC_EMP_NO_AVAIL_PATH_ID);
+
+    po = xqc_test_find_packet_with_frame(conn, XQC_FRAME_BIT_PATHS_BLOCKED);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(po);
+
+    /* the frame is alone in its packet */
+    len = po->po_buf + po->po_used_size - po->po_payload;
+    CU_ASSERT_FATAL(len <= frame_size);
+    memcpy(frame, po->po_payload, len);
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pos = frame;
+    pi.last = frame + len;
+    CU_ASSERT_EQUAL(xqc_parse_paths_blocked_frame(&pi, max_path_id), XQC_OK);
+
+    xqc_engine_destroy(conn->engine);
+    return len;
+}
+
+/* The client's own limit (8) is above the server's (1): PATHS_BLOCKED
+ * reports 1, and the server accepts it. */
+void
+xqc_test_mp21_paths_blocked_reports_peer_limit(void)
+{
+    size_t              len;
+    uint64_t            max_path_id = 0;
+    xqc_int_t           ret = XQC_ERROR;
+    unsigned char       frame[16];
+    xqc_connection_t   *server;
+
+    len = mp21_create_path_blocked(8, 1, 1, frame, sizeof(frame),
+                                   &max_path_id);
+    CU_ASSERT_EQUAL(max_path_id, 1);
+
+    server = mp21_make_conn_for_blocked(/* local_max */ 1);
+    mp21_run_frame(server, frame, len, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(server->conn_err, 0);
+    xqc_test_mp21_free_conn(server);
+}
+
+/* The server raised its limit from 1 to 3 with MAX_PATH_ID: PATHS_BLOCKED
+ * reports 3, neither its initial_max_path_id nor the client's own limit.
+ * The client's own limit is a PROTOCOL_VIOLATION at that server. */
+void
+xqc_test_mp21_paths_blocked_reports_raised_peer_limit(void)
+{
+    size_t              len;
+    ssize_t             n;
+    uint64_t            max_path_id = 0;
+    xqc_int_t           ret = XQC_ERROR;
+    unsigned char       frame[16];
+    xqc_connection_t   *server;
+
+    len = mp21_create_path_blocked(8, 1, 3, frame, sizeof(frame),
+                                   &max_path_id);
+    CU_ASSERT_EQUAL(max_path_id, 3);
+
+    server = mp21_make_conn_for_blocked(/* local_max */ 3);
+    mp21_run_frame(server, frame, len, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(server->conn_err, 0);
+    xqc_test_mp21_free_conn(server);
+
+    n = xqc_gen_paths_blocked_frame(frame, sizeof(frame), 8);
+    CU_ASSERT_FATAL(n > 0);
+    server = mp21_make_conn_for_blocked(/* local_max */ 3);
+    mp21_run_frame(server, frame, n, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(server->conn_err, TRA_PROTOCOL_VIOLATION);
+    xqc_test_mp21_free_conn(server);
+}
+
+/*
+ * A connection with multipath negotiated at limits local_max and peer_max,
+ * and the connection ID sets the handshake adds for the path IDs both
+ * allow.
+ */
+static xqc_connection_t *
+mp21_engine_conn(uint64_t local_max, uint64_t peer_max)
+{
+    xqc_connection_t   *conn;
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    conn->enable_multipath = XQC_CONN_MP_ENABLED;
+    conn->conn_settings.multipath_version = XQC_MULTIPATH_3E;
+    conn->local_max_path_id = local_max;
+    conn->remote_settings.init_max_path_id = peer_max;
+    conn->remote_max_path_id = peer_max;
+    conn->curr_max_path_id = xqc_min(local_max, peer_max);
+    CU_ASSERT_FATAL(xqc_conn_add_path_cid_sets(conn, XQC_INITIAL_PATH_ID + 1,
+                                               conn->curr_max_path_id)
+                    == XQC_OK);
+    return conn;
+}
+
+/*
+ * The peer's PATH_NEW_CONNECTION_ID with sequence number 0 for path_id,
+ * written to buf. Returns its length.
+ */
+static size_t
+mp21_gen_path_new_cid(xqc_connection_t *conn, uint64_t path_id,
+    unsigned char *buf, size_t buf_size)
+{
+    ssize_t             n;
+    xqc_cid_t           cid;
+    xqc_packet_out_t    po;
+    uint8_t             sr_token[XQC_STATELESS_RESET_TOKENLEN];
+
+    memset(&cid, 0, sizeof(cid));
+    cid.cid_len = 8;
+    memset(cid.cid_buf, 0xc0 + (int) path_id, cid.cid_len);
+    memset(sr_token, 0x40 + (int) path_id, sizeof(sr_token));
+
+    memset(&po, 0, sizeof(po));
+    po.po_buf = buf;
+    po.po_buf_cap = buf_size;
+    po.po_buf_size = buf_size;
+
+    n = xqc_gen_mp_new_conn_id_frame(conn, &po, &cid, 0, sr_token, path_id);
+    CU_ASSERT_FATAL(n > 0);
+    return n;
+}
+
+/*
+ * draft-ietf-quic-multipath-21 Section 3.2.1: connection IDs are issued
+ * for the unused path IDs up to the lower of both limits. A server at the
+ * default limit of 8 grants up to 16 to a client that allows 16: the
+ * client sends no MAX_PATH_ID back, so the grant itself adds the sets of
+ * path IDs 9 to 16, and the client's connection IDs for them are kept.
+ */
+void
+xqc_test_mp21_max_path_id_grant_adds_cid_sets(void)
+{
+    size_t              len;
+    ssize_t             n;
+    uint64_t            path_id;
+    xqc_int_t           ret = XQC_ERROR;
+    unsigned char       frame[64];
+    xqc_packet_out_t   *po;
+    xqc_connection_t   *server;
+
+    server = mp21_engine_conn(/* local_max */ 8, /* peer_max */ 16);
+    server->conn_settings.max_path_id_grant_max_value = 16;
+
+    n = xqc_gen_paths_blocked_frame(frame, sizeof(frame), 8);
+    CU_ASSERT_FATAL(n > 0);
+    mp21_run_frame(server, frame, n, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(server->conn_err, 0);
+    CU_ASSERT_EQUAL(server->local_max_path_id, 16);
+    po = xqc_test_find_packet_with_frame(server, XQC_FRAME_BIT_MAX_PATH_ID);
+    CU_ASSERT_PTR_NOT_NULL(po);
+
+    CU_ASSERT_EQUAL(server->curr_max_path_id, 16);
+    for (path_id = 9; path_id <= 16; path_id++) {
+        CU_ASSERT_PTR_NOT_NULL(xqc_get_path_cid_set(&server->scid_set,
+                                                    path_id));
+        CU_ASSERT_PTR_NOT_NULL(xqc_get_path_cid_set(&server->dcid_set,
+                                                    path_id));
+    }
+
+    len = mp21_gen_path_new_cid(server, 9, frame, sizeof(frame));
+    mp21_run_frame(server, frame, len, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(server->conn_err, 0);
+    CU_ASSERT_EQUAL(xqc_cid_set_get_unused_cnt(&server->dcid_set, 9), 1);
+    po = xqc_test_find_packet_with_frame(server,
+                                         XQC_FRAME_BIT_MP_RETIRE_CONNECTION_ID);
+    CU_ASSERT_PTR_NULL(po);
+
+    xqc_engine_destroy(server->engine);
+
+    /*
+     * A client that allows 8 only, below the grant of 9: no connection ID
+     * may be issued above its limit, so the sets stop at 8 until its own
+     * MAX_PATH_ID raises it.
+     */
+    server = mp21_engine_conn(/* local_max */ 1, /* peer_max */ 8);
+    server->conn_settings.max_path_id_grant_max_value = 16;
+
+    n = xqc_gen_paths_blocked_frame(frame, sizeof(frame), 1);
+    CU_ASSERT_FATAL(n > 0);
+    mp21_run_frame(server, frame, n, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(server->local_max_path_id, 9);
+    CU_ASSERT_EQUAL(server->curr_max_path_id, 8);
+    CU_ASSERT_PTR_NOT_NULL(xqc_get_path_cid_set(&server->scid_set, 8));
+    CU_ASSERT_PTR_NULL(xqc_get_path_cid_set(&server->scid_set, 9));
+
+    xqc_engine_destroy(server->engine);
+}
+
+/*
+ * draft-ietf-quic-multipath-21 Section 3.2.1: the peer may issue connection
+ * IDs for any path ID up to our limit, and they can come before the
+ * MAX_PATH_ID that lets us use that path ID. A client that allows 16
+ * receives the connection ID of path ID 9 from a server at 8 before the
+ * server's MAX_PATH_ID: it keeps the connection ID, issues none of its own
+ * for path ID 9 until that MAX_PATH_ID, and still rejects a path ID above
+ * its own limit.
+ */
+void
+xqc_test_mp21_path_new_cid_before_max_path_id(void)
+{
+    size_t              len;
+    ssize_t             n;
+    xqc_int_t           ret = XQC_ERROR;
+    unsigned char       frame[64];
+    xqc_packet_out_t    max_path_id;
+    xqc_packet_out_t   *po;
+    xqc_connection_t   *client;
+
+    client = mp21_engine_conn(/* local_max */ 16, /* peer_max */ 8);
+
+    len = mp21_gen_path_new_cid(client, 9, frame, sizeof(frame));
+    mp21_run_frame(client, frame, len, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(client->conn_err, 0);
+    CU_ASSERT_EQUAL(xqc_cid_set_get_unused_cnt(&client->dcid_set, 9), 1);
+    po = xqc_test_find_packet_with_frame(client,
+                                         XQC_FRAME_BIT_MP_RETIRE_CONNECTION_ID);
+    CU_ASSERT_PTR_NULL(po);
+    CU_ASSERT_EQUAL(client->curr_max_path_id, 8);
+    CU_ASSERT_PTR_NULL(xqc_get_path_cid_set(&client->scid_set, 9));
+
+    memset(&max_path_id, 0, sizeof(max_path_id));
+    max_path_id.po_buf = frame;
+    max_path_id.po_buf_cap = sizeof(frame);
+    max_path_id.po_buf_size = sizeof(frame);
+    n = xqc_gen_max_path_id_frame(client, &max_path_id, 16);
+    CU_ASSERT_FATAL(n > 0);
+    mp21_run_frame(client, frame, n, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(client->curr_max_path_id, 16);
+    CU_ASSERT_PTR_NOT_NULL(xqc_get_path_cid_set(&client->scid_set, 9));
+    CU_ASSERT_EQUAL(xqc_cid_set_get_unused_cnt(&client->dcid_set, 9), 1);
+
+    len = mp21_gen_path_new_cid(client, 17, frame, sizeof(frame));
+    mp21_run_frame(client, frame, len, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(client->conn_err, TRA_PROTOCOL_VIOLATION);
+    CU_ASSERT_PTR_NULL(xqc_get_path_cid_set(&client->dcid_set, 17));
+
+    xqc_engine_destroy(client->engine);
+}
+
+/*
+ * The peer's PATH_ABANDON for path_id, written to buf. Returns its length.
+ */
+static size_t
+mp21_gen_path_abandon(xqc_connection_t *conn, uint64_t path_id,
+    unsigned char *buf, size_t buf_size)
+{
+    ssize_t             n;
+    xqc_packet_out_t    po;
+
+    memset(&po, 0, sizeof(po));
+    po.po_buf = buf;
+    po.po_buf_cap = buf_size;
+    po.po_buf_size = buf_size;
+
+    n = xqc_gen_path_abandon_frame(conn, &po, path_id, 0);
+    CU_ASSERT_FATAL(n > 0);
+    return n;
+}
+
+/*
+ * Acknowledge every queued packet that carries one of our
+ * PATH_NEW_CONNECTION_ID frames, as the peer's ACK would.
+ */
+static void
+mp21_ack_new_cids(xqc_connection_t *conn)
+{
+    xqc_list_head_t    *pos;
+    xqc_packet_out_t   *po;
+    xqc_send_queue_t   *send_queue = conn->conn_send_queue;
+
+    xqc_list_for_each(pos, &send_queue->sndq_send_packets_high_pri) {
+        po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+        if (po->po_frame_types & XQC_FRAME_BIT_MP_NEW_CONNECTION_ID) {
+            xqc_cid_set_on_cid_acked(&conn->scid_set, po->po_new_cid_path,
+                                     po->po_new_cid_seq);
+        }
+    }
+}
+
+/*
+ * draft-ietf-quic-multipath-21 Section 3.4: the peer may abandon a path ID
+ * that no path used, and the path ID MUST NOT be reused. A client that
+ * allows 8 receives from a server that allows only path ID 0 the connection
+ * IDs of path IDs 1 and 2, and a PATH_ABANDON for path ID 1 that comes
+ * before or after its connection ID. Once the server's MAX_PATH_ID allows
+ * path IDs up to 8, path ID 1 stays abandoned and gets none of the client's
+ * connection IDs, and the client opens its next path on path ID 2.
+ */
+void
+xqc_test_mp21_path_abandon_before_max_path_id(void)
+{
+    int                  abandon_first;
+    size_t               len;
+    ssize_t              n;
+    uint64_t             path_id;
+    xqc_int_t            ret = XQC_ERROR;
+    unsigned char        frame[64];
+    xqc_packet_out_t     max_path_id;
+    xqc_connection_t    *client;
+    xqc_cid_set_inner_t *inner_set;
+
+    for (abandon_first = 0; abandon_first <= 1; abandon_first++) {
+        client = mp21_engine_conn(/* local_max */ 8, /* peer_max */ 0);
+
+        if (abandon_first) {
+            len = mp21_gen_path_abandon(client, 1, frame, sizeof(frame));
+            mp21_run_frame(client, frame, len, XQC_FRAME_BIT_PING, &ret, NULL);
+            CU_ASSERT_EQUAL(ret, XQC_OK);
+        }
+        for (path_id = 1; path_id <= 2; path_id++) {
+            len = mp21_gen_path_new_cid(client, path_id, frame, sizeof(frame));
+            mp21_run_frame(client, frame, len, XQC_FRAME_BIT_PING, &ret, NULL);
+            CU_ASSERT_EQUAL(ret, XQC_OK);
+        }
+        if (!abandon_first) {
+            len = mp21_gen_path_abandon(client, 1, frame, sizeof(frame));
+            mp21_run_frame(client, frame, len, XQC_FRAME_BIT_PING, &ret, NULL);
+            CU_ASSERT_EQUAL(ret, XQC_OK);
+        }
+
+        memset(&max_path_id, 0, sizeof(max_path_id));
+        max_path_id.po_buf = frame;
+        max_path_id.po_buf_cap = sizeof(frame);
+        max_path_id.po_buf_size = sizeof(frame);
+        n = xqc_gen_max_path_id_frame(client, &max_path_id, 8);
+        CU_ASSERT_FATAL(n > 0);
+        mp21_run_frame(client, frame, n, XQC_FRAME_BIT_PING, &ret, NULL);
+        CU_ASSERT_EQUAL(ret, XQC_OK);
+        CU_ASSERT_EQUAL(client->conn_err, 0);
+        CU_ASSERT_EQUAL(client->curr_max_path_id, 8);
+
+        inner_set = xqc_get_path_cid_set(&client->dcid_set, 1);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(inner_set);
+        CU_ASSERT_EQUAL(inner_set->set_state, XQC_CID_SET_ABANDONED);
+        inner_set = xqc_get_path_cid_set(&client->scid_set, 1);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(inner_set);
+        CU_ASSERT_EQUAL(inner_set->set_state, XQC_CID_SET_ABANDONED);
+
+        /* our connection IDs, issued as the engine does once the handshake
+         * is confirmed, and acknowledged by the server */
+        client->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_CONFIRMED;
+        CU_ASSERT_EQUAL(xqc_conn_try_add_new_conn_id(client, 0), XQC_OK);
+        CU_ASSERT_EQUAL(xqc_cid_set_get_unused_cnt(&client->scid_set, 1), 0);
+        CU_ASSERT_EQUAL(xqc_cid_set_get_unused_cnt(&client->scid_set, 2), 2);
+        mp21_ack_new_cids(client);
+
+        CU_ASSERT_EQUAL(xqc_conn_get_available_path_id(client, &path_id),
+                        XQC_OK);
+        CU_ASSERT_EQUAL(path_id, 2);
+        CU_ASSERT_EQUAL(xqc_conn_create_path(client->engine,
+                                             &client->scid_set.user_scid,
+                                             &path_id, 0),
+                        XQC_OK);
+        CU_ASSERT_EQUAL(path_id, 2);
+
+        xqc_engine_destroy(client->engine);
+    }
+}
+
+/*
+ * A PATH_ABANDON for a path ID above our limit is a PROTOCOL_VIOLATION
+ * (draft-ietf-quic-multipath-21 Section 4), and neither it nor a truncated
+ * frame adds connection ID sets.
+ */
+void
+xqc_test_mp21_path_abandon_rejected_without_cid_set(void)
+{
+    size_t              len;
+    xqc_int_t           ret = XQC_ERROR;
+    unsigned char       frame[64];
+    xqc_connection_t   *client;
+
+    client = mp21_engine_conn(/* local_max */ 8, /* peer_max */ 0);
+    len = mp21_gen_path_abandon(client, 9, frame, sizeof(frame));
+    mp21_run_frame(client, frame, len, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(client->conn_err, TRA_PROTOCOL_VIOLATION);
+    CU_ASSERT_PTR_NULL(xqc_get_path_cid_set(&client->dcid_set, 9));
+    CU_ASSERT_PTR_NULL(xqc_get_path_cid_set(&client->scid_set, 9));
+    xqc_engine_destroy(client->engine);
+
+    /* the frame ends before its Error Code */
+    client = mp21_engine_conn(/* local_max */ 8, /* peer_max */ 0);
+    len = mp21_gen_path_abandon(client, 1, frame, sizeof(frame));
+    mp21_run_frame(client, frame, len - 1, XQC_FRAME_BIT_PING, &ret, NULL);
+    CU_ASSERT_NOT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_FALSE(xqc_conn_is_path_abandoned(client, 1));
+    CU_ASSERT_PTR_NULL(xqc_get_path_cid_set(&client->dcid_set, 1));
+    CU_ASSERT_PTR_NULL(xqc_get_path_cid_set(&client->scid_set, 1));
+    xqc_engine_destroy(client->engine);
 }

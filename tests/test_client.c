@@ -190,7 +190,7 @@ typedef struct user_conn_s {
 } user_conn_t;
 
 #define XQC_DEMO_INTERFACE_MAX_LEN 64
-#define XQC_DEMO_MAX_PATH_COUNT    8
+#define XQC_DEMO_MAX_PATH_COUNT    16
 #define MAX_HEADER_KEY_LEN 128
 #define MAX_HEADER_VALUE_LEN 4096
 
@@ -5585,6 +5585,16 @@ int main(int argc, char *argv[]) {
 
     if (g_test_case == 455) {
         conn_settings.simulate_ecn = 0;
+    }
+
+    /* cases 1303/1304/1306: PATHS_BLOCKED is a draft-21 frame */
+    if (g_test_case == 1303 || g_test_case == 1304 || g_test_case == 1306) {
+        conn_settings.multipath_version = XQC_MULTIPATH_3E;
+    }
+
+    /* case 1306: a limit of 16, as high as what the server grants */
+    if (g_test_case == 1306) {
+        conn_settings.init_max_path_id = 16;
     }
 
     conn_settings.pacing_on = pacing_on;
