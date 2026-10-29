@@ -206,6 +206,7 @@ main(int argc, char *argv[])
                         "xqc_test_h3_single_vint_frame_length_error",
                         xqc_test_h3_single_vint_frame_length_error)
         || !CU_add_test(pSuite, "xqc_test_tls", xqc_test_tls)
+        || !CU_add_test(pSuite, "xqc_test_tls_session_ticket_time", xqc_test_tls_session_ticket_time)
         || !CU_add_test(pSuite, "xqc_test_h3_stream", xqc_test_stream)
         || !CU_add_test(pSuite, "xqc_test_h3_critical_stream_close", xqc_test_h3_critical_stream_close)
         || !CU_add_test(pSuite, "xqc_test_h3_second_control_stream_rejected", xqc_test_h3_second_control_stream_rejected)

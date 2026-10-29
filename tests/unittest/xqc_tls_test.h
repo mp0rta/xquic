@@ -6,5 +6,6 @@
 #define _XQC_TLS_TEST_INCLUDE_
 
 void xqc_test_tls();
+void xqc_test_tls_session_ticket_time(void);
 
 #endif
