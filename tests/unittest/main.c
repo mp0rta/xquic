@@ -96,6 +96,8 @@ main(int argc, char *argv[])
 
     if (!CU_add_test(pSuite, "xqc_cid_test", xqc_test_cid)
         || !CU_add_test(pSuite, "xqc_test_conn_create_alloc_failures", xqc_test_conn_create_alloc_failures)
+        || !CU_add_test(pSuite, "xqc_test_conn_destroy_frees_crypto_data", xqc_test_conn_destroy_frees_crypto_data)
+        || !CU_add_test(pSuite, "xqc_test_pn_ctl_create_alloc_failures", xqc_test_pn_ctl_create_alloc_failures)
         || !CU_add_test(pSuite, "xqc_test_cid_active_limit", xqc_test_cid_active_limit)
         || !CU_add_test(pSuite, "xqc_test_cid_handshake_exclusion", xqc_test_cid_handshake_exclusion)
         || !CU_add_test(pSuite, "xqc_test_cid_mark_original_idempotent", xqc_test_cid_mark_original_idempotent)

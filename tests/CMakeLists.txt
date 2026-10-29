@@ -160,12 +160,13 @@ if(HAVE_CUNIT)
     # still builds with full warnings-as-errors.
     target_compile_options(run_tests PRIVATE -Wno-maybe-uninitialized)
 
-    # xqc_alloc_fail_test makes chosen allocations fail through the linker's
-    # --wrap (GNU ld and lld); elsewhere it does nothing.
+    # xqc_alloc_fail_test makes chosen allocations fail, and counts the
+    # allocations left behind, through the linker's --wrap (GNU ld and lld);
+    # elsewhere it does nothing.
     if(CMAKE_SYSTEM_NAME MATCHES "Linux")
         target_compile_definitions(run_tests PRIVATE XQC_TEST_ALLOC_WRAP)
         target_link_libraries(run_tests
-            "-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc")
+            "-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free")
     endif()
 
     target_include_directories(run_tests
