@@ -325,6 +325,11 @@ xqc_max_path_id_validation_t xqc_validate_max_path_id(xqc_connection_t *conn,
  * deployments. */
 #define XQC_MAX_PATH_ID_GRANT_INCREMENT  8
 
+/* Bound on the reciprocal MAX_PATH_ID grant when
+ * max_path_id_grant_max_value is unset. Matches the grant bound mqvpn
+ * servers set, so a client mirroring a server's grant is not limited. */
+#define XQC_MAX_PATH_ID_MIRROR_DEFAULT   128
+
 /* Evaluate whether a MAX_PATH_ID credit grant should fire on receipt of
  * PATHS_BLOCKED. Side-effects: when the grant fires, advances
  * conn->local_max_path_id and updates conn->last_max_path_id_grant_us.
