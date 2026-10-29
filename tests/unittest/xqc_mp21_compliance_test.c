@@ -495,6 +495,14 @@ mp21_recv_max_path_id(xqc_connection_t *conn, uint64_t grant_max,
     CU_ASSERT_EQUAL(conn->remote_max_path_id, 0xffffffffULL);
     CU_ASSERT_EQUAL(conn->local_max_path_id, expect_local);
     CU_ASSERT_EQUAL(conn->curr_max_path_id, expect_local);
+
+    /* CID sets exist for path IDs 0..expect_local only */
+    xqc_list_head_t *pos;
+    uint64_t sets = 0;
+    xqc_list_for_each(pos, &conn->scid_set.cid_set_list) {
+        sets++;
+    }
+    CU_ASSERT_EQUAL(sets, expect_local + 1);
 }
 
 void
