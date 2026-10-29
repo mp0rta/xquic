@@ -870,6 +870,32 @@ else
     echo "$frame_encoding_err"
 fi
 
+# 747: once the handshake is done, the server issues a connection ID whose
+# Retire Prior To retires all the others, the one in use included (RFC 9000
+# Section 19.15). The client retires them, sends with the new one, and the
+# request completes.
+clear_log
+rm -rf tp_localhost test_session xqc_token
+echo -e "Retire Prior To replaces every connection ID ...\c"
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e -x 747 > svr_stdlog &
+sleep 1
+${CLIENT_BIN} -s 1024 -l d -t 1 -E > stdlog 2>&1
+rotated=`grep "\[retire-prior-to-test\]|retire_prior_to:[1-9][0-9]*|ret:0|" svr_stdlog`
+retired=`grep "|retire_prior_to|0|increase to|" clog`
+result=`grep ">>>>>>>> pass:1" stdlog`
+conn_err_zero=`grep -E "conn_err:0[^0-9]" stdlog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$rotated" ] && [ -n "$retired" ] \
+    && [ "$result" == ">>>>>>>> pass:1" ] && [ -n "$conn_err_zero" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "retire_prior_to_all_cids" "pass"
+else
+    echo ">>>>>>>> pass:0 (rotated:${rotated:+y} retired:${retired:+y}" \
+        "result:${result:+y} conn_err_zero:${conn_err_zero:+y} errlog:${errlog:+y})"
+    case_print_result "retire_prior_to_all_cids" "fail"
+fi
+
 clear_log
 rm -rf tp_localhost test_session xqc_token
 echo -e "max_ack_delay accepts the largest valid value ...\c"
