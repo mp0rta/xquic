@@ -445,6 +445,10 @@ main(int argc, char *argv[])
                         xqc_test_alpn_server_cb_propagates_error)
         || !CU_add_test(pSuite, "xqc_test_alpn_client_handshake_no_alpn",
                         xqc_test_alpn_client_handshake_no_alpn)
+        || !CU_add_test(pSuite, "xqc_test_stateless_reset_token_of_unused_cid",
+                        xqc_test_stateless_reset_token_of_unused_cid)
+        || !CU_add_test(pSuite, "xqc_test_stateless_reset_token_of_used_cid",
+                        xqc_test_stateless_reset_token_of_used_cid)
         || !CU_add_test(pSuite, "xqc_test_masque", xqc_test_masque)
         || !CU_add_test(pSuite, "xqc_test_datagram_send_on_path", xqc_test_datagram_send_on_path)
         || !CU_add_test(pSuite, "xqc_test_datagram_frame_path_pinning", xqc_test_datagram_frame_path_pinning)

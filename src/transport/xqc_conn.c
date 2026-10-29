@@ -8254,9 +8254,13 @@ xqc_conn_handle_stateless_reset(xqc_connection_t *conn, const uint8_t *sr_token)
                         xqc_sr_token_str(conn->engine, sr_token));
                 xqc_log_event(conn->log, TRA_STATELESS_RESET, conn);
 
+                /*
+                 * RFC 9000 Section 10.3.1: an endpoint MUST NOT check the
+                 * tokens of connection IDs it has not used or has retired,
+                 * so only those in use count.
+                 */
                 if (inner_set->set_state < XQC_CID_SET_ABANDONED &&
-                    cid->state < XQC_CID_RETIRED) {
-                    /* only responds for non-retired CIDs */
+                    cid->state == XQC_CID_USED) {
                     /* stateless reset received, close connection */
                     xqc_conn_reset(conn);
                 }
