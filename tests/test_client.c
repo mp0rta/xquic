@@ -5567,6 +5567,19 @@ int main(int argc, char *argv[]) {
         conn_settings.receive_timestamps_exponent = 0;
     }
 
+    /*
+     * cases 1307-1308: path IDs 0 and 1 only, as at the server, so that a
+     * third path finds none left; 1307 negotiates draft-21, 1308 keeps
+     * draft-10
+     */
+    if (g_test_case == 1307 || g_test_case == 1308) {
+        conn_settings.init_max_path_id = 1;
+    }
+
+    if (g_test_case == 1307) {
+        conn_settings.multipath_version = XQC_MULTIPATH_3E;
+    }
+
     /* MASQUE E2E test cases */
     if (g_test_case == 800 || g_test_case == 801) {
         g_masque_mode = 1;

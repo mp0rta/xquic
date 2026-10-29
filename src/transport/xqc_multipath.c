@@ -717,6 +717,16 @@ xqc_conn_create_path(xqc_engine_t *engine, const xqc_cid_t *scid, uint64_t *new_
         xqc_log(conn->log, XQC_LOG_WARN,
                 "|don't have available cid for new path|");
 
+        /*
+         * PATHS_BLOCKED is a frame of draft-ietf-quic-multipath-21
+         * (Section 4.7) that draft-10 does not have: a peer that
+         * negotiated draft-10 closes the connection on it, as on any
+         * frame type it does not know (RFC 9000 Section 12.4).
+         */
+        if (conn->conn_settings.multipath_version != XQC_MULTIPATH_3E) {
+            return -XQC_EMP_NO_AVAIL_PATH_ID;
+        }
+
         /* G-P16 (draft-21 §3.2.1 ¶7 / §4.7): we are unable to create a new
          * path because the path_id namespace is exhausted (peer has not
          * issued CIDs for higher path_ids, which only happens when the
