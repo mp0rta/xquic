@@ -5100,7 +5100,7 @@ xqc_int_t
 xqc_conn_add_path_cid_sets(xqc_connection_t *conn, uint32_t start, uint32_t end)
 {
     if (conn->enable_multipath) {
-        uint32_t path_id;
+        uint64_t path_id; /* wider than end, so end == UINT32_MAX terminates */
         xqc_int_t ret;
         /* add cid_set_inner for all paths */
         for (path_id = start; path_id <= end; path_id++) {

@@ -22,6 +22,7 @@
 #include "src/common/xqc_log.h"
 #include "xqc_mp21_compliance_test.h"
 #include "xqc_test_helpers.h"
+#include "xqc_common_test.h"
 #include "src/transport/xqc_frame.h"
 #include "xquic/xqc_errno.h"
 
@@ -466,6 +467,63 @@ xqc_test_mp21_max_path_id_validation(void)
                     XQC_MAX_PATH_ID_ACCEPT);
 
     xqc_test_mp21_free_conn(conn);
+}
+
+/* A received MAX_PATH_ID raises our own limit in return only up to our
+ * grant bound, not to the peer's value. */
+static void
+mp21_recv_max_path_id(xqc_connection_t *conn, uint64_t grant_max,
+                      uint64_t expect_local)
+{
+    /* MAX_PATH_ID (0x3e7a), Maximum Path Identifier 2^32-1 */
+    unsigned char buf[] = {0x80, 0x00, 0x3e, 0x7a,
+                           0xc0, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff};
+    xqc_packet_in_t pi;
+
+    conn->enable_multipath = 1;
+    conn->conn_settings.multipath_version = XQC_MULTIPATH_3E;
+    conn->conn_settings.max_path_id_grant_max_value = grant_max;
+
+    memset(&pi, 0, sizeof(pi));
+    pi.buf = buf;
+    pi.buf_size = sizeof(buf);
+    pi.pos = buf;
+    pi.last = buf + sizeof(buf);
+    pi.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+
+    CU_ASSERT_EQUAL(xqc_process_max_path_id_frame(conn, &pi), XQC_OK);
+    CU_ASSERT_EQUAL(conn->remote_max_path_id, 0xffffffffULL);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, expect_local);
+    CU_ASSERT_EQUAL(conn->curr_max_path_id, expect_local);
+
+    /* CID sets exist for path IDs 0..expect_local only */
+    xqc_list_head_t *pos;
+    uint64_t sets = 0;
+    xqc_list_for_each(pos, &conn->scid_set.cid_set_list) {
+        sets++;
+    }
+    CU_ASSERT_EQUAL(sets, expect_local + 1);
+}
+
+void
+xqc_test_mp21_max_path_id_mirror_bounded(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    mp21_recv_max_path_id(conn, 0, XQC_MAX_PATH_ID_MIRROR_DEFAULT);
+    xqc_engine_destroy(conn->engine);
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    mp21_recv_max_path_id(conn, 16, 16);
+    xqc_engine_destroy(conn->engine);
+
+    /* the largest path ID ends the loop */
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->enable_multipath = 1;
+    CU_ASSERT_EQUAL(xqc_conn_add_path_cid_sets(conn, 0xfffffffeU, 0xffffffffU), XQC_OK);
+    xqc_engine_destroy(conn->engine);
 }
 
 void

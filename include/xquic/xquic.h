@@ -1700,11 +1700,15 @@ typedef struct xqc_conn_settings_s {
      * When the peer sends PATHS_BLOCKED, the local endpoint MAY grant
      * additional path-id credit by emitting a MAX_PATH_ID frame. Granting
      * is permissive per spec ("can" in §2.1 / §4.6), so default 0 means
-     * grant is disabled (initial_max_path_id is never grown). Operators
+     * PATHS_BLOCKED auto-grant is disabled. Operators
      * that want auto-grant set this to the desired hard cap (typically
      * <= 2^32-1); each grant is sized by XQC_MAX_PATH_ID_GRANT_INCREMENT
      * (default 8) and rate-limited to one grant per PTO. Append-only
      * field — zero-initialized for ABI-compat with pre-L2 consumers.
+     *
+     * Also bounds how far a received MAX_PATH_ID raises the local limit
+     * in return (reciprocal grant); when 0, that bound is
+     * XQC_MAX_PATH_ID_MIRROR_DEFAULT (128).
      */
     uint64_t                    max_path_id_grant_max_value;
 
