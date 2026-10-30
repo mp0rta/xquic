@@ -21,6 +21,8 @@
 #include "src/transport/xqc_transport_params.h"
 #include "src/transport/xqc_cid.h"
 #include "src/transport/xqc_send_ctl.h"
+#include "src/transport/xqc_multipath.h"
+#include "src/transport/xqc_packet_parser.h"
 #include "src/transport/xqc_frame_parser.h"
 #include "src/transport/xqc_packet_in.h"
 #include "src/transport/xqc_packet_out.h"
@@ -329,6 +331,50 @@ xqc_pmtud_case_set(xqc_connection_t *conn, xqc_conn_type_t role,
     conn->remote_settings.enable_pmtud = remote_flags;
     conn->enable_pmtud = 0;
     xqc_timer_unset(&conn->conn_timer_manager, XQC_TIMER_PMTUD_PROBING);
+}
+
+void
+xqc_test_conn_next_wakeup_path_timers(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+
+    xqc_path_ctx_t *path = conn->conn_initial_path;
+    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+    xqc_path_state_t saved_state = path->path_state;
+    xqc_timer_manager_t *path_tm = &path->path_send_ctl->path_timer_manager;
+    xqc_list_head_t *pos, *next;
+    xqc_gp_timer_t *gp_timer;
+
+    /* leave the path's validation deadline as the only armed timer */
+    for (xqc_timer_type_t type = 0; type < XQC_TIMER_N; ++type) {
+        conn->conn_timer_manager.timer[type].timer_is_set = 0;
+        path_tm->timer[type].timer_is_set = 0;
+    }
+    xqc_list_for_each_safe(pos, next,
+                           &conn->conn_timer_manager.gp_timer_list)
+    {
+        gp_timer = xqc_list_entry(pos, xqc_gp_timer_t, list);
+        gp_timer->timer_is_set = XQC_FALSE;
+    }
+    path_tm->timer[XQC_TIMER_PATH_IDLE].timer_is_set = 1;
+    path_tm->timer[XQC_TIMER_PATH_IDLE].expire_time = 12345;
+
+    /* RFC 9000 Section 8.2.4: the deadline armed while validating must wake
+     * the engine, as must a closing path's draining timer */
+    path->path_state = XQC_PATH_STATE_VALIDATING;
+    CU_ASSERT(xqc_conn_next_wakeup_time(conn) == 12345);
+    path->path_state = XQC_PATH_STATE_CLOSING;
+    CU_ASSERT(xqc_conn_next_wakeup_time(conn) == 12345);
+    path->path_state = XQC_PATH_STATE_ACTIVE;
+    CU_ASSERT(xqc_conn_next_wakeup_time(conn) == 12345);
+
+    /* a CLOSED path is no longer serviced, so its timers are skipped */
+    path->path_state = XQC_PATH_STATE_CLOSED;
+    CU_ASSERT(xqc_conn_next_wakeup_time(conn) == 0);
+
+    path->path_state = saved_state;
+    xqc_engine_destroy(conn->engine);
 }
 
 void
@@ -1544,5 +1590,154 @@ xqc_test_alpn_client_handshake_no_alpn(void)
                     (uint64_t)TRA_NO_APPLICATION_PROTOCOL);
     CU_ASSERT(conn->conn_flag & XQC_CONN_FLAG_ERROR);
 
+    xqc_engine_destroy(conn->engine);
+}
+
+
+/*
+ * RFC 9001 Section 6.1: an endpoint MUST retain old read keys until it has
+ * successfully unprotected a packet sent using the new keys. When the local
+ * endpoint initiates a key update, xqc_conn_confirm_key_update(conn, TRUE)
+ * records awaiting_peer_key_update and defers arming the 3*PTO old-key discard
+ * timer; xqc_conn_confirm_peer_key_update arms it only once the peer's new-key
+ * packet has been unprotected.
+ *
+ * The initiator entry point xqc_conn_confirm_key_update also drives the TLS
+ * 1-RTT key phase, which requires a completed handshake, so the full initiator
+ * path is covered by endpoint case 904. This unit test exercises the TLS-free
+ * deferred-arming decision directly.
+ */
+void
+xqc_test_key_update_old_key_retention(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+    CU_ASSERT_FATAL(conn->conn_initial_path != NULL);
+
+    /*
+     * Guard path: not awaiting a peer key update, confirmation is a no-op and
+     * the old-key retention timer stays unarmed.
+     */
+    conn->key_update_ctx.awaiting_peer_key_update = XQC_FALSE;
+    xqc_conn_confirm_peer_key_update(conn);
+    CU_ASSERT(!xqc_timer_is_set(&conn->conn_timer_manager,
+                                XQC_TIMER_KEY_UPDATE));
+
+    /*
+     * Happy path: awaiting the peer's new-key packet (the initiator state
+     * after xqc_conn_confirm_key_update(conn, TRUE)). Confirming arms the
+     * retention timer and clears the pending flag.
+     */
+    conn->key_update_ctx.awaiting_peer_key_update = XQC_TRUE;
+    xqc_conn_confirm_peer_key_update(conn);
+    CU_ASSERT(xqc_timer_is_set(&conn->conn_timer_manager,
+                               XQC_TIMER_KEY_UPDATE));
+    CU_ASSERT(!conn->key_update_ctx.awaiting_peer_key_update);
+
+    /* A repeated confirmation with the flag cleared must not disturb state. */
+    xqc_conn_confirm_peer_key_update(conn);
+    CU_ASSERT(!conn->key_update_ctx.awaiting_peer_key_update);
+    CU_ASSERT(xqc_timer_is_set(&conn->conn_timer_manager,
+                               XQC_TIMER_KEY_UPDATE));
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* A second path for the key update check, which reads only its packet
+ * number and send state. */
+static xqc_path_ctx_t *
+xqc_test_key_update_add_path(xqc_connection_t *conn, uint64_t path_id)
+{
+    xqc_path_ctx_t *path = xqc_calloc(1, sizeof(xqc_path_ctx_t));
+    CU_ASSERT_FATAL(path != NULL);
+
+    path->parent_conn = conn;
+    path->path_id = path_id;
+    path->path_pn_ctl = xqc_pn_ctl_create(conn);
+    path->path_send_ctl = xqc_send_ctl_create(path);
+    CU_ASSERT_FATAL(path->path_pn_ctl != NULL && path->path_send_ctl != NULL);
+    xqc_list_add_tail(&path->path_list, &conn->conn_paths_list);
+    return path;
+}
+
+static void
+xqc_test_key_update_del_path(xqc_path_ctx_t *path)
+{
+    xqc_list_del(&path->path_list);
+    xqc_send_ctl_destroy(path->path_send_ctl);
+    xqc_pn_ctl_destroy(path->path_pn_ctl);
+    xqc_free(path);
+}
+
+/*
+ * RFC 9001 Section 6.1: a subsequent key update needs an acknowledgment for
+ * a packet sent with the current keys. With multipath that acknowledgment
+ * can come on any path, not only on the initial one.
+ */
+void
+xqc_test_key_update_ack_on_any_path(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_path_ctx_t *initial = conn->conn_initial_path;
+    CU_ASSERT_FATAL(initial != NULL);
+    xqc_path_ctx_t *second = xqc_test_key_update_add_path(conn, 1);
+
+    xqc_usec_t now = xqc_monotonic_timestamp();
+    xqc_usec_t pto = xqc_conn_get_max_pto(conn);
+
+    conn->key_update_ctx.initiate_time_guard = 0;
+
+    /* the first key update needs no acknowledgment */
+    conn->key_update_ctx.key_update_cnt = 0;
+    CU_ASSERT(xqc_packet_can_initiate_key_update(conn));
+
+    /* a key update takes effect: the paths next send 100 and 50 */
+    initial->path_pn_ctl->ctl_packet_number[XQC_PNS_APP_DATA] = 100;
+    second->path_pn_ctl->ctl_packet_number[XQC_PNS_APP_DATA] = 50;
+    conn->key_update_ctx.key_update_cnt = 1;
+    xqc_conn_record_key_phase_start(conn);
+    CU_ASSERT_EQUAL(initial->path_ku_first_sent_pktno, 100);
+    CU_ASSERT_EQUAL(second->path_ku_first_sent_pktno, 50);
+
+    /* nothing acknowledged yet, then only old-phase packets */
+    CU_ASSERT(!xqc_packet_can_initiate_key_update(conn));
+    xqc_conn_on_key_phase_acked(initial, 99, now);
+    xqc_conn_on_key_phase_acked(second, 49, now);
+    CU_ASSERT(!xqc_packet_can_initiate_key_update(conn));
+
+    /* the first new-phase packet of the second path is acknowledged: wait
+       three times the PTO from then */
+    xqc_conn_on_key_phase_acked(second, 50, now);
+    CU_ASSERT(conn->key_update_ctx.current_keys_acked);
+    CU_ASSERT_EQUAL(conn->key_update_ctx.initiate_time_guard, now + 3 * pto);
+    CU_ASSERT(!xqc_packet_can_initiate_key_update(conn));
+
+    /* a later acknowledgment does not move the guard */
+    xqc_conn_on_key_phase_acked(second, 51, now + 1000);
+    CU_ASSERT_EQUAL(conn->key_update_ctx.initiate_time_guard, now + 3 * pto);
+
+    conn->key_update_ctx.initiate_time_guard = 0;
+    CU_ASSERT(xqc_packet_can_initiate_key_update(conn));
+
+    /* the next key update: acknowledgments of the previous phase stop
+       counting */
+    initial->path_pn_ctl->ctl_packet_number[XQC_PNS_APP_DATA] = 120;
+    second->path_pn_ctl->ctl_packet_number[XQC_PNS_APP_DATA] = 60;
+    conn->key_update_ctx.key_update_cnt = 2;
+    xqc_conn_record_key_phase_start(conn);
+    CU_ASSERT(!xqc_packet_can_initiate_key_update(conn));
+    xqc_conn_on_key_phase_acked(second, 51, now);
+    CU_ASSERT(!conn->key_update_ctx.current_keys_acked);
+
+    /* a path created after it sends only new-phase packets */
+    xqc_path_ctx_t *third = xqc_test_key_update_add_path(conn, 2);
+    xqc_conn_on_key_phase_acked(third, 0, now);
+    CU_ASSERT(conn->key_update_ctx.current_keys_acked);
+    conn->key_update_ctx.initiate_time_guard = 0;
+    CU_ASSERT(xqc_packet_can_initiate_key_update(conn));
+
+    xqc_test_key_update_del_path(third);
+    xqc_test_key_update_del_path(second);
     xqc_engine_destroy(conn->engine);
 }

@@ -16,4 +16,7 @@ void  xqc_test_stream_frame_cap_liveness_real();
 void  xqc_test_stream_frame_fin_repair_skips_discarded();
 void  xqc_test_stream_frame_cap_setting();
 
+void  xqc_test_stop_sending_drops_queued_stream_packets();
+void  xqc_test_stop_sending_spares_other_streams();
+
 #endif /* _XQC_STREAM_FRAME_TEST_H_INCLUDED_ */

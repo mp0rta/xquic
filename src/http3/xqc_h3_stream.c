@@ -294,6 +294,11 @@ xqc_int_t
 xqc_h3_stream_write_setting_to_buffer(xqc_h3_stream_t *h3s,
                                       xqc_h3_conn_settings_t *settings, uint8_t fin)
 {
+    if (h3s->h3c->flags & XQC_H3_CONN_FLAG_SETTINGS_QUEUED) {
+        xqc_log(h3s->log, XQC_LOG_WARN, "|SETTINGS already queued|");
+        return -XQC_ESTATE;
+    }
+
     xqc_int_t ret = xqc_h3_frm_write_settings(&h3s->send_buf, settings, fin);
     if (ret != XQC_OK) {
         xqc_log(h3s->log, XQC_LOG_ERROR,
@@ -301,6 +306,7 @@ xqc_h3_stream_write_setting_to_buffer(xqc_h3_stream_t *h3s,
                 h3s->stream_id, (unsigned int)fin);
         return ret;
     }
+    h3s->h3c->flags |= XQC_H3_CONN_FLAG_SETTINGS_QUEUED;
     xqc_log_event(h3s->log, HTTP_FRAME_CREATED, h3s, XQC_H3_FRM_SETTINGS, settings);
 
     ret = xqc_h3_stream_send_buffer(h3s);
@@ -767,6 +773,9 @@ xqc_h3_stream_process_frame_parse_error(xqc_h3_stream_t *h3s,
         xqc_log(h3s->log, XQC_LOG_ERROR,
                 "|HTTP/2 reserved frame received|type:%xL|", pctx->frame.type);
         XQC_H3_CONN_ERR(h3s->h3c, H3_FRAME_UNEXPECTED, err);
+
+    } else if (err == -XQC_H3_INVALID_FRAME_TYPE) {
+        XQC_H3_CONN_ERR(h3s->h3c, H3_FRAME_ERROR, err);
     }
 
     xqc_h3_frm_reset_pctx(pctx);
@@ -783,7 +792,8 @@ xqc_h3_stream_process_control(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
 
     ssize_t processed = 0;
     while (processed < data_len) {
-        ssize_t read = xqc_h3_frm_parse(data + processed, data_len - processed, pctx);
+        ssize_t read = xqc_h3_frm_parse(
+            data + processed, data_len - processed, pctx, h3s->h3c);
         if (read < 0) {
             return xqc_h3_stream_process_frame_parse_error(h3s, pctx, read);
         }
@@ -852,15 +862,18 @@ xqc_h3_stream_process_control(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
             case XQC_H3_FRM_SETTINGS:
                 if (h3s->h3c->flags & XQC_H3_CONN_FLAG_SETTINGS_RECVED) {
                     xqc_h3_frm_reset_pctx(pctx);
+                    XQC_H3_CONN_ERR(h3c, H3_FRAME_UNEXPECTED,
+                                    -XQC_H3_CONTROL_FRAME_UNEXPECTED);
                     return -H3_FRAME_UNEXPECTED;
                 }
 
-                h3s->h3c->flags |= XQC_H3_CONN_FLAG_SETTINGS_RECVED;
-
-                if (xqc_h3_frm_parse_setting(pl->settings.setting, (void *)h3c) < 0) {
+                xqc_int_t settings_ret = xqc_h3_frm_parse_setting(
+                    pl->settings.setting, (void *)h3c);
+                if (settings_ret < 0) {
                     xqc_h3_frm_reset_pctx(pctx);
-                    return -H3_SETTINGS_ERROR;
+                    return settings_ret;
                 }
+                h3s->h3c->flags |= XQC_H3_CONN_FLAG_SETTINGS_RECVED;
                 break;
 
             case XQC_H3_FRM_GOAWAY:
@@ -955,7 +968,8 @@ xqc_h3_stream_process_push(xqc_h3_stream_t *h3s, unsigned char *data, size_t dat
     size_t processed = 0;
 
     while (processed < data_len) {
-        ssize_t read = xqc_h3_frm_parse(data + processed, data_len - processed, pctx);
+        ssize_t read = xqc_h3_frm_parse(
+            data + processed, data_len - processed, pctx, h3s->h3c);
         if (read < 0) {
             return xqc_h3_stream_process_frame_parse_error(h3s, pctx, read);
         }
@@ -1036,7 +1050,8 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                 pctx->state, data_len, processed);
 
         /* parse frame, mainly the type, length field */
-        ssize_t read = xqc_h3_frm_parse(data + processed, data_len - processed, pctx);
+        ssize_t read = xqc_h3_frm_parse(
+            data + processed, data_len - processed, pctx, h3s->h3c);
         if (read < 0) {
             xqc_log(h3s->log, XQC_LOG_ERROR,
                     "|parse frame error|ret:%z|state:%d|frame_type:%xL|", read,
@@ -1073,13 +1088,18 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                 len = xqc_min(pctx->frame.len - pctx->frame.consumed_len,
                               data_len - processed);
                 read = xqc_qpack_dec_headers(h3s->qpack, h3s->ctx, data + processed, len,
-                                             hdrs, fin, &blocked);
+                                             hdrs,
+                                             h3s->h3c->local_h3_conn_settings.max_field_section_size,
+                                             fin, &blocked);
                 if (read < 0) {
                     xqc_log(h3s->log, XQC_LOG_ERROR,
                             "|xqc_h3_stream_process_request error"
                             "|error frame type:%xL|",
                             pctx->frame.type);
                     xqc_h3_frm_reset_pctx(pctx);
+                    if (read == -XQC_H3_INVALID_HEADER) {
+                        return read;
+                    }
                     return -XQC_QPACK_SAVE_HEADERS_ERROR;
                 }
                 processed += read;
@@ -1166,27 +1186,35 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                     return -XQC_H3_REQUEST_FRAME_UNEXPECTED;
                 }
 
-                len = xqc_min(pctx->frame.len - pctx->frame.consumed_len,
-                              data_len - processed);
-                buf = xqc_var_buf_create(len);
-                if (buf == NULL) {
-                    return -XQC_EMALLOC;
-                }
+                len = xqc_min(pctx->frame.len - pctx->frame.consumed_len, data_len - processed);
+                /*
+                 * Keep a final empty DATA node to notify message completion
+                 * through recv_body (RFC 9114 Section 4.1).
+                 */
+                if (len > 0
+                    || (fin_flag && processed == data_len
+                        && pctx->frame.len == 0))
+                {
+                    buf = xqc_var_buf_create(len);
+                    if (buf == NULL) {
+                        return -XQC_EMALLOC;
+                    }
 
-                ret = xqc_var_buf_save_data(buf, data + processed, len);
-                if (ret != XQC_OK) {
-                    xqc_var_buf_free(buf);
-                    xqc_h3_frm_reset_pctx(pctx);
-                    return ret;
-                }
+                    ret = xqc_var_buf_save_data(buf, data + processed, len);
+                    if (ret != XQC_OK) {
+                        xqc_var_buf_free(buf);
+                        xqc_h3_frm_reset_pctx(pctx);
+                        return ret;
+                    }
 
-                /* add data to buffer list */
-                ret = xqc_list_buf_to_tail(&h3s->h3r->body_buf, buf);
-                if (ret < 0) {
-                    xqc_h3_frm_reset_pctx(pctx);
-                    return ret;
+                    /* add data to buffer list */
+                    ret = xqc_list_buf_to_tail(&h3s->h3r->body_buf, buf);
+                    if (ret < 0) {
+                        xqc_h3_frm_reset_pctx(pctx);
+                        return ret;
+                    }
+                    h3s->h3r->body_buf_count++;
                 }
-                h3s->h3r->body_buf_count++;
 
                 processed += len;
                 pctx->frame.consumed_len += len;
@@ -1265,7 +1293,8 @@ xqc_h3_stream_process_bytestream(xqc_h3_stream_t *h3s, unsigned char *data,
                 pctx->state, data_len, processed);
 
         /* parse frame, mainly the type, length field */
-        ssize_t read = xqc_h3_frm_parse(data + processed, data_len - processed, pctx);
+        ssize_t read = xqc_h3_frm_parse(
+            data + processed, data_len - processed, pctx, h3s->h3c);
         if (read < 0) {
             xqc_log(h3s->log, XQC_LOG_ERROR,
                     "|parse frame error|ret:%z|state:%d|frame_type:%xL|", read,
@@ -1430,6 +1459,9 @@ xqc_h3_stream_process_uni(xqc_h3_stream_t *h3s, unsigned char *data, size_t data
         /* deliver data to modules which is concerned */
         ssize_t read = xqc_h3_stream_process_uni_payload(h3s, data + processed,
                                                          data_len - processed);
+        if (read == -XQC_QPACK_DYNAMIC_TABLE_EXCESSIVE_LOAD) {
+            return read;
+        }
         if (read < 0 || read + processed != data_len) {
             xqc_log(h3s->log, XQC_LOG_ERROR,
                     "|error processing uni-stream payload|type:%d|"
@@ -1539,7 +1571,8 @@ xqc_h3_stream_process_bidi_type_unknown(xqc_h3_stream_t *h3s, unsigned char *dat
             pctx->state, data_len, processed);
 
     /* parse frame, mainly the type, length field */
-    ssize_t read = xqc_h3_frm_parse(data + processed, data_len - processed, pctx);
+    ssize_t read = xqc_h3_frm_parse(
+        data + processed, data_len - processed, pctx, h3s->h3c);
     if (read < 0) {
         xqc_log(h3s->log, XQC_LOG_ERROR,
                 "|parse frame error|ret:%z|state:%d|frame_type:%xL|", read, pctx->state,
@@ -1717,6 +1750,14 @@ xqc_h3_stream_process_in(xqc_h3_stream_t *h3s, unsigned char *data, size_t data_
                     "|xqc_h3_stream_process_uni error|processed:%z"
                     "|size:%uz|stream_id:%ui|",
                     processed, data_len, h3s->stream_id);
+
+            /* Duplicate work budget only applies to peer QPACK encoder streams. */
+            if (h3s->type == XQC_H3_STREAM_TYPE_QPACK_ENCODER
+                && processed == -XQC_QPACK_DYNAMIC_TABLE_EXCESSIVE_LOAD)
+            {
+                XQC_H3_CONN_ERR(h3c, H3_EXCESSIVE_LOAD, processed);
+                return processed;
+            }
 
             XQC_H3_CONN_ERR(h3c, H3_FRAME_ERROR, -XQC_H3_EPROC_CONTROL);
             return -XQC_H3_EPROC_CONTROL;
@@ -2032,10 +2073,43 @@ xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s)
             h3s, buf->data + buf->consumed_len, buf->data_len - buf->consumed_len,
             buf->fin_flag);
         if (processed < 0) {
-            if (processed == -XQC_H3_EMALFORMED_HEADER) {
-                xqc_stream_close_with_error(h3s->stream,
-                                            H3_MESSAGE_ERROR);
+            if (processed == -XQC_H3_INVALID_HEADER
+                || processed == -XQC_H3_EMALFORMED_HEADER)
+            {
+                if (h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED) {
+                    h3s->flags &= ~XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED;
+                }
+
+                if (h3s->blocked_stream) {
+                    xqc_h3_conn_remove_blocked_stream(h3s->h3c, h3s->blocked_stream);
+                    h3s->blocked_stream = NULL;
+                    if (h3s->type == XQC_H3_STREAM_TYPE_REQUEST && h3s->h3r) {
+                        xqc_h3_request_unblocked(h3s->h3r);
+                    }
+                }
+
+                if (h3s->blocked_buf_size > 0 && h3s->h3c != NULL) {
+                    h3s->h3c->total_blocked_buf_size -= h3s->blocked_buf_size;
+                    h3s->blocked_buf_size = 0;
+                }
+                xqc_list_buf_list_free(&h3s->blocked_buf);
+
+                if (h3s->stream != NULL) {
+                    xqc_stream_close_with_error(h3s->stream,
+                                                H3_MESSAGE_ERROR);
+                    h3s->ref_cnt--;
+                    return XQC_OK;
+                }
+
+                /*
+                 * the transport stream was already closed while this h3 stream
+                 * was blocked; nothing remains to reset at the transport layer.
+                 * destroy the h3 stream to finish the deferred cleanup.
+                 */
+                xqc_log(h3s->log, XQC_LOG_DEBUG, "|reject blocked h3 stream after "
+                        "transport stream closed|stream_id:%ui|", h3s->stream_id);
                 h3s->ref_cnt--;
+                xqc_h3_stream_destroy(h3s);
                 return XQC_OK;
             }
             h3s->ref_cnt--;

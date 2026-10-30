@@ -5,12 +5,19 @@
 #include <CUnit/CUnit.h>
 #include "xqc_common_test.h"
 #include "src/transport/xqc_conn.h"
+#include "src/transport/xqc_cid.h"
+#include "src/transport/xqc_multipath.h"
+
+/* defined in xqc_multipath.c, not declared in a header */
+xqc_path_ctx_t *xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid,
+    xqc_cid_t *dcid, uint64_t path_id);
 #include "src/tls/xqc_tls_ctx.h"
 #include "src/tls/xqc_tls.h"
 #include <stdio.h>
 #include <string.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
+#include "src/tls/xqc_ssl_cbs.h"
 
 #define XQC_TEST_MAX_CRYPTO_DATA_BUF 16 * 1024
 
@@ -637,6 +644,7 @@ xqc_test_tls_generic()
     tls_config.no_crypto_flag = 0;
     tls_config.trans_params = "10086";
     tls_config.trans_params_len = 5;
+    tls_config.reset_stream_at = 1;
 
     /* create client tls */
     xqc_tls_test_buff_t *ttbuf_cli = xqc_create_tls_test_buffer();
@@ -723,6 +731,8 @@ xqc_test_tls_generic()
     /* create client tls */
     xqc_tls_test_buff_t *ttbuf_0rtt_cli = xqc_create_tls_test_buffer();
     xqc_tls_t *tls_0rtt_cli = xqc_tls_create(ctx_cli, &tls_config, test_log, ttbuf_0rtt_cli);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(ttbuf_0rtt_cli);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(tls_0rtt_cli);
 
     /* client start handshake, generate ClientHello */
     ret = xqc_tls_init(tls_0rtt_cli, XQC_VERSION_V1, &odcid);
@@ -732,6 +742,8 @@ xqc_test_tls_generic()
     /* create server tls */
     xqc_tls_test_buff_t *ttbuf_0rtt_svr = xqc_create_tls_test_buffer();
     xqc_tls_t *tls_0rtt_svr = xqc_tls_create(ctx_svr, &tls_config, test_log, ttbuf_0rtt_svr);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(ttbuf_0rtt_svr);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(tls_0rtt_svr);
 
     /* server handshake, process ClientHello, genrate ServerHello & Handshake data */
     ret = xqc_tls_init(tls_0rtt_svr, XQC_VERSION_V1, &odcid);
@@ -741,6 +753,8 @@ xqc_test_tls_generic()
     CU_ASSERT(data_len > 0);
     ret = xqc_tls_process_crypto_data(tls_0rtt_svr, XQC_ENC_LEV_INIT, data_buf, data_len);
     CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(xqc_tls_is_early_data_accepted(tls_0rtt_svr)
+              == XQC_TLS_EARLY_DATA_ACCEPT);
     CU_ASSERT(!xqc_list_empty(&ttbuf_0rtt_svr->initial_crypto_data_list)); /* ServerHello */
     CU_ASSERT(!xqc_list_empty(&ttbuf_0rtt_svr->hsk_crypto_data_list));     /* EE, CERT, CV, FIN */
 
@@ -764,15 +778,48 @@ xqc_test_tls_generic()
     CU_ASSERT(ret == XQC_OK);
     CU_ASSERT(ttbuf_0rtt_svr->handshake_completed == XQC_TRUE);
 
+    /* A server capability downgrade rejects 0-RTT from the old ticket. */
+    tls_config.reset_stream_at = 0;
+    xqc_tls_test_buff_t *ttbuf_reject_cli = xqc_create_tls_test_buffer();
+    xqc_tls_t *tls_reject_cli = xqc_tls_create(ctx_cli, &tls_config,
+                                               test_log,
+                                               ttbuf_reject_cli);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(ttbuf_reject_cli);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(tls_reject_cli);
+    ret = xqc_tls_init(tls_reject_cli, XQC_VERSION_V1, &odcid);
+    CU_ASSERT(ret == XQC_OK);
+
+    xqc_tls_test_buff_t *ttbuf_reject_svr = xqc_create_tls_test_buffer();
+    xqc_tls_t *tls_reject_svr = xqc_tls_create(ctx_svr, &tls_config,
+                                               test_log,
+                                               ttbuf_reject_svr);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(ttbuf_reject_svr);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(tls_reject_svr);
+    ret = xqc_tls_init(tls_reject_svr, XQC_VERSION_V1, &odcid);
+    CU_ASSERT(ret == XQC_OK);
+    data_len = xqc_crypto_data_list_get_buf(
+        &ttbuf_reject_cli->initial_crypto_data_list, data_buf);
+    CU_ASSERT(data_len > 0);
+    ret = xqc_tls_process_crypto_data(tls_reject_svr,
+                                      XQC_ENC_LEV_INIT,
+                                      data_buf, data_len);
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(xqc_tls_is_early_data_accepted(tls_reject_svr)
+              == XQC_TLS_EARLY_DATA_REJECT);
+
     xqc_destroy_tls_test_buffer(ttbuf_cli);
     xqc_destroy_tls_test_buffer(ttbuf_svr);
     xqc_destroy_tls_test_buffer(ttbuf_0rtt_cli);
     xqc_destroy_tls_test_buffer(ttbuf_0rtt_svr);
+    xqc_destroy_tls_test_buffer(ttbuf_reject_cli);
+    xqc_destroy_tls_test_buffer(ttbuf_reject_svr);
 
     xqc_tls_destroy(tls_cli);
     xqc_tls_destroy(tls_svr);
     xqc_tls_destroy(tls_0rtt_cli);
     xqc_tls_destroy(tls_0rtt_svr);
+    xqc_tls_destroy(tls_reject_cli);
+    xqc_tls_destroy(tls_reject_svr);
 
     free(data_buf);
 }
@@ -1288,6 +1335,713 @@ void xqc_test_destroy_tls_ctx()
     xqc_tls_ctx_destroy(ctx_svr);
 }
 
+#ifndef OPENSSL_IS_BORINGSSL
+static int
+xqc_test_invalid_reset_ticket_cb(SSL *ssl, void *arg)
+{
+    const uint8_t data[] = {2, 0};
+    int binding = *(int *)arg;
+
+    /* Missing binding, invalid value, or invalid length, authenticated by TLS. */
+    return SSL_SESSION_set1_ticket_appdata(SSL_get_session(ssl), data,
+        binding - 1);
+}
+#endif
+
+
+static xqc_tls_test_buff_t *
+xqc_test_reset_ticket_handshake(xqc_tls_ctx_t *server_ctx, int reset,
+    xqc_tls_test_buff_t *saved, int reused, int early, int ticket_binding)
+{
+    xqc_tls_config_t cfg = {0};
+    xqc_cid_t odcid = {1};
+    uint8_t data[XQC_TEST_MAX_CRYPTO_DATA_BUF];
+    size_t len;
+    xqc_tls_test_buff_t *client = xqc_create_tls_test_buffer();
+    xqc_tls_test_buff_t *server = xqc_create_tls_test_buffer();
+
+    cfg.hostname = "test.xquic.com";
+    cfg.alpn = "transport";
+    cfg.trans_params = (uint8_t *)(reset ? "new parameters" : "old parameters");
+    cfg.trans_params_len = strlen((char *)cfg.trans_params);
+    cfg.reset_stream_at = reset;
+    if (saved != NULL) {
+        cfg.session_ticket = saved->new_session_ticket;
+        cfg.session_ticket_len = saved->new_session_ticket_len;
+    }
+
+    xqc_tls_t *cli = xqc_tls_create(ctx_cli, &cfg, test_log, client);
+    xqc_tls_t *svr = xqc_tls_create(server_ctx, &cfg, test_log, server);
+    CU_ASSERT_PTR_NOT_NULL(cli);
+    CU_ASSERT_PTR_NOT_NULL(svr);
+    if (cli == NULL || svr == NULL) {
+        goto end;
+    }
+    if (ticket_binding) {
+#ifdef OPENSSL_IS_BORINGSSL
+        CU_ASSERT(SSL_set_quic_early_data_context(xqc_tls_get_ssl(svr),
+                    (const uint8_t *)XQC_EARLY_DATA_CONTEXT,
+                    XQC_EARLY_DATA_CONTEXT_LEN) == 1);
+#else
+        CU_ASSERT(SSL_CTX_set_session_ticket_cb(
+            xqc_tls_ctx_get_ssl_ctx(server_ctx),
+            xqc_test_invalid_reset_ticket_cb, xqc_ssl_tp_ticket_decrypt_cb,
+            &ticket_binding) == 1);
+#endif
+    }
+    CU_ASSERT_EQUAL(xqc_tls_init(cli, XQC_VERSION_V1, &odcid), XQC_OK);
+    CU_ASSERT_EQUAL(xqc_tls_init(svr, XQC_VERSION_V1, &odcid), XQC_OK);
+
+    len = xqc_crypto_data_list_get_buf(&client->initial_crypto_data_list, data);
+    CU_ASSERT(len > 0);
+    CU_ASSERT_EQUAL(xqc_tls_process_crypto_data(svr, XQC_ENC_LEV_INIT,
+                                               data, len), XQC_OK);
+    len = xqc_crypto_data_list_get_buf(&server->initial_crypto_data_list, data);
+    CU_ASSERT(len > 0);
+    CU_ASSERT_EQUAL(xqc_tls_process_crypto_data(cli, XQC_ENC_LEV_INIT,
+                                               data, len), XQC_OK);
+    len = xqc_crypto_data_list_get_buf(&server->hsk_crypto_data_list, data);
+    CU_ASSERT(len > 0);
+    CU_ASSERT_EQUAL(xqc_tls_process_crypto_data(cli, XQC_ENC_LEV_HSK,
+                                               data, len), XQC_OK);
+    len = xqc_crypto_data_list_get_buf(&client->hsk_crypto_data_list, data);
+    CU_ASSERT(len > 0);
+    CU_ASSERT_EQUAL(xqc_tls_process_crypto_data(svr, XQC_ENC_LEV_HSK,
+                                               data, len), XQC_OK);
+    CU_ASSERT(client->handshake_completed && server->handshake_completed);
+    CU_ASSERT_EQUAL(SSL_session_reused(xqc_tls_get_ssl(cli)), reused);
+    CU_ASSERT_EQUAL(SSL_session_reused(xqc_tls_get_ssl(svr)), reused);
+    if (saved != NULL) {
+        CU_ASSERT_EQUAL(xqc_tls_is_early_data_accepted(cli), early);
+        CU_ASSERT_EQUAL(xqc_tls_is_early_data_accepted(svr), early);
+    }
+
+    len = xqc_crypto_data_list_get_buf(&server->application_crypto_data_list,
+                                      data);
+    CU_ASSERT(len > 0);
+    CU_ASSERT_EQUAL(xqc_tls_process_crypto_data(cli, XQC_ENC_LEV_1RTT,
+                                               data, len), XQC_OK);
+    CU_ASSERT_PTR_NOT_NULL(client->new_session_ticket);
+    CU_ASSERT(client->new_session_ticket_len > 0);
+
+end:
+#ifndef OPENSSL_IS_BORINGSSL
+    CU_ASSERT(SSL_CTX_set_session_ticket_cb(xqc_tls_ctx_get_ssl_ctx(server_ctx),
+        xqc_ssl_tp_ticket_generate_cb, xqc_ssl_tp_ticket_decrypt_cb,
+        NULL) == 1);
+#endif
+    xqc_tls_destroy(cli);
+    xqc_tls_destroy(svr);
+    xqc_destroy_tls_test_buffer(server);
+    return client;
+}
+
+
+static void
+xqc_test_reset_ticket_policy(void)
+{
+    char key[80];
+    const size_t key_sizes[] = {0, 48, 80};
+    memset(key, 0x37, sizeof(key));
+
+    for (size_t k = 0; k < sizeof(key_sizes) / sizeof(key_sizes[0]); k++) {
+        def_engine_ssl_config_svr;
+        engine_ssl_config_svr.session_ticket_key_len = key_sizes[k];
+        engine_ssl_config_svr.session_ticket_key_data = key_sizes[k] ? key : NULL;
+        xqc_tls_ctx_t *ctx = xqc_tls_ctx_create(XQC_TLS_TYPE_SERVER,
+            &engine_ssl_config_svr, &tls_test_cbs, test_log);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(ctx);
+        CU_ASSERT_EQUAL(xqc_tls_ctx_register_alpn(ctx, "transport", 9), XQC_OK);
+
+        /* Bind only reset; reject either mismatch and retain PSK reuse. */
+        for (int saved = 0; saved <= 1; saved++) {
+            for (int current = 0; current <= 1; current++) {
+                int early = saved != current ? XQC_TLS_EARLY_DATA_REJECT
+                                             : XQC_TLS_EARLY_DATA_ACCEPT;
+                xqc_tls_test_buff_t *first = xqc_test_reset_ticket_handshake(
+                    ctx, saved, NULL, 0, 0, 0);
+                xqc_tls_test_buff_t *second = xqc_test_reset_ticket_handshake(
+                    ctx, current, first, 1, early, 0);
+                xqc_tls_test_buff_t *third = xqc_test_reset_ticket_handshake(
+                    ctx, current, second, 1, XQC_TLS_EARLY_DATA_ACCEPT, 0);
+                xqc_destroy_tls_test_buffer(first);
+                xqc_destroy_tls_test_buffer(second);
+                xqc_destroy_tls_test_buffer(third);
+            }
+        }
+
+        int invalid_bindings = 1;
+#ifndef OPENSSL_IS_BORINGSSL
+        invalid_bindings = 3;
+#endif
+        for (int binding = 1; binding <= invalid_bindings; binding++) {
+            /* Invalid bindings reject early data but permit renewed tickets. */
+            xqc_tls_test_buff_t *legacy = xqc_test_reset_ticket_handshake(
+                ctx, 0, NULL, 0, 0, binding);
+            for (int current = 0; current <= 1; current++) {
+                xqc_tls_test_buff_t *resumed = xqc_test_reset_ticket_handshake(
+                    ctx, current, legacy, 1, XQC_TLS_EARLY_DATA_REJECT, 0);
+                xqc_tls_test_buff_t *fresh = xqc_test_reset_ticket_handshake(
+                    ctx, current, resumed, 1, XQC_TLS_EARLY_DATA_ACCEPT, 0);
+                xqc_destroy_tls_test_buffer(fresh);
+                xqc_destroy_tls_test_buffer(resumed);
+            }
+            xqc_destroy_tls_test_buffer(legacy);
+        }
+        xqc_tls_ctx_destroy(ctx);
+    }
+}
+
+
+/*
+ * Key update with real 1-RTT keys: a client connection whose TLS completed a
+ * handshake receives packets that the server protects with its retired or
+ * current keys through the connection receive path, around the old-key
+ * discard deadline of RFC 9001 Sections 6.1 and 6.5.
+ */
+typedef struct {
+    xqc_log_t             *log;
+    xqc_tls_ctx_t         *ctx_cli;
+    xqc_tls_ctx_t         *ctx_svr;
+    xqc_tls_test_buff_t   *ttbuf_cli;
+    xqc_tls_test_buff_t   *ttbuf_svr;
+    xqc_tls_t             *tls_cli;
+    xqc_tls_t             *tls_svr;
+    xqc_tls_t             *conn_tls;
+    xqc_connection_t      *conn;
+} xqc_test_key_update_ctx_t;
+
+static xqc_int_t xqc_test_key_update_setup(xqc_test_key_update_ctx_t *t);
+static void xqc_test_key_update_teardown(xqc_test_key_update_ctx_t *t);
+static xqc_bool_t xqc_test_key_update_deliver(xqc_test_key_update_ctx_t *t,
+    xqc_uint_t key_phase, uint64_t pktno);
+static xqc_bool_t xqc_test_key_update_deliver_on(xqc_test_key_update_ctx_t *t,
+    xqc_path_ctx_t *path, xqc_uint_t key_phase, uint64_t pktno,
+    xqc_bool_t corrupt);
+static void xqc_test_key_update_client_initiate(
+    xqc_test_key_update_ctx_t *t);
+static void xqc_test_key_update_server_update(xqc_test_key_update_ctx_t *t,
+    xqc_uint_t key_phase);
+
+static xqc_int_t
+xqc_test_key_update_setup(xqc_test_key_update_ctx_t *t)
+{
+    xqc_log_callbacks_t log_cb = xqc_null_log_cb;
+    xqc_tls_config_t cfg = {0};
+    xqc_cid_t odcid = {1};
+    uint8_t *data = NULL;
+    size_t len;
+    xqc_int_t ret = -XQC_EFATAL;
+    def_engine_ssl_config_cli;
+    def_engine_ssl_config_svr;
+
+    memset(t, 0, sizeof(*t));
+    t->log = xqc_log_init(0, 0, 0, 0, 0, NULL, &log_cb, NULL);
+    t->ctx_cli = xqc_tls_ctx_create(XQC_TLS_TYPE_CLIENT,
+        &engine_ssl_config_cli, &tls_test_cbs, t->log);
+    t->ctx_svr = xqc_tls_ctx_create(XQC_TLS_TYPE_SERVER,
+        &engine_ssl_config_svr, &tls_test_cbs, t->log);
+    t->ttbuf_cli = xqc_create_tls_test_buffer();
+    t->ttbuf_svr = xqc_create_tls_test_buffer();
+    data = xqc_malloc(XQC_TEST_MAX_CRYPTO_DATA_BUF);
+    if (t->log == NULL || t->ctx_cli == NULL || t->ctx_svr == NULL
+        || t->ttbuf_cli == NULL || t->ttbuf_svr == NULL || data == NULL
+        || xqc_tls_ctx_register_alpn(t->ctx_svr, TEST_ALPN_1,
+                                     sizeof(TEST_ALPN_1) - 1) != XQC_OK)
+    {
+        goto end;
+    }
+
+    cfg.hostname = "test.xquic.com";
+    cfg.alpn = TEST_ALPN_1;
+    cfg.trans_params = (uint8_t *) "10086";
+    cfg.trans_params_len = 5;
+    t->tls_cli = xqc_tls_create(t->ctx_cli, &cfg, t->log, t->ttbuf_cli);
+    t->tls_svr = xqc_tls_create(t->ctx_svr, &cfg, t->log, t->ttbuf_svr);
+    if (t->tls_cli == NULL || t->tls_svr == NULL
+        || xqc_tls_init(t->tls_cli, XQC_VERSION_V1, &odcid) != XQC_OK
+        || xqc_tls_init(t->tls_svr, XQC_VERSION_V1, &odcid) != XQC_OK)
+    {
+        goto end;
+    }
+
+    len = xqc_crypto_data_list_get_buf(&t->ttbuf_cli->initial_crypto_data_list,
+                                       data);
+    if (xqc_tls_process_crypto_data(t->tls_svr, XQC_ENC_LEV_INIT, data, len)
+        != XQC_OK)
+    {
+        goto end;
+    }
+
+    len = xqc_crypto_data_list_get_buf(&t->ttbuf_svr->initial_crypto_data_list,
+                                       data);
+    if (xqc_tls_process_crypto_data(t->tls_cli, XQC_ENC_LEV_INIT, data, len)
+        != XQC_OK)
+    {
+        goto end;
+    }
+
+    len = xqc_crypto_data_list_get_buf(&t->ttbuf_svr->hsk_crypto_data_list,
+                                       data);
+    if (xqc_tls_process_crypto_data(t->tls_cli, XQC_ENC_LEV_HSK, data, len)
+        != XQC_OK)
+    {
+        goto end;
+    }
+
+    len = xqc_crypto_data_list_get_buf(&t->ttbuf_cli->hsk_crypto_data_list,
+                                       data);
+    if (xqc_tls_process_crypto_data(t->tls_svr, XQC_ENC_LEV_HSK, data, len)
+        != XQC_OK
+        || !t->ttbuf_cli->handshake_completed
+        || !t->ttbuf_svr->handshake_completed)
+    {
+        goto end;
+    }
+
+    /*
+     * A client connection unprotects 1-RTT packets with the handshaked client
+     * TLS. Its own transport handshake is not run, so mark it completed for
+     * the receive path to accept 1-RTT packets.
+     */
+    t->conn = test_engine_connect();
+    if (t->conn == NULL) {
+        goto end;
+    }
+    t->conn_tls = t->conn->tls;
+    t->conn->tls = t->tls_cli;
+    t->conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_COMPLETED;
+    ret = XQC_OK;
+
+end:
+    xqc_free(data);
+    if (ret != XQC_OK) {
+        xqc_test_key_update_teardown(t);
+    }
+    return ret;
+}
+
+static void
+xqc_test_key_update_teardown(xqc_test_key_update_ctx_t *t)
+{
+    if (t->conn != NULL) {
+        t->conn->tls = t->conn_tls;
+        xqc_engine_destroy(t->conn->engine);
+    }
+    if (t->tls_cli != NULL) {
+        xqc_tls_destroy(t->tls_cli);
+    }
+    if (t->tls_svr != NULL) {
+        xqc_tls_destroy(t->tls_svr);
+    }
+    if (t->ttbuf_cli != NULL) {
+        xqc_destroy_tls_test_buffer(t->ttbuf_cli);
+    }
+    if (t->ttbuf_svr != NULL) {
+        xqc_destroy_tls_test_buffer(t->ttbuf_svr);
+    }
+    if (t->ctx_cli != NULL) {
+        xqc_tls_ctx_destroy(t->ctx_cli);
+    }
+    if (t->ctx_svr != NULL) {
+        xqc_tls_ctx_destroy(t->ctx_svr);
+    }
+    if (t->log != NULL) {
+        xqc_free(t->log);
+    }
+    memset(t, 0, sizeof(*t));
+}
+
+/*
+ * The server protects a short header packet holding frames, padded, with its
+ * 1-RTT keys of key_phase, and the client connection receives it for dcid. A
+ * corrupt packet fails authentication. Return whether the connection
+ * unprotected it.
+ */
+static xqc_bool_t
+xqc_test_key_update_deliver_frames(xqc_test_key_update_ctx_t *t,
+    const xqc_cid_t *dcid, uint32_t nonce_path_id, xqc_uint_t key_phase,
+    uint64_t pktno, xqc_bool_t corrupt, const uint8_t *frames, size_t len)
+{
+    xqc_connection_t *conn = t->conn;
+    uint64_t dropped = conn->packet_dropped_count;
+    uint8_t plain[32] = {0};
+    uint8_t pkt[1 + XQC_MAX_CID_LEN + 4 + sizeof(plain) + 64];
+    uint8_t *pn;
+    size_t hdr_len;
+    size_t enc_len = 0;
+
+    memcpy(plain, frames, len);
+
+    /* fixed bit, key phase and a 4-byte packet number */
+    pkt[0] = 0x43 | (key_phase ? 0x04 : 0);
+    memcpy(pkt + 1, dcid->cid_buf, dcid->cid_len);
+    pn = pkt + 1 + dcid->cid_len;
+    pn[0] = (uint8_t) (pktno >> 24);
+    pn[1] = (uint8_t) (pktno >> 16);
+    pn[2] = (uint8_t) (pktno >> 8);
+    pn[3] = (uint8_t) pktno;
+    hdr_len = pn + 4 - pkt;
+
+    if (xqc_tls_encrypt_payload(t->tls_svr, XQC_ENC_LEV_1RTT, pktno,
+                                nonce_path_id, pkt, hdr_len,
+                                plain, sizeof(plain),
+                                pkt + hdr_len, sizeof(pkt) - hdr_len,
+                                &enc_len) != XQC_OK
+        || xqc_tls_encrypt_header(t->tls_svr, XQC_ENC_LEV_1RTT,
+                                  XQC_PTYPE_SHORT_HEADER, pkt, pn,
+                                  pkt + hdr_len + enc_len) != XQC_OK)
+    {
+        return XQC_FALSE;
+    }
+
+    if (corrupt) {
+        pkt[hdr_len + enc_len - 1] ^= 0x01;
+    }
+
+    if (xqc_conn_process_packet(conn, pkt, hdr_len + enc_len,
+                                xqc_monotonic_timestamp()) != XQC_OK)
+    {
+        return XQC_FALSE;
+    }
+
+    return conn->packet_dropped_count == dropped;
+}
+
+/* a PING frame on path, or on the initial path if path is NULL */
+static xqc_bool_t
+xqc_test_key_update_deliver_on(xqc_test_key_update_ctx_t *t,
+    xqc_path_ctx_t *path, xqc_uint_t key_phase, uint64_t pktno,
+    xqc_bool_t corrupt)
+{
+    const uint8_t ping = 0x01;
+    const xqc_cid_t *dcid = path ? &path->path_scid
+                                 : &t->conn->scid_set.user_scid;
+
+    return xqc_test_key_update_deliver_frames(t, dcid,
+        path ? (uint32_t) path->path_id : 0, key_phase, pktno, corrupt,
+        &ping, 1);
+}
+
+static xqc_bool_t
+xqc_test_key_update_deliver(xqc_test_key_update_ctx_t *t,
+    xqc_uint_t key_phase, uint64_t pktno)
+{
+    return xqc_test_key_update_deliver_on(t, NULL, key_phase, pktno,
+                                          XQC_FALSE);
+}
+
+/* the client initiates a key update, as xqc_packet_initiate_key_update does */
+static void
+xqc_test_key_update_client_initiate(xqc_test_key_update_ctx_t *t)
+{
+    CU_ASSERT_EQUAL(xqc_tls_update_1rtt_keys(t->tls_cli,
+                                             XQC_KEY_TYPE_RX_READ), XQC_OK);
+    CU_ASSERT_EQUAL(xqc_tls_update_1rtt_keys(t->tls_cli,
+                                             XQC_KEY_TYPE_TX_WRITE), XQC_OK);
+    CU_ASSERT_EQUAL(xqc_conn_confirm_key_update(t->conn, XQC_TRUE), XQC_OK);
+}
+
+/* the server derives the keys of the next key phase, numbered key_phase */
+static void
+xqc_test_key_update_server_update(xqc_test_key_update_ctx_t *t,
+    xqc_uint_t key_phase)
+{
+    CU_ASSERT_EQUAL(xqc_tls_update_1rtt_keys(t->tls_svr,
+                                             XQC_KEY_TYPE_RX_READ), XQC_OK);
+    CU_ASSERT_EQUAL(xqc_tls_update_1rtt_keys(t->tls_svr,
+                                             XQC_KEY_TYPE_TX_WRITE), XQC_OK);
+    xqc_tls_set_1rtt_key_phase(t->tls_svr, key_phase);
+}
+
+/*
+ * The client initiates a key update. The old-key discard deadline starts only
+ * once a packet protected with the server's new keys has been unprotected.
+ * Until that deadline, packets protected with the retired keys still decrypt;
+ * after it, they are dropped, while the current keys keep working.
+ */
+void
+xqc_test_tls_key_update_discards_retired_keys(void)
+{
+    xqc_test_key_update_ctx_t t;
+    xqc_timer_manager_t *timers;
+    xqc_usec_t before;
+    xqc_usec_t deadline;
+
+    CU_ASSERT_FATAL(xqc_test_key_update_setup(&t) == XQC_OK);
+    timers = &t.conn->conn_timer_manager;
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 1));
+
+    xqc_test_key_update_client_initiate(&t);
+    xqc_test_key_update_server_update(&t, 1);
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 2));
+    CU_ASSERT(!xqc_timer_is_set(timers, XQC_TIMER_KEY_UPDATE));
+
+    before = xqc_monotonic_timestamp();
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 1, 6));
+    CU_ASSERT_FATAL(xqc_timer_is_set(timers, XQC_TIMER_KEY_UPDATE));
+    deadline = timers->timer[XQC_TIMER_KEY_UPDATE].expire_time;
+    CU_ASSERT(deadline >= before + 3 * xqc_conn_get_max_pto(t.conn));
+
+    xqc_timer_expire(timers, deadline - 1);
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 3));
+
+    xqc_timer_expire(timers, deadline);
+    CU_ASSERT(!xqc_timer_is_set(timers, XQC_TIMER_KEY_UPDATE));
+    CU_ASSERT(!xqc_test_key_update_deliver(&t, 0, 4));
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 1, 7));
+
+    xqc_test_key_update_teardown(&t);
+}
+
+/*
+ * The server starts a key update, and the client initiates the next one
+ * before the discard deadline of the first has passed. That deadline must not
+ * discard the keys the client has just retired: none of the server's packets
+ * protected with the new keys has been unprotected yet (RFC 9001 Section 6.1).
+ */
+void
+xqc_test_tls_key_update_keeps_retired_keys(void)
+{
+    xqc_test_key_update_ctx_t t;
+    xqc_timer_manager_t *timers;
+    xqc_usec_t before;
+    xqc_usec_t deadline;
+
+    CU_ASSERT_FATAL(xqc_test_key_update_setup(&t) == XQC_OK);
+    timers = &t.conn->conn_timer_manager;
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 1));
+
+    xqc_test_key_update_server_update(&t, 1);
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 1, 2));
+    CU_ASSERT_FATAL(xqc_timer_is_set(timers, XQC_TIMER_KEY_UPDATE));
+    deadline = timers->timer[XQC_TIMER_KEY_UPDATE].expire_time;
+
+    xqc_test_key_update_client_initiate(&t);
+    xqc_test_key_update_server_update(&t, 0);
+    CU_ASSERT(!xqc_timer_is_set(timers, XQC_TIMER_KEY_UPDATE));
+
+    xqc_timer_expire(timers, deadline);
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 1, 3));
+
+    before = xqc_monotonic_timestamp();
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 6));
+    CU_ASSERT_FATAL(xqc_timer_is_set(timers, XQC_TIMER_KEY_UPDATE));
+    CU_ASSERT(timers->timer[XQC_TIMER_KEY_UPDATE].expire_time
+              >= before + 3 * xqc_conn_get_max_pto(t.conn));
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 1, 4));
+
+    xqc_test_key_update_teardown(&t);
+}
+
+/*
+ * The server starts two key updates in a row. The discard deadline of the
+ * first has passed when the packet starting the second arrives, but the
+ * timers have not run yet, as when the packet is processed before the timers
+ * of the next engine tick. The keys retired by the second update are still
+ * kept for three times the PTO, and discarded after that.
+ */
+void
+xqc_test_tls_key_update_responder_keeps_retired_keys(void)
+{
+    xqc_test_key_update_ctx_t t;
+    xqc_timer_manager_t *timers;
+    xqc_usec_t before;
+    xqc_usec_t deadline;
+
+    CU_ASSERT_FATAL(xqc_test_key_update_setup(&t) == XQC_OK);
+    timers = &t.conn->conn_timer_manager;
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 1));
+
+    xqc_test_key_update_server_update(&t, 1);
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 1, 2));
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 1, 3));
+    CU_ASSERT_FATAL(xqc_timer_is_set(timers, XQC_TIMER_KEY_UPDATE));
+    xqc_timer_set(timers, XQC_TIMER_KEY_UPDATE, 0, 1);
+
+    xqc_test_key_update_server_update(&t, 0);
+    before = xqc_monotonic_timestamp();
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 6));
+    CU_ASSERT_EQUAL(t.conn->key_update_ctx.key_update_cnt, 2);
+    deadline = timers->timer[XQC_TIMER_KEY_UPDATE].expire_time;
+    CU_ASSERT(deadline >= before + 3 * xqc_conn_get_max_pto(t.conn));
+
+    xqc_timer_expire(timers, before);
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 1, 4));
+
+    xqc_timer_expire(timers, deadline);
+    CU_ASSERT(!xqc_test_key_update_deliver(&t, 1, 5));
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 7));
+
+    xqc_test_key_update_teardown(&t);
+}
+
+
+/*
+ * The client keeps the server's previous keys after a key update. A packet
+ * with the other key phase that fails authentication changes nothing: a
+ * delayed packet protected with the previous keys still decrypts, and after
+ * the discard deadline the server's next key update is accepted (RFC 9001
+ * Section 6.3: the next keys are kept even if the packet is discarded).
+ */
+void
+xqc_test_tls_key_update_forged_key_phase(void)
+{
+    xqc_test_key_update_ctx_t t;
+    xqc_timer_manager_t *timers;
+
+    CU_ASSERT_FATAL(xqc_test_key_update_setup(&t) == XQC_OK);
+    timers = &t.conn->conn_timer_manager;
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 1));
+
+    xqc_test_key_update_server_update(&t, 1);
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 1, 5));
+    CU_ASSERT_FATAL(xqc_timer_is_set(timers, XQC_TIMER_KEY_UPDATE));
+
+    CU_ASSERT(!xqc_test_key_update_deliver_on(&t, NULL, 0, 10, XQC_TRUE));
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 3));
+    CU_ASSERT_EQUAL(t.conn->key_update_ctx.key_update_cnt, 1);
+
+    xqc_timer_expire(timers, timers->timer[XQC_TIMER_KEY_UPDATE].expire_time);
+    CU_ASSERT(!xqc_test_key_update_deliver_on(&t, NULL, 0, 11, XQC_TRUE));
+    xqc_test_key_update_server_update(&t, 0);
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 12));
+    CU_ASSERT_EQUAL(t.conn->key_update_ctx.key_update_cnt, 2);
+
+    /* the discard deadline has passed but the timers have not run: the
+       packet discards the previous keys and the deadline with them */
+    xqc_timer_set(timers, XQC_TIMER_KEY_UPDATE, 0, 1);
+    CU_ASSERT(!xqc_test_key_update_deliver_on(&t, NULL, 1, 13, XQC_TRUE));
+    CU_ASSERT(!xqc_timer_is_set(timers, XQC_TIMER_KEY_UPDATE));
+    xqc_test_key_update_server_update(&t, 1);
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 1, 14));
+    CU_ASSERT_EQUAL(t.conn->key_update_ctx.key_update_cnt, 3);
+    CU_ASSERT_EQUAL(t.conn->conn_err, 0);
+
+    xqc_test_key_update_teardown(&t);
+}
+
+/*
+ * RFC 9001 Section 6.4: a packet that the previous keys unprotect, numbered
+ * above a packet of the same path that the current keys unprotected, is a
+ * KEY_UPDATE_ERROR.
+ */
+void
+xqc_test_tls_key_update_old_keys_after_newer(void)
+{
+    xqc_test_key_update_ctx_t t;
+
+    CU_ASSERT_FATAL(xqc_test_key_update_setup(&t) == XQC_OK);
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 1));
+
+    xqc_test_key_update_server_update(&t, 1);
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 1, 5));
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 4));
+    CU_ASSERT_EQUAL(t.conn->conn_err, 0);
+
+    CU_ASSERT(!xqc_test_key_update_deliver(&t, 0, 6));
+    CU_ASSERT_EQUAL(t.conn->conn_err, TRA_KEY_UPDATE_ERROR);
+
+    xqc_test_key_update_teardown(&t);
+}
+
+/*
+ * With multipath each path numbers its packets separately. The server's key
+ * update arrives first on a path with low packet numbers; a delayed packet
+ * protected with the previous keys on a path with higher packet numbers still
+ * decrypts, and does not start another key update.
+ */
+void
+xqc_test_tls_key_update_on_second_path(void)
+{
+    xqc_test_key_update_ctx_t t;
+    xqc_connection_t *conn;
+    xqc_cid_t scid = {0}, dcid = {0};
+    xqc_path_ctx_t *second;
+
+    CU_ASSERT_FATAL(xqc_test_key_update_setup(&t) == XQC_OK);
+    conn = t.conn;
+    conn->enable_multipath = 1;
+    conn->local_max_path_id = 2;  /* draft-21: path IDs up to 2 */
+
+    scid.cid_len = 8;
+    memset(scid.cid_buf, 0x5a, scid.cid_len);
+    dcid.cid_len = 8;
+    memset(dcid.cid_buf, 0xa5, dcid.cid_len);
+    CU_ASSERT_FATAL(xqc_cid_set_add_path(&conn->scid_set, 1) == XQC_OK);
+    CU_ASSERT_FATAL(xqc_cid_set_insert_cid(&conn->scid_set, &scid,
+                                           XQC_CID_USED, 8, 1) == XQC_OK);
+    second = xqc_path_create(conn, &scid, &dcid, 1);
+    CU_ASSERT_FATAL(second != NULL);
+
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 50000));
+    CU_ASSERT(xqc_test_key_update_deliver_on(&t, second, 0, 1, XQC_FALSE));
+
+    xqc_test_key_update_server_update(&t, 1);
+    CU_ASSERT(xqc_test_key_update_deliver_on(&t, second, 1, 2, XQC_FALSE));
+    CU_ASSERT(xqc_test_key_update_deliver_on(&t, second, 1, 3, XQC_FALSE));
+    CU_ASSERT_EQUAL(conn->key_update_ctx.key_update_cnt, 1);
+
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 50001));
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 1, 50002));
+    CU_ASSERT_EQUAL(conn->key_update_ctx.key_update_cnt, 1);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+
+    xqc_test_key_update_teardown(&t);
+}
+
+
+/*
+ * A server creates a path for a received packet protected with the current
+ * keys. A later packet with a higher packet number protected with the
+ * previous keys on that path is a KEY_UPDATE_ERROR (RFC 9001 Section 6.4).
+ */
+void
+xqc_test_tls_key_update_on_created_path(void)
+{
+    xqc_test_key_update_ctx_t t;
+    xqc_connection_t *conn;
+    xqc_cid_t scid = {0}, dcid = {0};
+    xqc_path_ctx_t *created;
+    const uint8_t ping = 0x01;
+    const uint8_t challenge[9] = {0x1a, 1, 2, 3, 4, 5, 6, 7, 8};
+
+    CU_ASSERT_FATAL(xqc_test_key_update_setup(&t) == XQC_OK);
+    conn = t.conn;
+    conn->enable_multipath = 1;
+    conn->local_max_path_id = 2;  /* draft-21: path IDs up to 2 */
+    /* the client connection plays the server's part in path creation */
+    conn->conn_type = XQC_CONN_TYPE_SERVER;
+
+    scid.cid_len = 8;
+    memset(scid.cid_buf, 0x5b, scid.cid_len);
+    CU_ASSERT_FATAL(xqc_cid_set_add_path(&conn->scid_set, 2) == XQC_OK);
+    CU_ASSERT_FATAL(xqc_cid_set_insert_cid(&conn->scid_set, &scid,
+                                           XQC_CID_USED, 8, 2) == XQC_OK);
+    dcid.cid_len = 8;
+    memset(dcid.cid_buf, 0xb5, dcid.cid_len);
+    CU_ASSERT_FATAL(xqc_cid_set_add_path(&conn->dcid_set, 2) == XQC_OK);
+    CU_ASSERT_FATAL(xqc_cid_set_insert_cid(&conn->dcid_set, &dcid,
+                                           XQC_CID_UNUSED, 8, 2) == XQC_OK);
+
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 0, 1));
+    xqc_test_key_update_server_update(&t, 1);
+    CU_ASSERT(xqc_test_key_update_deliver(&t, 1, 2));
+
+    CU_ASSERT(xqc_test_key_update_deliver_frames(&t, &scid, 2, 1, 5,
+                                                 XQC_FALSE, challenge,
+                                                 sizeof(challenge)));
+    created = xqc_conn_find_path_by_path_id(conn, 2);
+    CU_ASSERT_FATAL(created != NULL);
+    CU_ASSERT_EQUAL(created->path_ku_first_recv_pktno, 5);
+
+    CU_ASSERT(!xqc_test_key_update_deliver_frames(&t, &scid, 2, 0, 6,
+                                                  XQC_FALSE, &ping, 1));
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_KEY_UPDATE_ERROR);
+
+    xqc_test_key_update_teardown(&t);
+}
+
 void
 xqc_test_tls(void)
 {
@@ -1301,6 +2055,7 @@ xqc_test_tls(void)
     
     xqc_test_tls_multiple_crypto_data();
     xqc_test_tls_generic();
+    xqc_test_reset_ticket_policy();
     xqc_test_tls_process_truncated_crypto_handshake();
     xqc_test_tls_failure();
     xqc_test_tls_app_verify();
