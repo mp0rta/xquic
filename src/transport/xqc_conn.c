@@ -4954,8 +4954,7 @@ xqc_conn_next_wakeup_time(xqc_connection_t *conn)
         /* Include INIT/VALIDATING paths: a VALIDATING path's LOSS_DETECTION
          * (PTO) timer drives PATH_CHALLENGE retransmission. Skipping it
          * leaves the engine asleep until an unrelated conn timer fires,
-         * stretching challenge retx from ~PTO to ~PING interval and starving
-         * the validation-timeout counter (G-P3, see xqc_path_validation_on_retx).
+         * stretching challenge retx from ~PTO to ~PING interval.
          * CLOSING paths are included too: their PATH_DRAINING timer drives
          * CLOSING->CLOSED and path_removed_notify, and the expire loop
          * (xqc_conn_timer_expire) already services paths below CLOSED.

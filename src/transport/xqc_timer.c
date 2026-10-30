@@ -84,10 +84,7 @@ xqc_timer_loss_detection_timeout(xqc_timer_type_t type, xqc_usec_t now, void *us
         xqc_log(conn->log, XQC_LOG_DEBUG, "|send Probe pkts|conn:%p|path:%ui|bytes_in_flight:%ud|", 
                 conn, path->path_id, send_ctl->ctl_bytes_in_flight);
         xqc_usec_t t = xqc_send_ctl_get_pto_time_and_space(send_ctl, now, &pns);
-        xqc_path_validation_on_pto(path);
-        if (path->path_state < XQC_PATH_STATE_CLOSING) {
-            xqc_path_send_one_or_two_ack_elicit_pkts(path, pns);
-        }
+        xqc_path_send_one_or_two_ack_elicit_pkts(path, pns);
 
     } else {
         /* assert(!PeerCompletedAddressValidation()) */
@@ -146,6 +143,23 @@ xqc_timer_path_idle_timeout(xqc_timer_type_t type, xqc_usec_t now, void *user_da
     }
 
     if (conn->active_path_count < 2 && path->path_state == XQC_PATH_STATE_ACTIVE) {
+        return;
+    }
+
+    /* the draining timer closes a CLOSING path; a PATH_IDLE re-armed by a
+       packet received on it must not close it earlier (draft-21 Section 3.4) */
+    if (path->path_state == XQC_PATH_STATE_CLOSING
+        && xqc_timer_is_set(&send_ctl->path_timer_manager, XQC_TIMER_PATH_DRAINING))
+    {
+        return;
+    }
+
+    /* draft-21 Section 3.1: a path that fails validation is closed with
+       PATH_ABANDON, and kept until the draining timer as in Section 3.4 */
+    if (path->path_state == XQC_PATH_STATE_VALIDATING) {
+        xqc_log(conn->log, XQC_LOG_WARN, "|G-P3 validation timeout|path_id:%ui|",
+                path->path_id);
+        xqc_path_request_abandon(path, TRA_PATH_UNSTABLE_OR_POOR);
         return;
     }
 

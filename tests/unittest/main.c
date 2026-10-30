@@ -460,8 +460,8 @@ main(int argc, char *argv[])
         /* --- from mqvpn-main PR#52: multipath validation-stall fix tests --- */
         || !CU_add_test(pSuite, "test_next_wakeup_includes_validating_path_timer",
                         test_next_wakeup_includes_validating_path_timer)
-        || !CU_add_test(pSuite, "test_validation_pto_counts_attempts_and_abandons",
-                        test_validation_pto_counts_attempts_and_abandons)
+        || !CU_add_test(pSuite, "test_validation_deadline_abandons_path",
+                        test_validation_deadline_abandons_path)
 #ifdef XQC_ENABLE_FEC
         || !CU_add_test(pSuite, "xqc_test_galois_calculation",
                         xqc_test_galois_calculation) ||
@@ -629,7 +629,6 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_mp21_max_path_id_grant_skipped_at_max", xqc_test_mp21_max_path_id_grant_skipped_at_max)
         || !CU_add_test(pSuite, "xqc_test_mp21_max_path_id_grant_rate_limited", xqc_test_mp21_max_path_id_grant_rate_limited)
         || !CU_add_test(pSuite, "xqc_test_mp21_path_challenge_1200b_validation", xqc_test_mp21_path_challenge_1200b_validation)
-        || !CU_add_test(pSuite, "xqc_test_mp21_path_validation_timeout", xqc_test_mp21_path_validation_timeout)
         || !CU_add_test(pSuite, "xqc_test_mp21_loss_replay_should_suppress_stale", xqc_test_mp21_loss_replay_should_suppress_stale)
         || !CU_add_test(pSuite, "xqc_test_mp21_gp10_iteration_visits_all_unused", xqc_test_mp21_gp10_iteration_visits_all_unused)
         || !CU_add_test(pSuite, "xqc_test_mp21_gp10_skips_above_curr_max", xqc_test_mp21_gp10_skips_above_curr_max)
