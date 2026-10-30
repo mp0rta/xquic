@@ -460,48 +460,6 @@ xqc_set_path_state(xqc_path_ctx_t *path, xqc_path_state_t dst_state)
 }
 
 xqc_int_t
-xqc_path_validation_on_retx(xqc_path_ctx_t *path)
-{
-    if (path == NULL) {
-        return -XQC_EPARAM;
-    }
-
-    /* Once the path has left VALIDATING (ACTIVE on response match,
-     * CLOSING/CLOSED on explicit close), the counter is irrelevant. */
-    if (path->path_state != XQC_PATH_STATE_VALIDATING) {
-        return XQC_OK;
-    }
-
-    if (path->path_challenge_attempts < UINT8_MAX) {
-        path->path_challenge_attempts++;
-    }
-
-    if (path->path_challenge_attempts >= XQC_PATH_VALIDATION_MAX_ATTEMPTS) {
-        xqc_connection_t *conn = path->parent_conn;
-        xqc_log(conn ? conn->log : NULL, XQC_LOG_WARN,
-                "|G-P3 validation timeout|path_id:%ui|attempts:%ud|",
-                path->path_id, (unsigned)path->path_challenge_attempts);
-        return xqc_path_request_abandon(path, TRA_PATH_UNSTABLE_OR_POOR);
-    }
-    return XQC_OK;
-}
-
-/* G-P3 companion: one validation attempt per PTO event on a VALIDATING
- * path. The loss-detection wiring (xqc_send_ctl.c ~1450) only runs once
- * acknowledgments for this path's packets arrive (possibly carried on
- * another path) — a fully black-holed path never reaches it, so the
- * PTO timer is the only signal that the PATH_CHALLENGE went unanswered
- * for a full PTO period. */
-void
-xqc_path_validation_on_pto(xqc_path_ctx_t *path)
-{
-    if (path == NULL || path->path_state != XQC_PATH_STATE_VALIDATING) {
-        return;
-    }
-    (void)xqc_path_validation_on_retx(path);
-}
-
-xqc_int_t
 xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code)
 {
     if (path == NULL) {
@@ -527,9 +485,24 @@ xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code)
 
     xqc_set_path_state(path, XQC_PATH_STATE_CLOSING);
 
+    /* the rest of what xqc_path_immediate_close does on the way to CLOSING:
+       requeue the path's packets elsewhere, stop sending scheduled ones, and
+       stop using its connection IDs and their stateless reset tokens */
+    if (conn != NULL && path->path_send_ctl != NULL) {
+        xqc_path_move_unack_packets_from_conn(path, conn);
+        for (xqc_send_type_t type = 0; type < XQC_SEND_TYPE_N; type++) {
+            xqc_path_send_buffer_clear(conn, path, NULL, type);
+        }
+        if (conn->enable_pmtud) {
+            xqc_conn_try_to_update_mss(conn);
+        }
+        xqc_cid_set_update_state(&conn->scid_set, path->path_id, XQC_CID_SET_ABANDONED);
+        xqc_cid_set_update_state(&conn->dcid_set, path->path_id, XQC_CID_SET_ABANDONED);
+    }
+
     /* Draining backstop (mirrors xqc_path_immediate_close): without it,
      * CLOSING is terminal whenever the peer never echoes the abandon —
-     * which is the NORM for a G-P3 black-holed path, since the peer
+     * which is the NORM for a path that failed validation, since the peer
      * typically never learned the path exists (its creation
      * PATH_CHALLENGE never arrived). The timer drives CLOSING -> CLOSED
      * -> path_removed_notify so the application layer can retry. */
