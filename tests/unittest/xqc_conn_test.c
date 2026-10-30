@@ -1975,11 +1975,16 @@ xqc_test_key_update_ack_on_any_path(void)
     CU_ASSERT(xqc_packet_can_initiate_key_update(conn));
 
     /* the next key update: acknowledgments of the previous phase stop
-       counting */
+       counting. The second path is closed by then; its marks are reset too */
     initial->path_pn_ctl->ctl_packet_number[XQC_PNS_APP_DATA] = 120;
     second->path_pn_ctl->ctl_packet_number[XQC_PNS_APP_DATA] = 60;
+    second->path_ku_first_recv_pktno = 10;
+    xqc_list_del(&second->path_list);
+    xqc_list_add_tail(&second->path_list, &conn->conn_closed_paths_list);
     conn->key_update_ctx.key_update_cnt = 2;
     xqc_conn_record_key_phase_start(conn);
+    CU_ASSERT_EQUAL(second->path_ku_first_sent_pktno, 60);
+    CU_ASSERT_EQUAL(second->path_ku_first_recv_pktno, XQC_MAX_UINT64_VALUE);
     CU_ASSERT(!xqc_packet_can_initiate_key_update(conn));
     xqc_conn_on_key_phase_acked(second, 51, now);
     CU_ASSERT(!conn->key_update_ctx.current_keys_acked);

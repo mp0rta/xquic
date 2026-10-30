@@ -6414,13 +6414,14 @@ xqc_conn_set_key_update_timer(xqc_connection_t *conn)
 void
 xqc_conn_record_key_phase_start(xqc_connection_t *conn)
 {
-    xqc_list_head_t *pos, *next;
     xqc_path_ctx_t *path;
 
     /* ctl_packet_number is the next number to send: from it on, every path
-       sends with the new keys */
-    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
-        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+       sends with the new keys. Closed paths are included: a delayed packet
+       can still arrive on one and is checked against these marks. */
+    for (path = xqc_conn_all_paths_first(conn); path != NULL;
+         path = xqc_conn_all_paths_next(conn, path))
+    {
         path->path_ku_first_sent_pktno =
             path->path_pn_ctl->ctl_packet_number[XQC_PNS_APP_DATA];
         path->path_ku_first_recv_pktno = XQC_MAX_UINT64_VALUE;
