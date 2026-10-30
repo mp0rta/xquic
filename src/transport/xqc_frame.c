@@ -21,7 +21,6 @@
 #include "src/transport/xqc_utils.h"
 #include "src/tls/xqc_tls.h"
 
-
 /*
  * Whether stream_id denotes a locally initiated bidirectional stream that has
  * never been created.  xqc_gen_stream_id() assigns each locally initiated
@@ -38,22 +37,25 @@ xqc_stream_local_bidi_uncreated(xqc_connection_t *conn, xqc_stream_id_t stream_i
     return (stream_id >> 2) >= conn->cur_stream_id_bidi_local;
 }
 
-static const char *const frame_type_2_str[XQC_FRAME_NUM] = {
-    [XQC_FRAME_PADDING] = "PADDING",
-    [XQC_FRAME_PING] = "PING",
-    [XQC_FRAME_ACK] = "ACK",
-    [XQC_FRAME_RESET_STREAM] = "RESET_STREAM",
-    [XQC_FRAME_STOP_SENDING] = "STOP_SENDING",
-    [XQC_FRAME_CRYPTO] = "CRYPTO",
-    [XQC_FRAME_NEW_TOKEN] = "NEW_TOKEN",
-    [XQC_FRAME_STREAM] = "STREAM",
-    [XQC_FRAME_MAX_DATA] = "MAX_DATA",
-    [XQC_FRAME_MAX_STREAM_DATA] = "MAX_STREAM_DATA",
-    [XQC_FRAME_MAX_STREAMS] = "MAX_STREAMS",
-    [XQC_FRAME_DATA_BLOCKED] = "DATA_BLOCKED",
-    [XQC_FRAME_STREAM_DATA_BLOCKED] = "STREAM_DATA_BLOCKED",
-    [XQC_FRAME_STREAMS_BLOCKED] = "STREAMS_BLOCKED",
-    [XQC_FRAME_NEW_CONNECTION_ID] = "NEW_CONNECTION_ID",
+
+
+static const char * const frame_type_2_str[XQC_FRAME_NUM] = {
+    [XQC_FRAME_PADDING]              = "PADDING",
+    [XQC_FRAME_PING]                 = "PING",
+    [XQC_FRAME_ACK]                  = "ACK",
+    [XQC_FRAME_RESET_STREAM]         = "RESET_STREAM",
+    [XQC_FRAME_RESET_STREAM_AT]      = "RESET_STREAM_AT",
+    [XQC_FRAME_STOP_SENDING]         = "STOP_SENDING",
+    [XQC_FRAME_CRYPTO]               = "CRYPTO",
+    [XQC_FRAME_NEW_TOKEN]            = "NEW_TOKEN",
+    [XQC_FRAME_STREAM]               = "STREAM",
+    [XQC_FRAME_MAX_DATA]             = "MAX_DATA",
+    [XQC_FRAME_MAX_STREAM_DATA]      = "MAX_STREAM_DATA",
+    [XQC_FRAME_MAX_STREAMS]          = "MAX_STREAMS",
+    [XQC_FRAME_DATA_BLOCKED]         = "DATA_BLOCKED",
+    [XQC_FRAME_STREAM_DATA_BLOCKED]  = "STREAM_DATA_BLOCKED",
+    [XQC_FRAME_STREAMS_BLOCKED]      = "STREAMS_BLOCKED",
+    [XQC_FRAME_NEW_CONNECTION_ID]    = "NEW_CONNECTION_ID",
     [XQC_FRAME_RETIRE_CONNECTION_ID] = "RETIRE_CONNECTION_ID",
     [XQC_FRAME_PATH_CHALLENGE] = "PATH_CHALLENGE",
     [XQC_FRAME_PATH_RESPONSE] = "PATH_RESPONSE",
@@ -75,6 +77,28 @@ static const char *const frame_type_2_str[XQC_FRAME_NUM] = {
     [XQC_FRAME_PATHS_BLOCKED] = "PATHS_BLOCKED",
     [XQC_FRAME_PATH_CIDS_BLOCKED] = "PATH_CIDS_BLOCKED",
 };
+
+static void
+xqc_rollback_new_conn_id_hash_entries(xqc_connection_t *conn,
+    const xqc_cid_t *new_conn_cid, xqc_bool_t sr_token_inserted)
+{
+    if (xqc_find_conns_hash(conn->engine->conns_hash_dcid, conn,
+                            new_conn_cid->cid_buf, new_conn_cid->cid_len) == conn)
+    {
+        xqc_remove_conns_hash(conn->engine->conns_hash_dcid, conn,
+                              new_conn_cid->cid_buf, new_conn_cid->cid_len);
+    }
+
+    if (sr_token_inserted == XQC_TRUE
+        && xqc_find_conns_hash(conn->engine->conns_hash_sr_token, conn,
+                               new_conn_cid->sr_token,
+                               XQC_STATELESS_RESET_TOKENLEN) == conn)
+    {
+        xqc_remove_conns_hash(conn->engine->conns_hash_sr_token, conn,
+                              new_conn_cid->sr_token,
+                              XQC_STATELESS_RESET_TOKENLEN);
+    }
+}
 
 const char *
 xqc_frame_type_2_str(xqc_engine_t *engine, xqc_frame_type_bit_t type_bit)
@@ -376,6 +400,12 @@ xqc_dispatch_mp_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in,
         sizeof(xqc_mp_frame_dispatch_table) / sizeof(xqc_mp_frame_dispatch_table[0]);
     const uint8_t mp_version = conn->conn_settings.multipath_version;
 
+    if (!conn->enable_multipath) {
+        xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|enable_multipath:0|f:%xL|",
+                frame_type);
+        return -XQC_EMP_INVALID_MP_VERTION;
+    }
+
     for (size_t i = 0; i < n; i++) {
         const xqc_mp_frame_dispatch_t *e = &xqc_mp_frame_dispatch_table[i];
         if (e->frame_type == frame_type && e->required_version == mp_version) {
@@ -452,11 +482,26 @@ xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
         case 0x00: ret = xqc_process_padding_frame(conn, packet_in); break;
         case 0x01: ret = xqc_process_ping_frame(conn, packet_in); break;
         case 0x02:
-        case 0x03: ret = xqc_process_ack_frame(conn, packet_in); break;
-        case 0x04: ret = xqc_process_reset_stream_frame(conn, packet_in); break;
-        case 0x05: ret = xqc_process_stop_sending_frame(conn, packet_in); break;
-        case 0x06: ret = xqc_process_crypto_frame(conn, packet_in); break;
-        case 0x07: ret = xqc_process_new_token_frame(conn, packet_in); break;
+        case 0x03:
+            ret = xqc_process_ack_frame(conn, packet_in);
+            break;
+        case XQC_FRAME_TYPE_RESET_STREAM:
+            ret = conn->local_settings.reset_stream_at
+                ? xqc_process_reset_stream_with_reset_at(conn, packet_in)
+                : xqc_process_reset_stream_frame(conn, packet_in);
+            break;
+        case XQC_FRAME_TYPE_RESET_STREAM_AT:
+            ret = xqc_process_reset_stream_at_frame(conn, packet_in);
+            break;
+        case 0x05:
+            ret = xqc_process_stop_sending_frame(conn, packet_in);
+            break;
+        case 0x06:
+            ret = xqc_process_crypto_frame(conn, packet_in);
+            break;
+        case 0x07:
+            ret = xqc_process_new_token_frame(conn, packet_in);
+            break;
         case 0x08:
         case 0x09:
         case 0x0a:
@@ -504,7 +549,12 @@ xqc_process_frames(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
              * the codepoint does not exist; parse-and-discard to remain
              * spec-correct on our side (a conformant draft-21 peer would
              * never emit it, but a misbehaving impl must not desync us). */
-            if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
+            if (!conn->enable_multipath) {
+                xqc_log(conn->log, XQC_LOG_ERROR, "|mp_version error|enable_multipath:0|f:%xL|",
+                        frame_type);
+                ret = -XQC_EMP_INVALID_MP_VERTION;
+
+            } else if (conn->conn_settings.multipath_version == XQC_MULTIPATH_10) {
                 ret = xqc_process_path_status_frame(conn, packet_in);
 
             } else {
@@ -744,6 +794,19 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
         }
     }
 
+    /* -09 Section 5.2: AT(0) also fixes the final size of later FINs. */
+    if ((stream->reset_at.recv_seen
+            || stream->reset_at.recv_state != XQC_RESET_AT_RECV_NONE)
+        && (stream_frame->data_offset + stream_frame->data_length
+                > stream->stream_max_recv_offset
+            || (stream_frame->fin
+                && stream_frame->data_offset + stream_frame->data_length
+                    != stream->stream_max_recv_offset)))
+    {
+        XQC_CONN_ERR(conn, TRA_FINAL_SIZE_ERROR);
+        ret = -XQC_EPROTO;
+        goto error;
+    }
     if (stream->stream_state_recv >= XQC_RECV_STREAM_ST_RESET_RECVD) {
         xqc_log(conn->log, XQC_LOG_DEBUG, "|RESET_RECVD return|stream_id:%ui|",
                 stream_id);
@@ -947,9 +1010,12 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
         return -XQC_EPROTO;
     }
 
-    if (stream->stream_data_in.stream_determined &&
-        stream->stream_data_in.stream_length ==
-            stream->stream_data_in.merged_offset_end) {
+    if (stream->stream_data_in.stream_determined
+        && (stream->reset_at.recv_state != XQC_RESET_AT_RECV_NONE
+            ? stream->stream_data_in.merged_offset_end
+                >= stream->reset_at.recv_size
+            : stream->stream_data_in.stream_length == stream->stream_data_in.merged_offset_end))
+    {
         if (stream->stream_state_recv == XQC_RECV_STREAM_ST_SIZE_KNOWN) {
             xqc_stream_recv_state_update(stream, XQC_RECV_STREAM_ST_DATA_RECVD);
         }
@@ -1301,6 +1367,7 @@ xqc_process_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
     xqc_cid_inner_t *inner_cid;
     xqc_list_head_t *pos, *next;
     xqc_cid_set_inner_t *inner_set;
+    xqc_bool_t sr_token_inserted = XQC_FALSE;
 
     ret = xqc_parse_new_conn_id_frame(packet_in, &new_conn_cid, &retire_prior_to, conn);
     if (ret != XQC_OK) {
@@ -1404,7 +1471,11 @@ xqc_process_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
                             new_conn_cid.sr_token,
                             XQC_STATELESS_RESET_TOKENLEN) == NULL) {
         ret = xqc_insert_conns_hash(conn->engine->conns_hash_sr_token, conn,
-                                    new_conn_cid.sr_token, XQC_STATELESS_RESET_TOKENLEN);
+                                    new_conn_cid.sr_token,
+                                    XQC_STATELESS_RESET_TOKENLEN);
+        if (ret == XQC_OK) {
+            sr_token_inserted = XQC_TRUE;
+        }
     } else {
         xqc_log(conn->log, XQC_LOG_ERROR, "|sr_token conflict:%s",
                 xqc_sr_token_str(conn->engine, new_conn_cid.sr_token));
@@ -1415,6 +1486,7 @@ xqc_process_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
     if (ret < 0) {
         xqc_log(conn->log, XQC_LOG_ERROR,
                 "|insert new_cid into conns_hash_sr_token failed|");
+        xqc_rollback_new_conn_id_hash_entries(conn, &new_conn_cid, XQC_FALSE);
         return ret;
     }
 
@@ -1422,10 +1494,10 @@ xqc_process_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
                                  conn->local_settings.active_connection_id_limit,
                                  XQC_INITIAL_PATH_ID);
     if (ret != XQC_OK) {
-        xqc_log(conn->log, XQC_LOG_ERROR,
-                "|xqc_cid_set_insert_cid error|limit:%ui|unused:%i|used:%i|",
-                conn->local_settings.active_connection_id_limit,
-                xqc_cid_set_get_unused_cnt(&conn->dcid_set, XQC_INITIAL_PATH_ID),
+        xqc_rollback_new_conn_id_hash_entries(conn, &new_conn_cid, sr_token_inserted);
+        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_cid_set_insert_cid error|limit:%ui|unused:%i|used:%i|",
+                conn->local_settings.active_connection_id_limit, 
+                xqc_cid_set_get_unused_cnt(&conn->dcid_set, XQC_INITIAL_PATH_ID), 
                 xqc_cid_set_get_used_cnt(&conn->dcid_set, XQC_INITIAL_PATH_ID));
         if (ret == -XQC_EACTIVE_CID_LIMIT) {
             XQC_CONN_ERR(conn, TRA_CONNECTION_ID_LIMIT_ERROR);
@@ -1578,6 +1650,142 @@ xqc_process_conn_close_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     return XQC_OK;
 }
 
+static xqc_int_t
+xqc_stream_account_reset_final_size(xqc_connection_t *conn,
+    xqc_stream_t *stream, uint64_t final_size)
+{
+    if (final_size < stream->stream_max_recv_offset
+        || (stream->stream_data_in.stream_determined
+            && final_size != stream->stream_data_in.stream_length)
+        || (stream->stream_state_recv >= XQC_RECV_STREAM_ST_RESET_RECVD
+            && final_size != stream->stream_max_recv_offset))
+    {
+        XQC_CONN_ERR(conn, TRA_FINAL_SIZE_ERROR);
+        return -XQC_EPROTO;
+    }
+
+    uint64_t increase = final_size - stream->stream_max_recv_offset;
+    if (final_size > stream->stream_flow_ctl.fc_max_stream_data_can_recv
+        || conn->conn_flow_ctl.fc_data_recved
+            > conn->conn_flow_ctl.fc_max_data_can_recv
+        || increase > conn->conn_flow_ctl.fc_max_data_can_recv
+            - conn->conn_flow_ctl.fc_data_recved)
+    {
+        XQC_CONN_ERR(conn, TRA_FLOW_CONTROL_ERROR);
+        return -XQC_EPROTO;
+    }
+
+    conn->conn_flow_ctl.fc_data_recved += increase;
+    stream->stream_max_recv_offset = final_size;
+    return XQC_OK;
+}
+
+static xqc_int_t
+xqc_process_reset_stream_fields(xqc_connection_t *conn,
+    xqc_stream_t *stream, xqc_stream_id_t stream_id, uint64_t err_code,
+    uint64_t final_size)
+{
+    /* reliable-stream-reset-09 Section 5.2 also covers ordinary duplicates. */
+    if (stream->reset_at.recv_state == XQC_RESET_AT_RECV_NONE
+        && stream->stream_state_recv >= XQC_RECV_STREAM_ST_RESET_RECVD)
+    {
+        if (err_code != stream->reset_at.recv_error) {
+            XQC_CONN_ERR(conn, TRA_STREAM_STATE_ERROR);
+            return -XQC_EPROTO;
+        }
+        if (final_size != stream->stream_max_recv_offset) {
+            XQC_CONN_ERR(conn, TRA_FINAL_SIZE_ERROR);
+            return -XQC_EPROTO;
+        }
+        xqc_stream_closing(stream, err_code);
+        return XQC_OK;
+    }
+
+    if (stream->reset_at.recv_state != XQC_RESET_AT_RECV_NONE) {
+        if (err_code != stream->reset_at.recv_error) {
+            XQC_CONN_ERR(conn, TRA_STREAM_STATE_ERROR);
+            return -XQC_EPROTO;
+        }
+    }
+
+    xqc_int_t ret = xqc_stream_account_reset_final_size(conn, stream,
+                                                        final_size);
+    if (ret != XQC_OK) {
+        return ret;
+    }
+
+    if (!xqc_stream_is_recv_only(conn->conn_type, stream_id)
+        && stream->reset_at.send_state != XQC_RESET_AT_SENT
+        && stream->stream_state_send < XQC_SEND_STREAM_ST_DATA_RECVD)
+    {
+        ret = xqc_stream_do_reset(stream, err_code);
+        if (ret == -XQC_EAGAIN) {
+            /* Like STOP_SENDING, implicit reset cannot require more data. */
+            stream->reset_at.send_size = 0;
+            ret = xqc_stream_do_reset(stream, err_code);
+        }
+        if (ret != XQC_OK) {
+            return ret;
+        }
+    }
+
+    /* RFC 9000 Section 3.2: Data Read is terminal for the receive side. */
+    if (stream->stream_state_recv == XQC_RECV_STREAM_ST_DATA_READ) {
+        return XQC_OK;
+    }
+
+    if (stream->reset_at.recv_state != XQC_RESET_AT_RECV_NONE) {
+        stream->reset_at.recv_size = 0;
+        stream->reset_at.recv_error = err_code;
+        stream->reset_at.recv_state = XQC_RESET_AT_ORDINARY;
+        stream->stream_data_in.stream_length = final_size;
+        stream->stream_data_in.stream_determined = XQC_TRUE;
+    }
+
+    /* RFC 9000 Section 2.4: local send resets can overwrite stream_err. */
+    stream->reset_at.recv_error = err_code;
+    XQC_STREAM_CLOSE_MSG(stream, "remote reset");
+    xqc_log(conn->log, XQC_LOG_DEBUG,
+            "|stream_id:%ui|stream_state_recv:%d|stream_state_send:%d|",
+            stream->stream_id, stream->stream_state_recv,
+            stream->stream_state_send);
+
+    xqc_stream_complete_recv_reset(stream, err_code, final_size, XQC_FALSE);
+    return XQC_OK;
+}
+
+/*
+ * draft-ietf-quic-reliable-stream-reset-09 Section 5.2: an ordinary reset
+ * can lower the reliable boundary to zero.
+ */
+xqc_int_t
+xqc_process_reset_stream_with_reset_at(xqc_connection_t *conn,
+    xqc_packet_in_t *packet_in)
+{
+    xqc_stream_id_t id;
+    uint64_t error, final_size;
+    xqc_int_t ret = xqc_parse_reset_stream_frame(packet_in, &id, &error,
+                                                &final_size, conn);
+    if (ret != XQC_OK) {
+        return ret;
+    }
+
+    xqc_stream_t *stream = xqc_find_stream_by_id(id, conn->streams_hash);
+    if (stream == NULL) {
+        xqc_bool_t local = (id & 1) == (conn->conn_type == XQC_CONN_TYPE_SERVER);
+        if (local) {
+            return XQC_OK;
+        }
+        stream = xqc_passive_create_stream(conn, id, NULL);
+        if (stream == NULL) {
+            return XQC_OK;
+        }
+    }
+
+    return xqc_process_reset_stream_fields(conn, stream, id, error,
+                                           final_size);
+}
+
 xqc_int_t
 xqc_process_reset_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 {
@@ -1637,15 +1845,31 @@ xqc_process_reset_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
             "|stream_id:%ui|stream_state_recv:%d|stream_state_send:%d|",
             stream->stream_id, stream->stream_state_recv, stream->stream_state_send);
 
-    xqc_stream_closing(stream, err_code);
-
-    /* RFC 9000 Section 3.3: only the sender sends RESET_STREAM. */
+    /*
+     * Finish both directions of the local reset handling before notifying
+     * the upper layer. xqc_stream_closing() runs application callbacks that
+     * may send, close the stream, or otherwise re-enter the engine; a nested
+     * engine pass can reap this stream through the STREAM_CLOSE timer, so
+     * every access to `stream` must happen before that callback.
+     */
+    /* -09 Section 5.2: a peer reset cannot replace our committed reset. */
     if (!xqc_stream_is_recv_only(conn->conn_type, stream_id)
-        && stream->stream_state_send < XQC_SEND_STREAM_ST_RESET_SENT)
+        && stream->reset_at.send_state != XQC_RESET_AT_SENT
+        && stream->stream_state_send < XQC_SEND_STREAM_ST_DATA_RECVD)
     {
         xqc_send_queue_drop_stream_frame_packets(conn, stream_id);
-        xqc_write_reset_stream_to_packet(conn, stream, err_code,
-                                         stream->stream_send_offset);
+        xqc_write_reset_stream_to_packet(conn, stream, err_code, stream->stream_send_offset);
+
+        /* RFC 9000 Section 19.4: after sending a RESET_STREAM, an endpoint
+         * ceases transmission and retransmission of STREAM frames. */
+        if (stream->stream_state_send >= XQC_SEND_STREAM_ST_RESET_SENT) {
+            xqc_stream_shutdown_write(stream);
+        }
+    }
+
+    /* RFC 9000 Section 3.2: Data Read is terminal for the receive side. */
+    if (stream->stream_state_recv == XQC_RECV_STREAM_ST_DATA_READ) {
+        return XQC_OK;
     }
 
     if (stream->stream_state_recv < XQC_RECV_STREAM_ST_RESET_RECVD) {
@@ -1661,6 +1885,13 @@ xqc_process_reset_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
         stream->stream_data_in.buffered_frame_count = 0;
         xqc_stream_ready_to_read(stream);
     }
+
+    /*
+     * MUST stay the last statement that uses `stream`: the notified
+     * application may destroy this stream before the callback returns.
+     */
+    xqc_stream_closing(stream, err_code);
+
     return XQC_OK;
 }
 
@@ -1699,16 +1930,37 @@ xqc_process_stop_sending_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
         }
     }
 
+#ifdef XQC_ENABLE_WEBTRANSPORT
+    if (stream->stop_sending_prepare) {
+        ret = stream->stop_sending_prepare(stream, err_code);
+        if (ret != XQC_OK) {
+            return ret == -XQC_EAGAIN ? XQC_OK : ret;
+        }
+    }
+#endif
+
     /*
      * An endpoint that receives a STOP_SENDING frame
      * MUST send a RESET_STREAM frame if the stream is in the Ready or Send
      * state.
      */
-    if (stream->stream_state_send < XQC_SEND_STREAM_ST_RESET_SENT) {
-        xqc_write_reset_stream_to_packet(conn, stream, H3_REQUEST_CANCELLED,
-                                         stream->stream_send_offset);
+    if (stream->reset_at.send_state != XQC_RESET_AT_SENT
+        && stream->stream_state_send < XQC_SEND_STREAM_ST_RESET_SENT)
+    {
+        ret = xqc_stream_do_reset(stream, err_code);
+        if (ret == -XQC_EAGAIN) {
+            stream->reset_at.send_size = 0;
+            ret = xqc_stream_do_reset(stream, err_code);
+        }
+        if (ret != XQC_OK) {
+            return ret;
+        }
     }
 
+    if (stream->stream_if->stream_stop_sending_notify) {
+        stream->stream_if->stream_stop_sending_notify(stream, err_code,
+                                                      stream->user_data);
+    }
     return XQC_OK;
 }
 
@@ -2189,6 +2441,17 @@ xqc_process_path_response_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_
         return XQC_OK;
     }
 
+    if (conn->conn_type == XQC_CONN_TYPE_SERVER) {
+        xqc_path_ctx_t *rebinding_path =
+            xqc_path_rebinding_find_by_challenge(conn, path_response_data);
+        if (rebinding_path != NULL) {
+            /* RFC 9000 Section 8.2.2 permits the response on another path. */
+            return xqc_path_rebinding_on_response(conn, rebinding_path,
+                                                  path_response_data,
+                                                  packet_in->pkt_recv_time);
+        }
+    }
+
     xqc_path_ctx_t *path = NULL;
     if (conn->enable_multipath) {
         path = xqc_conn_find_path_by_path_id(conn, packet_in->pi_path_id);
@@ -2213,76 +2476,15 @@ xqc_process_path_response_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_
      * a PATH_CHALLENGE frame previously sent by the endpoint, the endpoint
      * MAY generate a connection error of type PROTOCOL_VIOLATION.
      */
-
-    if (memcmp(path->path_challenge_data, path_response_data, (size_t)XQC_PATH_CHALLENGE_DATA_LEN) != 0) {
-        xqc_log(conn->log, XQC_LOG_ERROR, "|path:%ui|ignore|no match path challenge data|", path->path_id);
+    if (memcmp(path->path_challenge_data, path_response_data,
+               (size_t)XQC_PATH_CHALLENGE_DATA_LEN) != 0)
+    {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|path:%ui|ignore|no match path challenge data|", path->path_id);
         return XQC_OK;
     }
 
     xqc_path_validate(path);
-
-    if (conn->conn_type == XQC_CONN_TYPE_SERVER && (path->rebinding_addrlen != 0) &&
-        (path->rebinding_check_response == 1)) {
-        /* G-I4 (RFC 9000 §9.4 ¶1, inherited per-path by
-         * draft-ietf-quic-multipath-21 §5.1 ¶5): snapshot the OLD
-         * peer_addr before the memcpy below overwrites it, so the
-         * post-update IP-change check can compare against it. */
-        struct sockaddr_storage old_peer;
-        socklen_t old_peer_len = path->peer_addrlen;
-        memset(&old_peer, 0, sizeof(old_peer));
-        if (old_peer_len > 0) {
-            xqc_memcpy(&old_peer, path->peer_addr, old_peer_len);
-        }
-
-        /* successfully validate rebinding addr */
-        xqc_memcpy(path->peer_addr, path->rebinding_addr, path->rebinding_addrlen);
-        path->peer_addrlen = path->rebinding_addrlen;
-        path->addr_str_len = 0;
-        xqc_log(conn->log, XQC_LOG_INFO,
-                "|path:%ui|REBINDING|validate NAT rebinding addr|path:%s|", path->path_id,
-                xqc_path_addr_str(path));
-
-        /* RFC 9000 §9.4 ¶1 (inherited by mp21 §5.1 ¶5):
-         *   IP change       -> MUST reset cwnd + RTT (initial values).
-         *   Port-only change -> MAY retain (perf-preserving for
-         *                       CGNAT pinhole churn). */
-        if (old_peer_len > 0 && !xqc_is_same_ip((struct sockaddr *)&old_peer,
-                                                (struct sockaddr *)path->peer_addr)) {
-            xqc_send_ctl_on_path_migration(path->path_send_ctl);
-
-        } else {
-            xqc_log(conn->log, XQC_LOG_INFO,
-                    "|path:%ui|REBINDING|port_only_retain|spec:9.4_p1_MAY|",
-                    path->path_id);
-        }
-
-        if (conn->enable_multipath && (path->path_id != XQC_INITIAL_PATH_ID)) {
-            if (conn->transport_cbs.path_peer_addr_changed_notify) {
-                conn->transport_cbs.path_peer_addr_changed_notify(
-                    conn, path->path_id, xqc_conn_get_user_data(conn));
-            }
-
-        } else {
-            xqc_memcpy(conn->peer_addr, path->rebinding_addr, path->rebinding_addrlen);
-            conn->peer_addrlen = path->rebinding_addrlen;
-            conn->addr_str_len = 0;
-            xqc_log(conn->log, XQC_LOG_INFO,
-                    "|path:%ui|REBINDING|validate NAT rebinding addr|conn:%s|",
-                    path->path_id, xqc_conn_addr_str(conn));
-
-            if (conn->transport_cbs.conn_peer_addr_changed_notify) {
-                conn->transport_cbs.conn_peer_addr_changed_notify(
-                    conn, xqc_conn_get_user_data(conn));
-            }
-        }
-
-        path->rebinding_valid++;
-        path->rebinding_addrlen = 0;
-        path->rebinding_check_response = 0;
-        xqc_timer_unset(&path->path_send_ctl->path_timer_manager,
-                        XQC_TIMER_NAT_REBINDING);
-    }
-
     return XQC_OK;
 }
 
@@ -2493,6 +2695,7 @@ xqc_process_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
     xqc_cid_inner_t *inner_cid;
     xqc_list_head_t *pos, *next;
     xqc_cid_set_inner_t *inner_set;
+    xqc_bool_t sr_token_inserted = XQC_FALSE;
     uint64_t path_id;
 
     ret = xqc_parse_mp_new_conn_id_frame(packet_in, &new_conn_cid, &retire_prior_to,
@@ -2613,7 +2816,11 @@ xqc_process_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
                             new_conn_cid.sr_token,
                             XQC_STATELESS_RESET_TOKENLEN) == NULL) {
         ret = xqc_insert_conns_hash(conn->engine->conns_hash_sr_token, conn,
-                                    new_conn_cid.sr_token, XQC_STATELESS_RESET_TOKENLEN);
+                                    new_conn_cid.sr_token,
+                                    XQC_STATELESS_RESET_TOKENLEN);
+        if (ret == XQC_OK) {
+            sr_token_inserted = XQC_TRUE;
+        }
     } else {
         xqc_log(conn->log, XQC_LOG_ERROR, "|sr_token conflict:%s",
                 xqc_sr_token_str(conn->engine, new_conn_cid.sr_token));
@@ -2624,6 +2831,7 @@ xqc_process_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
     if (ret < 0) {
         xqc_log(conn->log, XQC_LOG_ERROR,
                 "|insert new_cid into conns_hash_sr_token failed|");
+        xqc_rollback_new_conn_id_hash_entries(conn, &new_conn_cid, XQC_FALSE);
         return ret;
     }
 
@@ -2631,11 +2839,12 @@ xqc_process_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
         xqc_cid_set_insert_cid(&conn->dcid_set, &new_conn_cid, XQC_CID_UNUSED,
                                conn->local_settings.active_connection_id_limit, path_id);
     if (ret != XQC_OK) {
-        xqc_log(conn->log, XQC_LOG_ERROR,
-                "|xqc_cid_set_insert_cid error|limit:%ui|unused:%i|used:%i|path:%ui|",
-                conn->local_settings.active_connection_id_limit,
-                xqc_cid_set_get_unused_cnt(&conn->dcid_set, path_id),
-                xqc_cid_set_get_used_cnt(&conn->dcid_set, path_id), path_id);
+        xqc_rollback_new_conn_id_hash_entries(conn, &new_conn_cid, sr_token_inserted);
+        xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_cid_set_insert_cid error|limit:%ui|unused:%i|used:%i|path:%ui|",
+                conn->local_settings.active_connection_id_limit, 
+                xqc_cid_set_get_unused_cnt(&conn->dcid_set, path_id), 
+                xqc_cid_set_get_used_cnt(&conn->dcid_set, path_id),
+                path_id);
         if (ret == -XQC_EACTIVE_CID_LIMIT) {
             XQC_CONN_ERR(conn, TRA_CONNECTION_ID_LIMIT_ERROR);
             return -XQC_EPROTO;
@@ -3044,3 +3253,110 @@ xqc_process_repair_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 }
 
 #endif
+
+xqc_int_t
+xqc_process_reset_stream_at_frame(xqc_connection_t *conn,
+    xqc_packet_in_t *packet_in)
+{
+    xqc_stream_id_t id;
+    uint64_t error, final_size, reliable_size;
+    if (!conn->local_settings.reset_stream_at
+        || (packet_in->pi_pkt.pkt_type != XQC_PTYPE_SHORT_HEADER
+            && packet_in->pi_pkt.pkt_type != XQC_PTYPE_0RTT))
+    {
+        XQC_CONN_ERR(conn, TRA_PROTOCOL_VIOLATION);
+        return -XQC_EPROTO;
+    }
+    xqc_int_t ret = xqc_parse_reset_stream_at_frame(packet_in, &id, &error,
+        &final_size, &reliable_size);
+    if (ret != XQC_OK) {
+        XQC_CONN_ERR(conn, TRA_FRAME_ENCODING_ERROR);
+        return ret;
+    }
+    if (xqc_stream_is_send_only(conn->conn_type, id)) {
+        XQC_CONN_ERR(conn, TRA_STREAM_STATE_ERROR);
+        return -XQC_EPROTO;
+    }
+    xqc_stream_t *stream = xqc_find_stream_by_id(id, conn->streams_hash);
+    if (stream == NULL) {
+        xqc_bool_t local = (id & 1) == (conn->conn_type == XQC_CONN_TYPE_SERVER);
+        if (local) {
+            return XQC_OK;
+        }
+        stream = xqc_passive_create_stream(conn, id, NULL);
+        if (stream == NULL) {
+            return XQC_OK;
+        }
+    }
+    /* reliable-stream-reset-09 Sections 4 and 5.2. */
+    if (stream->stream_state_recv >= XQC_RECV_STREAM_ST_RESET_RECVD
+        && stream->reset_at.recv_state == XQC_RESET_AT_RECV_NONE)
+    {
+        if (error != stream->reset_at.recv_error) {
+            XQC_CONN_ERR(conn, TRA_STREAM_STATE_ERROR);
+            return -XQC_EPROTO;
+        }
+        if (final_size != stream->stream_max_recv_offset) {
+            XQC_CONN_ERR(conn, TRA_FINAL_SIZE_ERROR);
+            return -XQC_EPROTO;
+        }
+        stream->reset_at.recv_seen = XQC_TRUE;
+        if (reliable_size == 0) {
+            return xqc_process_reset_stream_fields(conn, stream, id, error,
+                                                   final_size);
+        }
+        return XQC_OK;
+    }
+    if (stream->reset_at.recv_state != XQC_RESET_AT_RECV_NONE
+        && error != stream->reset_at.recv_error)
+    {
+        XQC_CONN_ERR(conn, TRA_STREAM_STATE_ERROR);
+        return -XQC_EPROTO;
+    }
+    if (stream->reset_at.recv_state != XQC_RESET_AT_RECV_NONE
+        && reliable_size >= stream->reset_at.recv_size)
+    {
+        if (final_size != stream->stream_data_in.stream_length) {
+            XQC_CONN_ERR(conn, TRA_FINAL_SIZE_ERROR);
+            return -XQC_EPROTO;
+        }
+        return XQC_OK;
+    }
+
+    ret = xqc_stream_account_reset_final_size(conn, stream, final_size);
+    if (ret != XQC_OK) {
+        return ret;
+    }
+
+    if (reliable_size == 0) {
+        stream->reset_at.recv_seen = XQC_TRUE;
+        stream->reset_at.recv_error = error;
+        return xqc_process_reset_stream_fields(conn, stream, id, error,
+                                               final_size);
+    }
+
+    if (stream->stream_state_recv == XQC_RECV_STREAM_ST_DATA_READ) {
+        return XQC_OK;
+    }
+    if (stream->stream_state_recv >= XQC_RECV_STREAM_ST_RESET_RECVD) {
+        return XQC_OK;
+    }
+
+    stream->stream_data_in.stream_length = final_size;
+    stream->stream_data_in.stream_determined = XQC_TRUE;
+    stream->reset_at.recv_state = XQC_RESET_AT_RELIABLE;
+    stream->reset_at.recv_size = reliable_size;
+    stream->reset_at.recv_error = error;
+    stream->stream_stats.peer_reset_time = xqc_monotonic_timestamp();
+    if (stream->stream_data_in.next_read_offset >= reliable_size) {
+        xqc_stream_complete_recv_reset(stream, error, final_size, XQC_FALSE);
+        return XQC_OK;
+    }
+
+    xqc_stream_recv_state_update(stream,
+        stream->stream_data_in.merged_offset_end >= reliable_size
+            ? XQC_RECV_STREAM_ST_DATA_RECVD
+            : XQC_RECV_STREAM_ST_SIZE_KNOWN);
+    xqc_stream_ready_to_read(stream);
+    return XQC_OK;
+}

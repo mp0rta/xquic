@@ -58,6 +58,7 @@ xqc_test_mp21_make_conn(const xqc_test_mp21_conn_params_t *p)
     conn->remote_settings.init_max_path_id = conn->remote_max_path_id;
     conn->local_settings.enable_multipath = 1;
     conn->remote_settings.enable_multipath = 1;
+    conn->enable_multipath = 1;
     conn->local_settings.multipath_version = XQC_MULTIPATH_3E;
     conn->remote_settings.multipath_version = XQC_MULTIPATH_3E;
 

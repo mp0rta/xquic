@@ -323,24 +323,23 @@ static const int H3_ERR_CNT = XQC_H3_ERR_MAX - H3_ERR_START;
  * @brief xquic QPACK application error codes: 9xx
  */
 typedef enum {
-    XQC_QPACK_DECODER_VARINT_ERROR =
-        900,                       /**< qpack decode variable-length integer error */
-    XQC_QPACK_ENCODER_ERROR = 901, /**< qpack encode error */
-    XQC_QPACK_DECODER_ERROR = 902, /**< qpack decode error */
-    XQC_QPACK_DYNAMIC_TABLE_ERROR = 903,  /**< qpack dynamic table error */
-    XQC_QPACK_STATIC_TABLE_ERROR = 904,   /**< qpack static table error */
-    XQC_QPACK_SET_DTABLE_CAP_ERROR = 905, /**< set dynamic table capacity error */
-    XQC_QPACK_SEND_ERROR = 906,           /**< send data error or control message error */
-    XQC_QPACK_SAVE_HEADERS_ERROR =
-        907, /**< failed to save name-value to header structure */
-    XQC_QPACK_UNKNOWN_INSTRUCTION = 908,    /**< unknown encoder/decoder instruction */
-    XQC_QPACK_INSTRUCTION_ERROR = 909,      /**< error instruction */
-    XQC_QPACK_DYNAMIC_TABLE_REFERRED = 910, /**< dynamic table entry is still referred */
-    XQC_QPACK_DYNAMIC_TABLE_VOID_ENTRY = 911, /**< entry inexists in dynamic table */
-    XQC_QPACK_STATE_ERROR = 912,              /**< state is error */
-    XQC_QPACK_DYNAMIC_TABLE_NOT_ENOUGH = 913, /**< dynamic table not enough */
-    XQC_QPACK_HUFFMAN_DEC_ERROR = 914,        /**< huffman decode error */
-    XQC_QPACK_HUFFMAN_DEC_STATE_ERROR = 915,  /**< huffman decode state error */
+    XQC_QPACK_DECODER_VARINT_ERROR      = 900,  /**< qpack decode variable-length integer error */
+    XQC_QPACK_ENCODER_ERROR             = 901,  /**< qpack encode error */
+    XQC_QPACK_DECODER_ERROR             = 902,  /**< qpack decode error */
+    XQC_QPACK_DYNAMIC_TABLE_ERROR       = 903,  /**< qpack dynamic table error */
+    XQC_QPACK_STATIC_TABLE_ERROR        = 904,  /**< qpack static table error */
+    XQC_QPACK_SET_DTABLE_CAP_ERROR      = 905,  /**< set dynamic table capacity error */
+    XQC_QPACK_SEND_ERROR                = 906,  /**< send data error or control message error */
+    XQC_QPACK_SAVE_HEADERS_ERROR        = 907,  /**< failed to save name-value to header structure */
+    XQC_QPACK_UNKNOWN_INSTRUCTION       = 908,  /**< unknown encoder/decoder instruction */
+    XQC_QPACK_INSTRUCTION_ERROR         = 909,  /**< error instruction */
+    XQC_QPACK_DYNAMIC_TABLE_REFERRED    = 910,  /**< dynamic table entry is still referred */
+    XQC_QPACK_DYNAMIC_TABLE_VOID_ENTRY  = 911,  /**< entry inexists in dynamic table */
+    XQC_QPACK_STATE_ERROR               = 912,  /**< state is error */
+    XQC_QPACK_DYNAMIC_TABLE_NOT_ENOUGH  = 913,  /**< dynamic table not enough */
+    XQC_QPACK_HUFFMAN_DEC_ERROR         = 914,  /**< huffman decode error */
+    XQC_QPACK_HUFFMAN_DEC_STATE_ERROR   = 915,  /**< huffman decode state error */
+    XQC_QPACK_DYNAMIC_TABLE_EXCESSIVE_LOAD = 916, /**< peer Duplicate work limit exceeded */
 
     XQC_QPACK_ERR_MAX,
 } xqc_qpack_error_t;

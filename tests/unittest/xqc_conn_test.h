@@ -9,12 +9,14 @@ void xqc_test_conn_create();
 void xqc_test_datagram_transport_param_65536(void);
 void xqc_test_datagram_transport_param_varint_max(void);
 void xqc_test_conn_idle_timeout();
+void xqc_test_conn_next_wakeup_path_timers(void);
 void xqc_test_conn_pmtud_deferred_until_handshake();
 void xqc_test_conn_pmtud_starts_after_handshake();
 void xqc_test_conn_pmtud_force_enable();
 void xqc_test_conn_pmtud_legacy_compatibility();
 void xqc_test_conn_early_data_reject();
 void xqc_test_conn_early_data_reject_flow_ctl();
+void xqc_test_key_update_old_key_retention();
 
 /* RFC 9000 §20.1 CRYPTO_ERROR dynamic construction */
 void xqc_test_conn_tls_error_cb_constructs_crypto_error();

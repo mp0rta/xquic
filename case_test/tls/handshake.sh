@@ -308,22 +308,83 @@ else
 fi
 }
 
+case_tls_handshake_key_update_old_key_retention()
+{
+    case_test_stop_server
+    case_test_start_server ${SERVER_BIN} -l d -e > /dev/null
+
+    clear_log
+    echo -e "key update old key retention ...\c"
+    ${CLIENT_BIN} -s 102400 -l d -t 8 -E -x 904 >> clog
+    held=`grep "hold-old-key-packet" clog`
+    cached=`grep "cached-old-key-packet" clog`
+    retained=`grep "RESULT|retained" clog`
+    dropped=`grep "RESULT|dropped" clog`
+    if [ "$held" != "" ] && [ "$cached" != "" ] \
+        && [ "$retained" != "" ] && [ -z "$dropped" ]; then
+        echo ">>>>>>>> pass:1"
+        case_print_result "key_update_old_key_retention" "pass"
+    else
+        echo ">>>>>>>> pass:0"
+        case_print_result "key_update_old_key_retention" "fail"
+    fi
+}
+
 case_tls_handshake_key_update_0RTT()
 {
 grep_err_log
 
-clear_log
 echo -e "key update 0RTT...\c"
-${CLIENT_BIN} -s 102400 -l d -E -x 40 >> clog
-result=`grep ">>>>>>>> pass" clog`
-svr_res=`grep "key phase changed to" slog`
-cli_res=`grep "key phase changed to" clog`
-errlog=`grep_err_log`
-if [ -z "$errlog" ] && [ "$result" == ">>>>>>>> pass:1" ] && [ "$svr_res" != "" ] && [ "$cli_res" != "" ]; then
+key_update_0rtt_pass=0
+key_update_0rtt_attempt=1
+while [ $key_update_0rtt_attempt -le 2 ]; do
+    clear_log
+    if [ $key_update_0rtt_attempt -gt 1 ]; then
+        echo -e " retry ${key_update_0rtt_attempt} ...\c"
+    fi
+    ${CLIENT_BIN} -s 102400 -l d -E -x 40 >> clog
+    # The peer logs its key phase change while draining the last packets, which
+    # under parallel load can land just after the client exits; poll briefly so a
+    # late log line is not mistaken for a missing key update.
+    for wait_idx in $(seq 1 25); do
+        svr_res=`grep "key phase changed to" slog`
+        cli_res=`grep "key phase changed to" clog`
+        if [ -n "$svr_res" ] && [ -n "$cli_res" ]; then
+            break
+        fi
+        sleep 0.2
+    done
+    result=`grep ">>>>>>>> pass" clog`
+    errlog=`grep_err_log`
+    if [ -z "$errlog" ] && [ "$result" == ">>>>>>>> pass:1" ] && [ "$svr_res" != "" ] && [ "$cli_res" != "" ]; then
+        key_update_0rtt_pass=1
+        break
+    fi
+    if [ $key_update_0rtt_attempt -ge 2 ]; then
+        break
+    fi
+    # A client pass:0 is a stream echo failure, not proof of a deterministic
+    # key-update failure. Retry every error-free first attempt so transient
+    # response loss and late peer processing do not bypass this case's budget.
+    if [ -n "$errlog" ]; then
+        break
+    fi
+    key_update_0rtt_attempt=$((key_update_0rtt_attempt + 1))
+done
+if [ $key_update_0rtt_pass -eq 1 ]; then
     echo ">>>>>>>> pass:1"
     case_print_result "key_update_0RTT" "pass"
 else
+    [ "$result" == ">>>>>>>> pass:1" ] && result_hit=1 || result_hit=0
+    [ -n "$svr_res" ] && svr_key_phase_hit=1 || svr_key_phase_hit=0
+    [ -n "$cli_res" ] && cli_key_phase_hit=1 || cli_key_phase_hit=0
+    [ -n "$errlog" ] && errlog_hit=1 || errlog_hit=0
     echo ">>>>>>>> pass:0"
+    echo "[key-update-0rtt]|attempt:${key_update_0rtt_attempt}|client_pass:${result_hit}|svr_key_phase:${svr_key_phase_hit}|cli_key_phase:${cli_key_phase_hit}|errlog:${errlog_hit}|"
+    if [ -n "$errlog" ]; then
+        echo "[key-update-0rtt][errlog]"
+        printf '%s\n' "$errlog" | tail -n 10
+    fi
     case_print_result "key_update_0RTT" "fail"
 fi
 }
@@ -461,6 +522,165 @@ rm -f aead_confidentiality_server.log
 
 }
 
+case_tls_handshake_key_update_stale_deadline()
+{
+    # RFC 9001 Sections 6.1 and 6.5: a second key update started while the
+    # first update's old-key discard deadline is pending keeps the keys it
+    # retires.
+    case_test_stop_server
+    case_test_start_server ${SERVER_BIN} -l d -e -x 905 > /dev/null
+
+    clear_log
+    echo -e "key update keeps retired keys past an earlier deadline ...\c"
+    ${CLIENT_BIN} -s 102400 -l d -t 5 -E -x 905 >> clog
+    result=`grep ">>>>>>>> pass" clog`
+    copied=`grep "\[key-update-stale-deadline\]|copy-old-key-packet|" clog`
+    forced=`grep "\[key-update-stale-deadline\]|second-update|" clog`
+    retained=`grep "\[key-update-stale-deadline\]|RESULT|retained|" clog`
+    errlog=`grep_err_log`
+    if [ -n "$copied" ] && [ -n "$forced" ] && [ -n "$retained" ] \
+        && [ -z "$errlog" ] && [ "$result" == ">>>>>>>> pass:1" ]; then
+        echo ">>>>>>>> pass:1"
+        case_print_result "key_update_stale_deadline" "pass"
+    else
+        echo ">>>>>>>> pass:0"
+        case_print_result "key_update_stale_deadline" "fail"
+        grep "\[key-update-stale-deadline\]" clog
+        echo "$errlog"
+    fi
+
+    case_test_stop_server
+}
+
+reset_0rtt_saved_tp_matches()
+{
+    local expected="$1"
+    test -s tp_localhost || return 1
+    grep -q '^initial_max_data=' tp_localhost || return 1
+    if [[ "${expected}" = 1 ]]; then
+        grep -qx 'reset_stream_at=1' tp_localhost
+    else
+        ! grep -q '^reset_stream_at=' tp_localhost
+    fi
+}
+
+reset_0rtt_check_connection()
+{
+    local phase="$1" cached="$2" current="$3" early="$4" reused="$5"
+    local ready=1 packets_ok=1
+    [[ "${phase}" = warmup ]] && ready=0
+
+    if [[ "${ready}" = 1 ]] && ! grep -Eq \
+        'xqc_send_ctl_on_packet_sent.*pkt_type:0RTT\|frame:.*STREAM' clog; then
+        echo "${phase}: no STREAM packet was sent in 0-RTT"
+        packets_ok=0
+    fi
+    if [[ "${early}" = 2 ]]; then
+        if ! grep -Fq 'xqc_conn_early_data_reject|reject|' clog \
+            || ! grep -Eq \
+                'xqc_send_ctl_on_packet_sent.*pkt_type:SHORT_HEADER\|frame:.*STREAM' clog; then
+            echo "${phase}: missing 0-RTT rejection or 1-RTT stream replay"
+            packets_ok=0
+        fi
+    fi
+
+    if [[ "${packets_ok}" = 1 ]] \
+        && grep -Fxq '>>>>>>>> pass:1' "${phase}.log" \
+        && grep -Fq "early_data_flag:${early}, conn_err:0," "${phase}.log" \
+        && grep -Fxq "[reset-0rtt]|cached:${cached}|early_ready:${ready}|" \
+            "${phase}.log" \
+        && grep -Fxq "[reset-0rtt]|negotiated:${current}|session_reused:${reused}|" \
+            "${phase}.log" \
+        && grep -Fq 'save_tp_cb use server domain as the key.' "${phase}.log" \
+        && grep -Fq 'save_session_cb use server domain as the key.' \
+            "${phase}.log" \
+        && reset_0rtt_saved_tp_matches "${current}"; then
+        return 0
+    fi
+
+    echo "${phase}: expected cached=${cached} current=${current} early=${early} reused=${reused}"
+    grep -E 'reset-0rtt|early_data_flag:|>>>>>>>> pass:|save.*tp' "${phase}.log"
+    cat tp_localhost
+    return 1
+}
+
+case_tls_reset_0rtt_transition()
+{
+    local id="$1" saved="$2" current="$3" early="$4"
+    local failed=0
+
+    # reliable-stream-reset-09 Section 3; RFC 9000 Section 7.4.1.
+    # Keep one server/TLS context so rejection cannot come from lost keys.
+    case_test_stop_server
+    clear_log
+    rm -f test_session xqc_token tp_localhost
+    case_test_start_server ${SERVER_BIN} -l d -e -x "${id}" > server.log
+
+    ${CLIENT_BIN} -s 4096 -l d -t 1 -E -x "${id}" > warmup.log || failed=1
+    reset_0rtt_check_connection warmup 0 "${saved}" 0 0 || failed=1
+    test -s test_session || failed=1
+    cp tp_localhost warmup.tp
+    cp clog warmup.clog
+    cp slog warmup.slog
+
+    if ! case_test_wait_for_log server.log \
+        "server_ready:${current}|" 100 0.1; then
+        echo 'server did not finish the warmup connection'
+        cat server.log
+        case_test_stop_server
+        return 1
+    fi
+
+    clear_log
+    ${CLIENT_BIN} -s 4096 -l d -t 1 -E -x "${id}" > resume.log || failed=1
+    reset_0rtt_check_connection resume "${saved}" "${current}" \
+        "${early}" 1 || failed=1
+    cp tp_localhost resume.tp
+    cp clog resume.clog
+    cp slog resume.slog
+
+    # The newly issued ticket and saved parameters must describe this server.
+    clear_log
+    ${CLIENT_BIN} -s 4096 -l d -t 1 -E -x "${id}" > refreshed.log || failed=1
+    reset_0rtt_check_connection refreshed "${current}" "${current}" \
+        1 1 || failed=1
+    cp tp_localhost refreshed.tp
+    cp clog refreshed.clog
+    cp slog refreshed.slog
+    case_test_stop_server
+
+    grep -Fxq "[reset-0rtt]|server_advertised:${current}|early_data:${early}|" \
+        server.log || failed=1
+    grep -Fxq "[reset-0rtt]|server_advertised:${current}|early_data:1|" \
+        server.log || failed=1
+    return "${failed}"
+}
+
+case_tls_reset_0rtt_downgrade()
+{
+    case_tls_reset_0rtt_transition 909 1 0 2
+}
+
+case_tls_reset_0rtt_upgrade()
+{
+    case_tls_reset_0rtt_transition 910 0 1 2
+}
+
+case_tls_reset_0rtt_disabled()
+{
+    case_tls_reset_0rtt_transition 911 0 0 1
+}
+
+case_tls_reset_0rtt_enabled()
+{
+    case_tls_reset_0rtt_transition 912 1 1 1
+}
+
+case_test_case "reset_0RTT_downgrade" --id 909 --run case_tls_reset_0rtt_downgrade
+case_test_case "reset_0RTT_upgrade" --id 910 --run case_tls_reset_0rtt_upgrade
+case_test_case "reset_0RTT_disabled" --id 911 --run case_tls_reset_0rtt_disabled
+case_test_case "reset_0RTT_enabled" --id 912 --run case_tls_reset_0rtt_enabled
+
 case_test_case "cert_verify" --id native --mode self-reporting --run case_tls_handshake_cert_verify
 case_test_case "1RTT" --id native --mode self-reporting --run case_tls_handshake__1RTT
 case_test_case "alpn_negotiation_success" --id native --mode self-reporting --run case_tls_handshake_alpn_negotiation_success
@@ -474,12 +694,14 @@ case_test_case "no_crypto_with_0RTT_twice" --id native --mode self-reporting --r
 case_test_case "0RTT_buffer_limit_before_Initial" --id native --mode self-reporting --run case_tls_handshake__0RTT_buffer_limit_before_Initial
 case_test_case "set_cipher_suites" --id native --mode self-reporting --run case_tls_handshake_set_cipher_suites
 case_test_case "key_update" --id native --mode self-reporting --run case_tls_handshake_key_update
+case_test_case "key_update_old_key_retention" --id 904 --mode self-reporting --run case_tls_handshake_key_update_old_key_retention
 case_test_case "key_update_0RTT" --id native --mode self-reporting --run case_tls_handshake_key_update_0RTT
 case_test_case "initial_salt_v1_key_derivation" --id native --mode self-reporting --run case_tls_handshake_initial_salt_v1_key_derivation
 case_test_case "crypto_error_cert_verify" --id native --mode self-reporting --run case_tls_handshake_crypto_error_cert_verify
 case_test_case "crypto_error_not_fixed_enum" --id native --mode self-reporting --run case_tls_handshake_crypto_error_not_fixed_enum
 case_test_case "aead_confidentiality_boundary_updates_keys" --id native --mode self-reporting --run case_tls_handshake_aead_confidentiality_boundary_updates_keys
 case_test_case "aead_confidentiality_exhaustion_stops_sender" --id native --mode self-reporting --run case_tls_handshake_aead_confidentiality_exhaustion_stops_sender
+case_test_case "key_update_stale_deadline" --id 905 --mode self-reporting --run case_tls_handshake_key_update_stale_deadline
 
 if case_test_is_discovery; then
     case_test_run

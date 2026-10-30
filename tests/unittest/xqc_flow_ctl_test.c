@@ -144,3 +144,8 @@ xqc_test_flow_ctl_normal_no_clamp(void)
 
     xqc_engine_destroy(conn->engine);
 }
+
+
+/* xqc_test_uni_stream_credit_exhausted and _not_exhausted (upstream #963)
+   test the stream-count credit of upstream #555, which this fork reverts
+   (48b7fc3). */
