@@ -7,6 +7,8 @@
 
 void xqc_test_crypto();
 void xqc_test_hp_sample_boundary();
+void xqc_test_rfc9001_chacha20_hp_mask();
+void xqc_test_rfc9001_chacha20_hp_unaligned_sample();
 void xqc_test_initial_salt_length();
 void xqc_test_initial_salt_v1_value();
 void xqc_test_initial_salt_null_byte_regression();
@@ -22,5 +24,10 @@ void xqc_test_aead_integrity_limit();
 void xqc_test_aead_integrity_limit_unknown_cipher();
 void xqc_test_aead_integrity_limit_conn_triggered();
 void xqc_test_aead_integrity_limit_conn_no_crypto();
+
+/* RFC 9001 Section 6.6 AEAD confidentiality limit */
+void xqc_test_aead_confidentiality_limit();
+void xqc_test_aead_confidentiality_below_limit();
+void xqc_test_aead_confidentiality_at_limit();
 
 #endif
