@@ -722,7 +722,7 @@ xqc_h3_settings_local_h3_datagram(const xqc_h3_conn_settings_t *settings)
 {
     const xqc_h3_setting_t *ext =
         xqc_h3_settings_find_extern(settings, XQC_H3_SETTINGS_H3_DATAGRAM);
-    return ext != NULL ? ext->value : settings->h3_datagram;
+    return ext != NULL ? ext->value : (settings->h3_datagram ? 1 : 0);
 }
 
 xqc_int_t
@@ -790,6 +790,20 @@ xqc_h3_conn_settings_validate(const xqc_h3_conn_settings_t *settings,
                     "|invalid local HTTP/3 settings|reason:invalid_identifier|"
                     "index:%uz|identifier:%ui|value:%ui|", i,
                     current->identifier, current->value);
+            }
+            return -XQC_EPARAM;
+        }
+
+        /* RFC 9297 Section 2.1.1: 0 or 1 only; the H3 datagram send check
+           uses this value, see xqc_h3_settings_local_h3_datagram */
+        if (current->identifier == XQC_H3_SETTINGS_H3_DATAGRAM
+            && current->value > 1)
+        {
+            if (log != NULL) {
+                xqc_log(log, XQC_LOG_ERROR,
+                    "|invalid local HTTP/3 settings|reason:value_out_of_range|"
+                    "field:extern_settings|index:%uz|identifier:%ui|value:%ui|limit:1|",
+                    i, current->identifier, current->value);
             }
             return -XQC_EPARAM;
         }

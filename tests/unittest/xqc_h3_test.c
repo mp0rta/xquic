@@ -1764,6 +1764,15 @@ xqc_test_h3_extern_h3_datagram_overrides_builtin(void)
     settings.h3_datagram = 0;
     settings.extern_settings[0].value = 1;
     CU_ASSERT_EQUAL(xqc_h3_settings_local_h3_datagram(&settings), 1);
+
+    /* only 0 and 1 may be advertised */
+    settings.extern_settings[0].value = 2;
+    CU_ASSERT_EQUAL(xqc_h3_conn_settings_validate(&settings, NULL), -XQC_EPARAM);
+
+    /* the built-in field is sent as 1 when set */
+    settings.extern_settings_count = 0;
+    settings.h3_datagram = 2;
+    CU_ASSERT_EQUAL(xqc_h3_settings_local_h3_datagram(&settings), 1);
 }
 
 void
