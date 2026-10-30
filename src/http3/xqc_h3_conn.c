@@ -705,6 +705,26 @@ xqc_h3_conn_settings_add_extern(xqc_h3_conn_settings_t *settings,
 }
 
 
+const xqc_h3_setting_t *
+xqc_h3_settings_find_extern(const xqc_h3_conn_settings_t *settings,
+    uint64_t identifier)
+{
+    for (size_t i = 0; i < settings->extern_settings_count; i++) {
+        if (settings->extern_settings[i].identifier == identifier) {
+            return &settings->extern_settings[i];
+        }
+    }
+    return NULL;
+}
+
+uint64_t
+xqc_h3_settings_local_h3_datagram(const xqc_h3_conn_settings_t *settings)
+{
+    const xqc_h3_setting_t *ext =
+        xqc_h3_settings_find_extern(settings, XQC_H3_SETTINGS_H3_DATAGRAM);
+    return ext != NULL ? ext->value : settings->h3_datagram;
+}
+
 xqc_int_t
 xqc_h3_conn_settings_validate(const xqc_h3_conn_settings_t *settings,
     xqc_log_t *log)

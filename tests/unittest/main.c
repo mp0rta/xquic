@@ -669,6 +669,8 @@ main(int argc, char *argv[])
                         xqc_test_h3_settings_accepted)
         || !CU_add_test(pSuite, "xqc_test_h3_registered_settings",
                         xqc_test_h3_registered_settings)
+        || !CU_add_test(pSuite, "xqc_test_h3_extern_h3_datagram_overrides_builtin",
+                        xqc_test_h3_extern_h3_datagram_overrides_builtin)
         || !CU_add_test(pSuite, "xqc_test_h3_registered_settings_errors",
                         xqc_test_h3_registered_settings_errors)
         || !CU_add_test(pSuite, "xqc_test_h3_settings_validation_log",

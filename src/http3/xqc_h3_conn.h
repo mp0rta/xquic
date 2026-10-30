@@ -145,6 +145,15 @@ xqc_int_t xqc_h3_conn_on_uni_stream_created(xqc_h3_conn_t *h3c, uint64_t stype);
 xqc_bool_t xqc_h3_conn_is_goaway_recved(xqc_h3_conn_t *h3c, uint64_t stream_id);
 
 /* Validate local settings and report the first failure when log is non-NULL. */
+/* the extern setting with this identifier, or NULL */
+const xqc_h3_setting_t *xqc_h3_settings_find_extern(
+    const xqc_h3_conn_settings_t *settings, uint64_t identifier);
+
+/* the SETTINGS_H3_DATAGRAM value advertised: an extern setting with that
+   identifier is sent instead of the built-in h3_datagram field */
+uint64_t xqc_h3_settings_local_h3_datagram(
+    const xqc_h3_conn_settings_t *settings);
+
 xqc_int_t xqc_h3_conn_settings_validate(
     const xqc_h3_conn_settings_t *settings, xqc_log_t *log);
 

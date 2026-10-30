@@ -23,6 +23,7 @@ void xqc_test_h3_goaway_id_valid();
 void xqc_test_h3_goaway_id_increase_rejected();
 void xqc_test_h3_settings_accepted();
 void xqc_test_h3_registered_settings(void);
+void xqc_test_h3_extern_h3_datagram_overrides_builtin(void);
 void xqc_test_h3_registered_settings_errors(void);
 void xqc_test_h3_settings_validation_log(void);
 void xqc_test_h3_settings_validation_log_errors(void);

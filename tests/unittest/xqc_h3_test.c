@@ -1745,6 +1745,27 @@ xqc_test_h3_settings_accepted()
 }
 
 
+/*
+ * RFC 9297 Section 2.1.1: an extern SETTINGS_H3_DATAGRAM replaces the built-in
+ * h3_datagram field, both in the SETTINGS frame and for the send check.
+ */
+void
+xqc_test_h3_extern_h3_datagram_overrides_builtin(void)
+{
+    xqc_h3_conn_settings_t settings = {0};
+    settings.h3_datagram = 1;
+    CU_ASSERT_EQUAL(xqc_h3_settings_local_h3_datagram(&settings), 1);
+
+    settings.extern_settings[0].identifier = 0x33;
+    settings.extern_settings[0].value = 0;
+    settings.extern_settings_count = 1;
+    CU_ASSERT_EQUAL(xqc_h3_settings_local_h3_datagram(&settings), 0);
+
+    settings.h3_datagram = 0;
+    settings.extern_settings[0].value = 1;
+    CU_ASSERT_EQUAL(xqc_h3_settings_local_h3_datagram(&settings), 1);
+}
+
 void
 xqc_test_h3_registered_settings(void)
 {

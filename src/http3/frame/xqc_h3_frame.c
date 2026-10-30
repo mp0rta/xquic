@@ -625,18 +625,6 @@ xqc_h3_frm_write_cancel_push(xqc_list_head_t *send_buf, uint64_t push_id, uint8_
     return XQC_OK;
 }
 
-static xqc_bool_t
-xqc_h3_settings_has_extern(const xqc_h3_conn_settings_t *setting,
-    uint64_t identifier)
-{
-    for (size_t i = 0; i < setting->extern_settings_count; i++) {
-        if (setting->extern_settings[i].identifier == identifier) {
-            return XQC_TRUE;
-        }
-    }
-    return XQC_FALSE;
-}
-
 xqc_int_t
 xqc_h3_frm_write_settings(xqc_list_head_t *send_buf,
     const xqc_h3_conn_settings_t *setting, uint8_t fin)
@@ -659,14 +647,14 @@ xqc_h3_frm_write_settings(xqc_list_head_t *send_buf,
        Skipped when also registered as an extern setting, which is sent
        instead, so that no identifier appears twice (RFC 9114 Section 7.2.4) */
     if (setting->enable_connect_protocol
-        && !xqc_h3_settings_has_extern(setting,
-                                       XQC_H3_SETTINGS_ENABLE_CONNECT_PROTOCOL))
+        && xqc_h3_settings_find_extern(setting,
+                                       XQC_H3_SETTINGS_ENABLE_CONNECT_PROTOCOL) == NULL)
     {
         entries[count++] = (xqc_h3_setting_t){
             XQC_H3_SETTINGS_ENABLE_CONNECT_PROTOCOL, 1 };
     }
     if (setting->h3_datagram
-        && !xqc_h3_settings_has_extern(setting, XQC_H3_SETTINGS_H3_DATAGRAM))
+        && xqc_h3_settings_find_extern(setting, XQC_H3_SETTINGS_H3_DATAGRAM) == NULL)
     {
         entries[count++] = (xqc_h3_setting_t){ XQC_H3_SETTINGS_H3_DATAGRAM, 1 };
     }
