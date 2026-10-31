@@ -68,6 +68,7 @@
 #include "xqc_send_ctl_test.h"
 #include "xqc_pmtud_test.h"
 #include "xqc_path_outage_test.h"
+#include "xqc_path_requeue_test.h"
 #include "xqc_vn_test.h"
 #include "xqc_frame_type_bit_test.h"
 #include "xqc_applimit_test.h"
@@ -939,6 +940,16 @@ main(int argc, char *argv[])
                         xqc_test_pmtud_smaller_spill_ack_keeps_larger_loss)
         || !CU_add_test(pSuite, "xqc_test_wlb_evicted_paths_probed_with_ping",
                         xqc_test_wlb_evicted_paths_probed_with_ping)
+        || !CU_add_test(pSuite, "xqc_test_path_requeue_unacked_on_pto",
+                        xqc_test_path_requeue_unacked_on_pto)
+        || !CU_add_test(pSuite, "xqc_test_path_requeue_needs_a_working_path",
+                        xqc_test_path_requeue_needs_a_working_path)
+        || !CU_add_test(pSuite, "xqc_test_minrtt_skips_dead_path",
+                        xqc_test_minrtt_skips_dead_path)
+        || !CU_add_test(pSuite, "xqc_test_minrtt_keeps_path_without_alternative",
+                        xqc_test_minrtt_keeps_path_without_alternative)
+        || !CU_add_test(pSuite, "xqc_test_minrtt_probes_dead_path",
+                        xqc_test_minrtt_probes_dead_path)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)

@@ -653,6 +653,106 @@ fi
 grep_err_log
 }
 
+# 1313: reliable-stream failover, also runnable independently.
+case_fork_core_MP_dead_path_stream_data_resent_on_working_path()
+{
+rm -rf tp_localhost test_session xqc_token
+case_test_start_server ${SERVER_BIN} -l d -e -M > /dev/null
+clear_log
+echo -e "MP stream data of a dead path resent on the working path ...\c"
+case_test_sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -i lo -i lo -x 1313 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+requeued=`grep "|path:0|pto_count:[0-9]*|inflight:[0-9]*|requeue unacked|" slog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$requeued" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_dead_path_stream_data_resent_on_working_path" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} requeued:${requeued:+y} errlog:${errlog:+y})"
+    case_print_result "MP_dead_path_stream_data_resent_on_working_path" "fail"
+fi
+grep_err_log
+}
+
+# 1314: reliable-stream failover, also runnable independently.
+case_fork_core_MP_only_path_stream_data_kept_through_outage()
+{
+rm -rf tp_localhost test_session xqc_token
+case_test_start_server ${SERVER_BIN} -l d -e -M > /dev/null
+clear_log
+echo -e "MP stream data of the only path kept through an outage ...\c"
+case_test_sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -i lo -x 1314 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+ptos=`grep "xqc_timer_loss_detection_timeout|xqc_send_ctl_set_loss_detection_timer|PTO|.*|pto_count:3" slog`
+mp=`grep -E "xqc_conn_destroy.*mp_enable:1" clog`
+requeued=`grep "requeue unacked" slog clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$ptos" ] \
+    && [ -n "$mp" ] && [ -z "$requeued" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_only_path_stream_data_kept_through_outage" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} ptos:${ptos:+y}" \
+        "mp:${mp:+y} requeued:${requeued:+y} errlog:${errlog:+y})"
+    case_print_result "MP_only_path_stream_data_kept_through_outage" "fail"
+fi
+grep_err_log
+}
+
+# 1315: reliable-stream failover, also runnable independently.
+case_fork_core_MP_minrtt_skips_dead_path()
+{
+rm -rf tp_localhost test_session xqc_token
+case_test_start_server ${SERVER_BIN} -l d -e -M > /dev/null
+clear_log
+echo -e "MP minrtt keeps stream data off a dead path ...\c"
+case_test_sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -i lo -i lo -x 1315 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+requeued=`grep "|path:0|pto_count:[0-9]*|inflight:[0-9]*|requeue unacked|" slog`
+skipped=`grep "|path:0|dead path skipped|" slog`
+resent=`awk '/requeue unacked/ { r = 1 } r && /xqc_minrtt_scheduler_get_path\|best path:0\|frame_type:STREAM/ { n++ } END { print n + 0 }' slog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$requeued" ] \
+    && [ -n "$skipped" ] && [ "$resent" = "0" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_minrtt_skips_dead_path" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} requeued:${requeued:+y}" \
+        "skipped:${skipped:+y} stream_on_dead_path:${resent} errlog:${errlog:+y})"
+    case_print_result "MP_minrtt_skips_dead_path" "fail"
+fi
+grep_err_log
+}
+
+# 1316: reliable-stream failover, also runnable independently.
+case_fork_core_MP_minrtt_keeps_only_path_through_outage()
+{
+rm -rf tp_localhost test_session xqc_token
+case_test_start_server ${SERVER_BIN} -l d -e -M > /dev/null
+clear_log
+echo -e "MP minrtt keeps the only path through an outage ...\c"
+case_test_sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -i lo -x 1316 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+ptos=`grep "xqc_timer_loss_detection_timeout|xqc_send_ctl_set_loss_detection_timer|PTO|.*|pto_count:3" slog`
+mp=`grep -E "xqc_conn_destroy.*mp_enable:1" clog`
+skipped=`grep "dead path skipped" slog clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$ptos" ] \
+    && [ -n "$mp" ] && [ -z "$skipped" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_minrtt_keeps_only_path_through_outage" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} ptos:${ptos:+y}" \
+        "mp:${mp:+y} skipped:${skipped:+y} errlog:${errlog:+y})"
+    case_print_result "MP_minrtt_keeps_only_path_through_outage" "fail"
+fi
+grep_err_log
+}
+
 case_test_case "cert_verify_failed_notify_reject" --id 900 --mode self-reporting --run case_fork_core_cert_verify_failed_notify_reject
 case_test_case "cert_verify_failed_notify_accept" --id 901 --mode self-reporting --run case_fork_core_cert_verify_failed_notify_accept
 case_test_case "NAT_rebinding_IP_change_cwnd_reset" --id native --mode self-reporting --run case_fork_core_NAT_rebinding_IP_change_cwnd_reset
@@ -679,6 +779,10 @@ case_test_case "MP_max_path_id_grant_within_client_limit" --id 1306 --mode self-
 case_test_case "pmtud_path_shrinks_by_8_bytes" --id 811 --mode self-reporting --run case_fork_core_pmtud_path_shrinks_by_8_bytes
 case_test_case "MP_wlb_takes_path_back_after_silent_outage" --id 1311 --mode self-reporting --run case_fork_core_MP_wlb_takes_path_back_after_silent_outage
 case_test_case "MP_wlb_sends_no_datagram_on_dead_path" --id 1312 --mode self-reporting --run case_fork_core_MP_wlb_sends_no_datagram_on_dead_path
+case_test_case "MP_dead_path_stream_data_resent_on_working_path" --id 1313 --mode self-reporting --run case_fork_core_MP_dead_path_stream_data_resent_on_working_path
+case_test_case "MP_only_path_stream_data_kept_through_outage" --id 1314 --mode self-reporting --run case_fork_core_MP_only_path_stream_data_kept_through_outage
+case_test_case "MP_minrtt_skips_dead_path" --id 1315 --mode self-reporting --run case_fork_core_MP_minrtt_skips_dead_path
+case_test_case "MP_minrtt_keeps_only_path_through_outage" --id 1316 --mode self-reporting --run case_fork_core_MP_minrtt_keeps_only_path_through_outage
 
 if case_test_is_discovery; then
     case_test_run
