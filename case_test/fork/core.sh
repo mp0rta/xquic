@@ -467,6 +467,89 @@ fi
 grep_err_log
 }
 
+# 1303: path-limit regression from PR #102.
+case_fork_core_MP_paths_blocked_answered_by_max_path_id()
+{
+case_test_start_server ${SERVER_BIN} -l d -e -M -x 1303 > /dev/null
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP PATHS_BLOCKED answered by MAX_PATH_ID ...\c"
+case_test_sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -i lo -i lo -x 1303 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+sent=`grep "|PATHS_BLOCKED sent|max_path_id:1|" clog`
+granted=`grep "|MAX_PATH_ID auto-grant|" slog`
+opened=`grep "create a new path. index: 2, path_id: 2" stdlog`
+cli_res=`grep -E "xqc_conn_destroy\|.*\|err:0x0\|.*\|mp_enable:1\|create:3\|validated:3\|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$sent" ] && [ -n "$granted" ] \
+    && [ -n "$opened" ] && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_paths_blocked_answered_by_max_path_id" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} sent:${sent:+y} granted:${granted:+y}" \
+        "opened:${opened:+y} cli_res:${cli_res:+y} errlog:${errlog:+y})"
+    case_print_result "MP_paths_blocked_answered_by_max_path_id" "fail"
+fi
+grep_err_log
+}
+
+# 1304: path-limit regression from PR #102.
+case_fork_core_MP_paths_blocked_at_server_limit_keeps_connection()
+{
+case_test_start_server ${SERVER_BIN} -l d -e -M -x 1304 > /dev/null
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP PATHS_BLOCKED at the server's limit keeps the connection ...\c"
+case_test_sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -i lo -i lo -x 1304 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+refused=`grep "xqc_conn_create_path err = -651" stdlog`
+accepted=`grep "|PATHS_BLOCKED received|peer_max:1|local_max:1|" slog`
+granted=`grep "|MAX_PATH_ID auto-grant|" slog`
+cli_res=`grep -E "xqc_conn_destroy\|.*\|err:0x0\|.*\|mp_enable:1\|create:2\|validated:2\|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$refused" ] && [ -n "$accepted" ] \
+    && [ -z "$granted" ] && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_paths_blocked_at_server_limit_keeps_connection" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} refused:${refused:+y} accepted:${accepted:+y}" \
+        "granted:${granted:+y} cli_res:${cli_res:+y} errlog:${errlog:+y})"
+    case_print_result "MP_paths_blocked_at_server_limit_keeps_connection" "fail"
+fi
+grep_err_log
+}
+
+# 1306: path-limit regression from PR #102.
+case_fork_core_MP_max_path_id_grant_within_client_limit()
+{
+case_test_start_server ${SERVER_BIN} -l d -e -M -x 1306 > /dev/null
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP MAX_PATH_ID grant within the client's limit ...\c"
+case_test_sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -i lo -i lo -i lo -i lo \
+    -i lo -i lo -i lo -i lo -i lo -x 1306 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+sent=`grep "|PATHS_BLOCKED sent|max_path_id:8|" clog`
+granted=`grep "|MAX_PATH_ID auto-grant|new_local_max:16|" slog`
+reciprocal=`grep "|MAX_PATH_ID reciprocal grant|" clog`
+retired=`grep "smaller than largest_retire_prior_to" slog`
+opened=`grep "create a new path. index: 9, path_id: 9" stdlog`
+cli_res=`grep -E "xqc_conn_destroy\|.*\|err:0x0\|.*\|mp_enable:1\|create:10\|validated:10\|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$sent" ] && [ -n "$granted" ] \
+    && [ -z "$reciprocal" ] && [ -z "$retired" ] && [ -n "$opened" ] \
+    && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_max_path_id_grant_within_client_limit" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} sent:${sent:+y} granted:${granted:+y}" \
+        "reciprocal:${reciprocal:+y} retired:${retired:+y} opened:${opened:+y}" \
+        "cli_res:${cli_res:+y} errlog:${errlog:+y})"
+    case_print_result "MP_max_path_id_grant_within_client_limit" "fail"
+fi
+grep_err_log
+}
+
 case_test_case "cert_verify_failed_notify_reject" --id 900 --mode self-reporting --run case_fork_core_cert_verify_failed_notify_reject
 case_test_case "cert_verify_failed_notify_accept" --id 901 --mode self-reporting --run case_fork_core_cert_verify_failed_notify_accept
 case_test_case "NAT_rebinding_IP_change_cwnd_reset" --id native --mode self-reporting --run case_fork_core_NAT_rebinding_IP_change_cwnd_reset
@@ -486,6 +569,10 @@ case_test_case "pmtud_path_below_base" --id 807 --mode self-reporting --run case
 case_test_case "pmtud_outage_stays_at_base" --id 808 --mode self-reporting --run case_fork_core_pmtud_outage_stays_at_base
 case_test_case "pmtud_smaller_second_path_validates" --id 809 --mode self-reporting --run case_fork_core_pmtud_smaller_second_path_validates
 case_test_case "pmtud_new_path_starts_at_base" --id 810 --mode self-reporting --run case_fork_core_pmtud_new_path_starts_at_base
+
+case_test_case "MP_paths_blocked_answered_by_max_path_id" --id 1303 --mode self-reporting --run case_fork_core_MP_paths_blocked_answered_by_max_path_id
+case_test_case "MP_paths_blocked_at_server_limit_keeps_connection" --id 1304 --mode self-reporting --run case_fork_core_MP_paths_blocked_at_server_limit_keeps_connection
+case_test_case "MP_max_path_id_grant_within_client_limit" --id 1306 --mode self-reporting --run case_fork_core_MP_max_path_id_grant_within_client_limit
 
 if case_test_is_discovery; then
     case_test_run
