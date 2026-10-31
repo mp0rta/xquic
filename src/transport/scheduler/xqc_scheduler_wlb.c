@@ -1126,9 +1126,8 @@ xqc_wlb_scheduler_copy_path_stats(void *scheduler, xqc_wlb_path_stats_t *out,
 /* Send a PING on an ACTIVE-but-evicted path, at most once per
  * WLB_EVICTED_PROBE_INTERVAL_US across the connection. Round-robins across
  * multiple evicted paths so one permanently dead path cannot starve
- * another's recovery probe. The PING goes on the probe list, which neither
- * congestion control nor the scheduler holds back: a blackholed path still
- * has everything it sent in flight, so it is always cwnd-blocked. */
+ * another's recovery probe. Keep-alives use normal congestion control;
+ * only the actual PTO sender may probe beyond a full congestion window. */
 static void
 wlb_probe_evicted_paths(xqc_wlb_scheduler_t *s, xqc_connection_t *conn,
                         uint64_t now_us)
@@ -1164,8 +1163,11 @@ wlb_probe_evicted_paths(xqc_wlb_scheduler_t *s, xqc_connection_t *conn,
     xqc_path_ctx_t *probe =
         candidates[(size_t)(s->next_evicted_probe_path % (uint64_t)n)];
     s->next_evicted_probe_path++;
+    if (xqc_path_is_full(probe)) {
+        return;
+    }
     if (xqc_path_send_ping_to_probe(probe, XQC_PNS_APP_DATA,
-                                    XQC_PATH_SPECIFIED_BY_PQP) != XQC_OK)
+                                    XQC_PATH_SPECIFIED_BY_KAP) != XQC_OK)
     {
         return;
     }

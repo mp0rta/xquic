@@ -140,10 +140,10 @@ skip_path:
 
 /* A dead path that minrtt skips gets no data, so only its PTO probes could
  * be acknowledged when it comes back, and those are backed off to seconds
- * apart after a few PTOs. Send it a PING once per interval instead: its ACK
- * clears the PTO count, and the path is used again soon after it returns.
- * The interval is kept per connection, so PINGs cannot pile up on the probe
- * list while they wait to be sent. */
+ * apart after a few PTOs. When the window has room, send a PING per interval:
+ * its ACK clears the PTO count, letting the path carry data again.
+ * The per-connection interval and window check bound queued keep-alives.
+ * A full window still relies on PTO. */
 #define XQC_MINRTT_DEAD_PROBE_INTERVAL_US (500 * 1000)
 
 static void
@@ -181,8 +181,13 @@ xqc_minrtt_scheduler_handle_conn_event(void *scheduler,
             continue;
         }
 
+        /* RFC 9002 Section 7: this round is not a PTO expiration. */
+        if (xqc_path_is_full(path)) {
+            continue;
+        }
+
         if (xqc_path_send_ping_to_probe(path, XQC_PNS_APP_DATA,
-                                        XQC_PATH_SPECIFIED_BY_PQP) == XQC_OK)
+                                        XQC_PATH_SPECIFIED_BY_KAP) == XQC_OK)
         {
             s->last_dead_probe = now;
             xqc_log(conn->log, XQC_LOG_DEBUG,

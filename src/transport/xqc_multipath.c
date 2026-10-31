@@ -846,9 +846,9 @@ xqc_path_move_unack_packets_from_conn(xqc_path_ctx_t *path, xqc_connection_t *co
  * usual thresholds, since those need an ACK of a later packet on the same
  * path, and its PTO probes go down the same dead path. Until the path comes
  * back, the receiver then waits for every STREAM frame that was in flight
- * on it, and the stream stalls on the paths that work. Move the path's
- * unacknowledged packets to the lost queue now, so that their data is sent
- * again on the paths that work, as when a path is frozen. */
+ * on it, and the stream stalls on the paths that work. draft-21 Section 5.7
+ * permits copying their data onto another path without declaring the
+ * originals lost. Keep their flight accounting until normal ACK/loss handling. */
 void
 xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path)
 {
@@ -859,12 +859,8 @@ xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path)
         return;
     }
 
-    /* Called before the PTO that just expired is counted. Only PTOs that
-     * fired count here, not those hidden by sends
-     * (xqc_send_ctl_get_effective_pto_count): once nothing is in flight the
-     * schedulers fall back to ctl_pto_count, which must then be high enough
-     * to keep the path out of use, or the data would go straight back to
-     * it. */
+    /* Called before the PTO that just expired is counted. Count actual
+     * expirations, not the effective PTO estimate used by schedulers. */
     pto_count = path->path_send_ctl->ctl_pto_count + 1;
     if (pto_count < XQC_PATH_REQUEUE_PTO_THRESH) {
         return;
@@ -875,7 +871,23 @@ xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path)
                 "|path:%ui|pto_count:%ud|inflight:%ud|requeue unacked|",
                 path->path_id, pto_count,
                 path->path_send_ctl->ctl_bytes_in_flight);
-        xqc_path_move_unack_packets_from_conn(path, conn);
+        xqc_send_queue_t *sq = conn->conn_send_queue;
+        xqc_list_head_t *pos, *next;
+        xqc_list_for_each_safe(pos, next,
+                               &sq->sndq_unacked_packets[XQC_PNS_APP_DATA])
+        {
+            xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+            if (po->po_path_id != path->path_id
+                || !(po->po_flag & XQC_POF_IN_FLIGHT)
+                || (po->po_flag & XQC_POF_PTO_REQUEUED)
+                || !XQC_NEED_REPAIR(po->po_frame_types)
+                || xqc_send_ctl_indirectly_ack_or_drop_po(conn, po))
+            {
+                continue;
+            }
+            xqc_send_queue_copy_to_lost(po, sq, XQC_TRUE);
+            po->po_flag |= XQC_POF_PTO_REQUEUED;
+        }
     }
 }
 

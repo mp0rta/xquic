@@ -387,6 +387,7 @@ xqc_send_queue_copy_to_lost(xqc_packet_out_t *packet_out, xqc_send_queue_t *send
     }
     new_po->po_flag &= ~XQC_POF_RETRANSED;
     new_po->po_flag &= ~XQC_POF_SPURIOUS_LOSS;
+    new_po->po_flag &= ~XQC_POF_IN_FLIGHT;
 }
 
 void

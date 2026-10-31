@@ -3645,6 +3645,12 @@ xqc_path_send_ping_to_probe(xqc_path_ctx_t *path, xqc_pkt_num_space_t pns,
     packet_out->po_path_flag |= flag;
     packet_out->po_path_id = path->path_id;
 
+    /* RFC 9002 Section 7: an independent keep-alive is not a PTO.
+     * Leave it on the normal send queue for congestion control and pacing. */
+    if (flag == XQC_PATH_SPECIFIED_BY_KAP) {
+        return XQC_OK;
+    }
+
     /* put PING into probe list, which is not limited by amplification or
      * congestion-control */
     xqc_send_queue_remove_send(&packet_out->po_list);

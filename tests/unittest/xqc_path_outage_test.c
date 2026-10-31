@@ -82,7 +82,7 @@ outage_test_pings_on(outage_test_t *t, uint64_t path_id)
     int n = 0;
     xqc_list_head_t *pos, *next;
     xqc_list_for_each_safe(pos, next,
-                           &t->conn->conn_send_queue->sndq_pto_probe_packets) {
+                           &t->conn->conn_send_queue->sndq_send_packets) {
         xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
         if (po->po_path_id == path_id
             && po->po_frame_types == XQC_FRAME_BIT_PING)
@@ -129,6 +129,15 @@ xqc_test_wlb_evicted_paths_probed_with_ping(void)
     CU_ASSERT_EQUAL(outage_test_pings_on(&t, 1), 2);
     CU_ASSERT_EQUAL(outage_test_pings_on(&t, 2), 2);
     CU_ASSERT_EQUAL(outage_test_pings_on(&t, 0), 0);
+
+    /* A keep-alive is not a PTO: do not bypass a full congestion window. */
+    p1->path_schedule_bytes = p2->path_schedule_bytes = 100 * 1000 * 1000;
+    outage_fake_now += 600000;
+    xqc_wlb_scheduler_cb.xqc_scheduler_handle_conn_event(
+        sched, t.conn, XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(outage_test_pings_on(&t, 1) + outage_test_pings_on(&t, 2), 4);
+    CU_ASSERT(xqc_list_empty(&t.conn->conn_send_queue->sndq_pto_probe_packets));
+    p1->path_schedule_bytes = p2->path_schedule_bytes = 0;
 
     /* nothing probes a path that is not evicted */
     p1->path_send_ctl->ctl_pto_count = 0;

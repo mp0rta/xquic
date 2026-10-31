@@ -119,19 +119,38 @@ xqc_test_path_requeue_unacked_on_pto(void)
 
     CU_ASSERT_FATAL(requeue_test_stream_in_flight(&t, t.dead, 1) != NULL);
     CU_ASSERT_FATAL(requeue_test_stream_in_flight(&t, t.dead, 2) != NULL);
-    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 2400);
+    xqc_packet_out_t *dgram = requeue_test_stream_in_flight(&t, t.dead, 3);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(dgram);
+    dgram->po_frame_types = XQC_FRAME_BIT_DATAGRAM;
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 3600);
 
     /* the second PTO: not yet */
     t.dead->path_send_ctl->ctl_pto_count = 1;
     xqc_path_requeue_unacked_on_pto(t.dead);
     CU_ASSERT_EQUAL(requeue_test_list_len(&sq->sndq_lost_packets), 0);
-    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 2400);
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 3600);
 
     /* the third */
     t.dead->path_send_ctl->ctl_pto_count = 2;
     xqc_path_requeue_unacked_on_pto(t.dead);
     CU_ASSERT_EQUAL(requeue_test_list_len(&sq->sndq_lost_packets), 2);
-    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 0);
+    /* draft-21 Section 5.7 permits copying data, not declaring it lost. */
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 3600);
+    xqc_packet_out_t *copy = xqc_list_entry(sq->sndq_lost_packets.next,
+                                           xqc_packet_out_t, po_list);
+    CU_ASSERT_FALSE(copy->po_flag & XQC_POF_IN_FLIGHT);
+    CU_ASSERT_PTR_NOT_NULL(copy->po_origin);
+    CU_ASSERT(copy->po_origin->po_flag & XQC_POF_IN_FLIGHT);
+    CU_ASSERT_FALSE(copy->po_flag & XQC_POF_PTO_REQUEUED);
+    CU_ASSERT(copy->po_origin->po_flag & XQC_POF_PTO_REQUEUED);
+    CU_ASSERT(dgram->po_flag & XQC_POF_IN_FLIGHT);
+    CU_ASSERT_FALSE(dgram->po_flag & XQC_POF_DROPPED_DGRAM);
+
+    /* A repeated PTO must not queue another copy of the same data. */
+    t.dead->path_send_ctl->ctl_pto_count = 3;
+    xqc_path_requeue_unacked_on_pto(t.dead);
+    CU_ASSERT_EQUAL(requeue_test_list_len(&sq->sndq_lost_packets), 2);
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 3600);
 
     requeue_test_teardown(&t);
 }
@@ -228,14 +247,14 @@ xqc_test_minrtt_keeps_path_without_alternative(void)
     requeue_test_teardown(&t);
 }
 
-/* PINGs queued for @path on the probe list */
+/* Keep-alive PINGs queued for @path on the normal send list. */
 static int
 requeue_test_probe_pings(requeue_test_t *t, xqc_path_ctx_t *path)
 {
     int n = 0;
     xqc_list_head_t *pos, *next;
     xqc_list_for_each_safe(pos, next,
-                           &t->conn->conn_send_queue->sndq_pto_probe_packets)
+                           &t->conn->conn_send_queue->sndq_send_packets)
     {
         xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
         if (po->po_path_id == path->path_id
@@ -271,6 +290,15 @@ xqc_test_minrtt_probes_dead_path(void)
     xqc_minrtt_scheduler_cb.xqc_scheduler_handle_conn_event(state, t.conn,
         XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
     CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
+
+    /* An independent keep-alive must wait behind a full window. */
+    t.dead->path_schedule_bytes = 100 * 1000 * 1000;
+    memset(state, 0, sizeof(state));
+    xqc_minrtt_scheduler_cb.xqc_scheduler_handle_conn_event(state, t.conn,
+        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
+    CU_ASSERT(xqc_list_empty(&t.conn->conn_send_queue->sndq_pto_probe_packets));
+    t.dead->path_schedule_bytes = 0;
 
     requeue_test_teardown(&t);
 
