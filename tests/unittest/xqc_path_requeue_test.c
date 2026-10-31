@@ -14,6 +14,7 @@
 #include "src/transport/xqc_send_queue.h"
 #include "src/transport/xqc_multipath.h"
 #include "src/transport/scheduler/xqc_scheduler_minrtt.h"
+#include "src/transport/scheduler/xqc_scheduler_backup.h"
 
 /*
  * A second path on a real connection: one path silently stops delivering
@@ -282,5 +283,109 @@ xqc_test_minrtt_probes_dead_path(void)
     xqc_minrtt_scheduler_cb.xqc_scheduler_handle_conn_event(state2, t.conn,
         XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
     CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 0);
+    requeue_test_teardown(&t);
+}
+
+
+/* Failover with the backup scheduler: the AVAILABLE path carries everything
+ * while it is healthy, also when its cwnd is full; the STANDBY path is used
+ * once the AVAILABLE one times out, and the AVAILABLE one is used again as
+ * soon as its PTO count clears. */
+void
+xqc_test_backup_failover(void)
+{
+    requeue_test_t t;
+    xqc_bool_t cc_blocked = XQC_FALSE;
+    const xqc_scheduler_callback_t *cb = &xqc_backup_scheduler_cb;
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    xqc_path_ctx_t *primary = t.dead;
+    xqc_path_ctx_t *backup = requeue_test_add_path(&t, 0);
+    CU_ASSERT_FATAL(backup != NULL);
+    backup->app_path_status = XQC_APP_PATH_STATUS_STANDBY;
+    xqc_packet_out_t *po = requeue_test_stream_in_flight(&t, backup, 1);
+    CU_ASSERT_FATAL(po != NULL);
+    primary->path_send_ctl->ctl_srtt = 10000;
+    backup->path_send_ctl->ctl_srtt = 40000;
+
+    CU_ASSERT_EQUAL(cb->xqc_scheduler_get_path(NULL, t.conn, po, 1, 0, &cc_blocked),
+                    primary);
+
+    /* the primary is blocked by its cwnd: wait for it, no spill to standby */
+    primary->path_schedule_bytes = 100 * 1000 * 1000;
+    CU_ASSERT_EQUAL(cb->xqc_scheduler_get_path(NULL, t.conn, po, 1, 0, &cc_blocked),
+                    NULL);
+    primary->path_schedule_bytes = 0;
+
+    /* the primary times out: fail over */
+    primary->path_send_ctl->ctl_pto_count =
+        t.conn->conn_settings.scheduler_params.pto_cnt_thr;
+    CU_ASSERT_EQUAL(cb->xqc_scheduler_get_path(NULL, t.conn, po, 1, 0, &cc_blocked),
+                    backup);
+
+    /* the primary answered: back to it */
+    primary->path_send_ctl->ctl_pto_count = 0;
+    CU_ASSERT_EQUAL(cb->xqc_scheduler_get_path(NULL, t.conn, po, 1, 0, &cc_blocked),
+                    primary);
+
+    requeue_test_teardown(&t);
+}
+
+/* A dead primary gets no data while the backup works, so the backup
+ * scheduler PINGs it, once per interval, like minrtt does. */
+void
+xqc_test_backup_probes_dead_path(void)
+{
+    requeue_test_t t;
+    char state[64] = {0};
+    const xqc_scheduler_callback_t *cb = &xqc_backup_scheduler_cb;
+    CU_ASSERT_FATAL(cb->xqc_scheduler_size() <= sizeof(state));
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    xqc_path_ctx_t *backup = requeue_test_add_path(&t, 0);
+    CU_ASSERT_FATAL(backup != NULL);
+    backup->app_path_status = XQC_APP_PATH_STATUS_STANDBY;
+    t.dead->path_send_ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+
+    cb->xqc_scheduler_handle_conn_event(state, t.conn,
+                                        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, backup), 0);
+
+    cb->xqc_scheduler_handle_conn_event(state, t.conn,
+                                        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
+
+    requeue_test_teardown(&t);
+}
+
+/* The primary is dead and its data went to the backup, which is now
+ * blocked by its cwnd. The backup scheduler goes down its classes and
+ * would reach the primary (AVAILABLE, low class) next: it must wait for
+ * the backup instead, or the data goes back into the outage. */
+void
+xqc_test_backup_skips_dead_primary(void)
+{
+    requeue_test_t t;
+    xqc_bool_t cc_blocked = XQC_FALSE;
+    const xqc_scheduler_callback_t *cb = &xqc_backup_scheduler_cb;
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    xqc_path_ctx_t *primary = t.dead;
+    xqc_path_ctx_t *backup = requeue_test_add_path(&t, 0);
+    CU_ASSERT_FATAL(backup != NULL);
+    backup->app_path_status = XQC_APP_PATH_STATUS_STANDBY;
+    xqc_packet_out_t *po = requeue_test_stream_in_flight(&t, backup, 1);
+    CU_ASSERT_FATAL(po != NULL);
+    primary->path_send_ctl->ctl_srtt = 10000;
+    backup->path_send_ctl->ctl_srtt = 40000;
+    primary->path_send_ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+
+    CU_ASSERT_EQUAL(cb->xqc_scheduler_get_path(NULL, t.conn, po, 1, 0, &cc_blocked),
+                    backup);
+
+    backup->path_schedule_bytes = 100 * 1000 * 1000;
+    CU_ASSERT_EQUAL(cb->xqc_scheduler_get_path(NULL, t.conn, po, 1, 0, &cc_blocked),
+                    NULL);
+    CU_ASSERT_EQUAL(cc_blocked, XQC_TRUE);
+    backup->path_schedule_bytes = 0;
+
     requeue_test_teardown(&t);
 }

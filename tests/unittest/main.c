@@ -375,6 +375,12 @@ main(int argc, char *argv[])
                         xqc_test_minrtt_keeps_path_without_alternative)
         || !CU_add_test(pSuite, "xqc_test_minrtt_probes_dead_path",
                         xqc_test_minrtt_probes_dead_path)
+        || !CU_add_test(pSuite, "xqc_test_backup_failover",
+                        xqc_test_backup_failover)
+        || !CU_add_test(pSuite, "xqc_test_backup_probes_dead_path",
+                        xqc_test_backup_probes_dead_path)
+        || !CU_add_test(pSuite, "xqc_test_backup_skips_dead_primary",
+                        xqc_test_backup_skips_dead_primary)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)
