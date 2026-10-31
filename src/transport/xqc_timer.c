@@ -84,6 +84,9 @@ xqc_timer_loss_detection_timeout(xqc_timer_type_t type, xqc_usec_t now, void *us
         xqc_log(conn->log, XQC_LOG_DEBUG, "|send Probe pkts|conn:%p|path:%ui|bytes_in_flight:%ud|", 
                 conn, path->path_id, send_ctl->ctl_bytes_in_flight);
         xqc_usec_t t = xqc_send_ctl_get_pto_time_and_space(send_ctl, now, &pns);
+        if (pns == XQC_PNS_APP_DATA) {
+            xqc_path_requeue_unacked_on_pto(path);
+        }
         xqc_path_send_one_or_two_ack_elicit_pkts(path, pns);
 
         /* Nothing acked for a 1-RTT PTO while sending large packets: with
