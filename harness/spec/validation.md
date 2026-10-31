@@ -114,7 +114,7 @@ its case is retired so later changes cannot reuse it.
 | Range | New-case namespace | Allocated IDs |
 |-------|--------------------|---------------|
 | `[705, 799]` | QUIC Transport core | `705-728`, `735-736`, `739-746` |
-| `[800, 899]` | Recovery and congestion control | `800-810` |
+| `[800, 899]` | Recovery and congestion control | `800-811` |
 | `[900, 999]` | QUIC-TLS | `900-907`, `909-912` |
 | `[1000, 1099]` | HTTP/3 framing, streams, and settings | `1000-1021`, `1026-1027`, `1032-1035`, `1098-1099` |
 | `[1100, 1149]` | QPACK | None |
