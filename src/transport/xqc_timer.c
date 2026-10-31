@@ -84,13 +84,10 @@ xqc_timer_loss_detection_timeout(xqc_timer_type_t type, xqc_usec_t now, void *us
         xqc_log(conn->log, XQC_LOG_DEBUG, "|send Probe pkts|conn:%p|path:%ui|bytes_in_flight:%ud|", 
                 conn, path->path_id, send_ctl->ctl_bytes_in_flight);
         xqc_usec_t t = xqc_send_ctl_get_pto_time_and_space(send_ctl, now, &pns);
-        xqc_path_validation_on_pto(path);
         if (pns == XQC_PNS_APP_DATA) {
             xqc_path_requeue_unacked_on_pto(path);
         }
-        if (path->path_state < XQC_PATH_STATE_CLOSING) {
-            xqc_path_send_one_or_two_ack_elicit_pkts(path, pns);
-        }
+        xqc_path_send_one_or_two_ack_elicit_pkts(path, pns);
 
         /* Nothing acked for a 1-RTT PTO while sending large packets: with
          * no small packet in flight there are no ACKs to declare the large
@@ -153,10 +150,8 @@ void
 xqc_timer_nat_rebinding_timeout(xqc_timer_type_t type, xqc_usec_t now, void *user_data)
 {
     xqc_send_ctl_t *send_ctl = (xqc_send_ctl_t *)user_data;
-    xqc_path_ctx_t *path = send_ctl->ctl_path;
 
-    path->rebinding_addrlen = 0;
-    path->rebinding_check_response = 0;
+    xqc_path_rebinding_on_timeout(send_ctl->ctl_conn, send_ctl->ctl_path, now);
 }
 
 void
@@ -171,6 +166,23 @@ xqc_timer_path_idle_timeout(xqc_timer_type_t type, xqc_usec_t now, void *user_da
     }
 
     if (conn->active_path_count < 2 && path->path_state == XQC_PATH_STATE_ACTIVE) {
+        return;
+    }
+
+    /* the draining timer closes a CLOSING path; a PATH_IDLE re-armed by a
+       packet received on it must not close it earlier (draft-21 Section 3.4) */
+    if (path->path_state == XQC_PATH_STATE_CLOSING
+        && xqc_timer_is_set(&send_ctl->path_timer_manager, XQC_TIMER_PATH_DRAINING))
+    {
+        return;
+    }
+
+    /* draft-21 Section 3.1: a path that fails validation is closed with
+       PATH_ABANDON, and kept until the draining timer as in Section 3.4 */
+    if (path->path_state == XQC_PATH_STATE_VALIDATING) {
+        xqc_log(conn->log, XQC_LOG_WARN, "|G-P3 validation timeout|path_id:%ui|",
+                path->path_id);
+        xqc_path_request_abandon(path, TRA_PATH_UNSTABLE_OR_POOR);
         return;
     }
 
@@ -333,6 +345,18 @@ xqc_timer_retire_cid_timeout(xqc_timer_type_t type, xqc_usec_t now, void *user_d
                     }
                     to_be_retired_cnt++;
                 }
+
+            } else if (inner_cid->state == XQC_CID_REMOVED) {
+                /* A CID in REMOVED state was transitioned here by a previous timer
+                 * invocation.  xqc_cid_switch_to_next_state(RETIRED -> REMOVED)
+                 * already decremented retired_cnt, so only physical cleanup is
+                 * needed: remove from engine->conns_hash, unlink, and free.
+                 * This is the normal deferred-cleanup path for expired SCIDs. */
+                uint64_t seq_num = inner_cid->cid.cid_seq_num;
+                uint8_t cid_len = inner_cid->cid.cid_len;
+                xqc_conn_purge_removed_scid(conn, inner_cid);
+                xqc_log(conn->log, XQC_LOG_DEBUG,
+                        "|removed->purged|seq:%ui|len:%d|", seq_num, cid_len);
             }
         }
     }
@@ -366,7 +390,7 @@ xqc_timer_key_update_timeout(xqc_timer_type_t type, xqc_usec_t now, void *user_d
 {
     xqc_connection_t *conn = (xqc_connection_t *)user_data;
 
-    xqc_tls_discard_old_1rtt_keys(conn->tls);
+    xqc_conn_discard_old_rx_keys(conn);
 }
 
 void

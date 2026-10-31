@@ -11,14 +11,21 @@
 typedef enum xqc_h3_frm_type_s {
     XQC_H3_FRM_DATA                 = 0x00,
     XQC_H3_FRM_HEADERS              = 0x01,
+    XQC_H3_FRM_RESERVED_PRIORITY    = 0x02,
     XQC_H3_FRM_CANCEL_PUSH          = 0x03,
     XQC_H3_FRM_SETTINGS             = 0x04,
     XQC_H3_FRM_PUSH_PROMISE         = 0x05,
+    XQC_H3_FRM_RESERVED_PING        = 0x06,
     XQC_H3_FRM_GOAWAY               = 0x07,
+    XQC_H3_FRM_RESERVED_WINDOW_UPDATE = 0x08,
+    XQC_H3_FRM_RESERVED_CONTINUATION  = 0x09,
     XQC_H3_FRM_MAX_PUSH_ID          = 0x0d,
 
     /* extension */
     XQC_H3_EXT_FRM_BIDI_STREAM_TYPE = 0x20,
+#ifdef XQC_ENABLE_WEBTRANSPORT
+    XQC_H3_FRM_WT_STREAM            = 0x41,
+#endif
 
     XQC_H3_FRM_UNKNOWN              = UINT64_MAX,
 } xqc_h3_frm_type_t;
@@ -36,19 +43,10 @@ typedef struct xqc_h3_frm_cancel_push_s {
     xqc_discrete_int_pctx_t push_id;
 }xqc_h3_frame_cancel_push_t;
 
-typedef struct xqc_h3_setting_s {
-    xqc_discrete_int_pctx_t identifier;
-    xqc_discrete_int_pctx_t value;
-} xqc_h3_setting_t;
-
-#define MAX_SETTING_ENTRY 16
-
 /*
  * RFC 9114 Section 7.2.4: receive-side SETTINGS frame size cap.
- * Each setting entry is a pair of varints (max 8+8=16 bytes).
- * With MAX_SETTING_ENTRY=16, theoretical max is 256 bytes.
- * 4096 provides ~16x headroom for future extensions while
- * preventing unbounded allocation from malicious frame->len.
+ * The number of received entries is bounded by this payload size rather than
+ * by the smaller local registration capacity.
  */
 #define XQC_H3_SETTINGS_MAX_FRAME_SIZE      4096
 

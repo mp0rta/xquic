@@ -59,7 +59,6 @@ typedef enum xqc_tls_early_data_accept_s {
 } xqc_tls_early_data_accept_t;
 
 
-
 /**
  * @brief tls config for create xqc_tls_t instance
  */
@@ -88,6 +87,9 @@ typedef struct xqc_tls_config_s {
     size_t                  trans_params_len;
 
     char                   *tls_groups;
+
+    /* Advertised server capability bound to the early-data context. */
+    xqc_bool_t              reset_stream_at;
 
 } xqc_tls_config_t;
 
@@ -139,6 +141,12 @@ typedef xqc_keylog_pt xqc_tls_keylog_pt;
 typedef void (*xqc_tls_error_pt)(xqc_int_t tls_err, void *user_data);
 
 /**
+ * @brief QUIC transport error detected while processing TLS messages.
+ */
+typedef void (*xqc_tls_transport_error_pt)(xqc_int_t transport_err,
+    void *user_data);
+
+/**
  * @brief tls handshake complete callback
  */
 typedef void (*xqc_tls_handshake_completed_pt)(void *user_data);
@@ -179,6 +187,9 @@ typedef struct xqc_tls_callbacks_s {
     /* for notify tls errors, upper layer shall translate it 
        to CRYPTO_ERROR and close connection */
     xqc_tls_error_pt                error_cb;
+
+    /* for QUIC transport errors detected by the TLS integration */
+    xqc_tls_transport_error_pt      transport_error_cb;
 
     /* for notify tls handshake completed, which is equivalent to QUIC handshake completed */
     xqc_tls_handshake_completed_pt  hsk_completed_cb;

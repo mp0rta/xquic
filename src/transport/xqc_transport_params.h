@@ -17,6 +17,9 @@
 /* default value for max_udp_payload_size */
 #define XQC_DEFAULT_MAX_UDP_PAYLOAD_SIZE        65527
 
+/* minimum valid value for max_udp_payload_size */
+#define XQC_MIN_UDP_PAYLOAD_SIZE                1200
+
 /* default value for active_connection_id_limit */
 #define XQC_DEFAULT_ACTIVE_CONNECTION_ID_LIMIT  2
 
@@ -68,6 +71,7 @@ typedef enum {
 
     /* max datagram frame size */
     XQC_TRANSPORT_PARAM_MAX_DATAGRAM_FRAME_SIZE             = 0x0020,
+    XQC_TRANSPORT_PARAM_RESET_STREAM_AT                    = 0x001d,
 
     /* do no cryption on 0-RTT and 1-RTT packets */
     XQC_TRANSPORT_PARAM_NO_CRYPTO                           = 0x1000,
@@ -143,9 +147,10 @@ typedef struct {
     /* 
     * support for datagram (RFC 9221).
     * default: 0, not supported
-    * special: 65535, accept datagram frames with any length in a QUIC packet
+    * recommended: 65535, accept any DATAGRAM frame fitting in a QUIC packet
     */
     uint64_t                max_datagram_frame_size;
+    xqc_bool_t              reset_stream_at;
 
     /**
      * no_crypto is a self-defined experimental transport parameter by xquic, xquic will do no
