@@ -4400,6 +4400,64 @@ else
 fi
 grep_err_log
 
+# ── Multipath: the backup scheduler keeps data off a dead primary and goes
+# back to it (case IDs 1317/1318). Both ends run the backup scheduler, and
+# the second path is STANDBY.
+# 1317 happy path: the outage of 1313. After the server re-queues the data
+# in flight on the dead initial path, the STANDBY path is blocked by its
+# cwnd, and the backup scheduler would reach the dead path next in its
+# class order. It skips it instead, so no STREAM data is sent on the dead
+# path again and the echo completes on the STANDBY path.
+killall test_server 2> /dev/null
+${SERVER_BIN} -l d -e -M -y > /dev/null &
+sleep 1
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP backup scheduler keeps stream data off a dead primary ...\c"
+sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -y -i lo -i lo -x 1317 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+requeued=`grep "|path:0|pto_count:[0-9]*|inflight:[0-9]*|requeue unacked|" slog`
+skipped=`grep "xqc_backup_scheduler_get_path|path:0|dead path skipped|" slog`
+resent=`awk '/requeue unacked/ { r = 1 } r && /xqc_backup_scheduler_get_path\|best path:0\|frame_type:STREAM/ { n++ } END { print n + 0 }' slog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$requeued" ] \
+    && [ -n "$skipped" ] && [ "$resent" = "0" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_backup_skips_dead_primary" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} requeued:${requeued:+y}" \
+        "skipped:${skipped:+y} stream_on_dead_path:${resent} errlog:${errlog:+y})"
+    case_print_result "MP_backup_skips_dead_primary" "fail"
+fi
+grep_err_log
+
+# 1318 happy path: the initial path is dead for one second while the
+# STANDBY path works, then comes back. After the re-queue the backup
+# scheduler sends no data on the dead path, so it PINGs it; once a PING is
+# acknowledged, the PTO count clears and STREAM data goes back to the
+# initial path before the echo ends.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP backup scheduler goes back to the primary after an outage ...\c"
+sudo ${CLIENT_BIN} -s 40960000 -l d -t 6 -E -T 1 -M -y -i lo -i lo -x 1318 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+requeued=`grep "|path:0|pto_count:[0-9]*|inflight:[0-9]*|requeue unacked|" slog`
+probed=`grep "xqc_scheduler_probe_dead_paths|path:0|.*dead path probed|" slog`
+again=`awk '/requeue unacked/ { r = 1 } r && /xqc_backup_scheduler_get_path\|best path:0\|frame_type:STREAM/ { n++ } END { print n + 0 }' slog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$requeued" ] \
+    && [ -n "$probed" ] && [ "$again" != "0" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_backup_returns_to_primary_after_outage" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} requeued:${requeued:+y}" \
+        "probed:${probed:+y} stream_on_primary_after_requeue:${again} errlog:${errlog:+y})"
+    case_print_result "MP_backup_returns_to_primary_after_outage" "fail"
+fi
+grep_err_log
+
 
 killall test_server
 stdbuf -oL ${SERVER_BIN} -l d -e -M -Q 65535 -U 1 --pmtud 1 -x 200 > svr_stdlog &
