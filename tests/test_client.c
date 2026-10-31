@@ -103,6 +103,8 @@ printf_null(const char *format, ...)
 #define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_BELOW_LIMIT 902
 #define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_AT_LIMIT 903
 #define XQC_TEST_CASE_KEY_UPDATE_STALE_DEADLINE 905
+#define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_EARLY_UPDATE 906
+#define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE 907
 #define XQC_TEST_CASE_DATAGRAM_1RTT_ALLOWED 1201
 #define XQC_TEST_CASE_DATAGRAM_INITIAL_REJECTED 1202
 #define XQC_TEST_CASE_RETRY_INVALID_TOKEN_CLOSE 715
@@ -3483,7 +3485,9 @@ xqc_client_h3_conn_handshake_finished(xqc_h3_conn_t *h3_conn, void *user_data)
     hsk_completed = 1;
 
     if (g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_BELOW_LIMIT
-        || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_AT_LIMIT)
+        || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_AT_LIMIT
+        || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_EARLY_UPDATE
+        || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE)
     {
         xqc_connection_t *conn = xqc_h3_conn_get_xqc_conn(h3_conn);
         uint32_t cipher_id = xqc_tls_get_1rtt_cipher_id(conn->tls);
@@ -3491,8 +3495,15 @@ xqc_client_h3_conn_handshake_finished(xqc_h3_conn_t *h3_conn, void *user_data)
 
         conn->key_update_ctx.enc_pkt_cnt =
             g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_BELOW_LIMIT
-            ? limit - 1 : limit;
+            ? limit - 1
+            : g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_EARLY_UPDATE
+              || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE
+            ? limit - (limit >> 3) - 1 : limit;
         conn->key_update_ctx.aead_confidentiality_limit = limit;
+        if (g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE) {
+            /* hold the initiation guard closed past the early trigger */
+            conn->key_update_ctx.initiate_time_guard = xqc_now() + 20000;
+        }
         printf("[aead-confidentiality-test]|case:%d|cipher_id:%u|"
                "encrypted:%"PRIu64"|limit:%"PRIu64"|\n",
                g_test_case, cipher_id,

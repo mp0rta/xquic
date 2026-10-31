@@ -93,6 +93,8 @@ printf_null(const char *format, ...)
 #define XQC_TEST_CASE_H3_CUSTOM_SETTINGS_REJECT 1027
 #define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_BELOW_LIMIT 902
 #define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_AT_LIMIT 903
+#define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_EARLY_UPDATE 906
+#define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE 907
 #define XQC_TEST_CASE_CRYPTO_PREVIOUS_LEVEL_BOUNDARY 720
 #define XQC_TEST_CASE_CRYPTO_PREVIOUS_LEVEL_EXTENSION 721
 #define XQC_TEST_CASE_DATAGRAM_1RTT_ALLOWED 1201
@@ -2242,7 +2244,9 @@ xqc_server_request_read_notify(xqc_h3_request_t *h3_request,
         user_stream->header_recvd++;
 
         if (g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_BELOW_LIMIT
-            || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_AT_LIMIT)
+            || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_AT_LIMIT
+            || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_EARLY_UPDATE
+            || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE)
         {
             printf("[aead-confidentiality-test]|request_received|case:%d|"
                    "stream_id:%"PRIu64"|\n", g_test_case,

@@ -736,9 +736,12 @@ xqc_packet_encrypt_buf(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
     if (is_1rtt) {
         conn->key_update_ctx.enc_pkt_cnt++;
 
+        /* Start before the limit: the initiation guard or unacknowledged
+           keys can defer the update, and reaching the limit closes the
+           connection. */
+        uint64_t limit = conn->key_update_ctx.aead_confidentiality_limit;
         xqc_bool_t confidentiality_trigger =
-            conn->key_update_ctx.enc_pkt_cnt
-                >= conn->key_update_ctx.aead_confidentiality_limit;
+            conn->key_update_ctx.enc_pkt_cnt >= limit - (limit >> 3);
         xqc_bool_t configured_trigger =
             conn->conn_settings.keyupdate_pkt_threshold > 0
             && conn->key_update_ctx.enc_pkt_cnt

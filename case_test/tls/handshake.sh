@@ -493,6 +493,47 @@ fi
 
 }
 
+case_tls_handshake_aead_confidentiality_early_update_run()
+{
+# $1: case id, $2: client body size, $3: case name
+case_test_stop_server
+clear_log
+rm -f test_session xqc_token tp_localhost aead_confidentiality_server.log
+case_test_start_server ${SERVER_BIN} -l d -e -x $1 > aead_confidentiality_server.log
+sleep 1
+${CLIENT_BIN} -s $2 -l d -t 1 -E -x $1 > stdlog
+injected=`grep "\[aead-confidentiality-test\]|case:$1|" stdlog`
+updated=`grep "|key phase changed to" clog`
+received=`grep "\[aead-confidentiality-test\]|request_received|case:$1|" \
+    aead_confidentiality_server.log`
+success=`grep ">>>>>>>> pass:1" stdlog`
+limit_error=`grep "|AEAD confidentiality limit reached|" clog`
+if [ -n "$injected" ] && [ -n "$updated" ] && [ -n "$received" ] \
+    && [ -n "$success" ] && [ -z "$limit_error" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "$3" "pass"
+else
+    echo ">>>>>>>> pass:0"
+    case_print_result "$3" "fail"
+fi
+}
+
+case_tls_handshake_aead_confidentiality_early_update()
+{
+echo -e "AEAD confidentiality: key update starts before the limit ...\c"
+case_tls_handshake_aead_confidentiality_early_update_run 906 1024 \
+    aead_confidentiality_early_update
+}
+
+case_tls_handshake_aead_confidentiality_deferred_update()
+{
+# The initiation guard is held closed past the early trigger; the update must
+# still happen once it opens, before the limit.
+echo -e "AEAD confidentiality: deferred key update still happens ...\c"
+case_tls_handshake_aead_confidentiality_early_update_run 907 10240000 \
+    aead_confidentiality_deferred_update
+}
+
 case_tls_handshake_aead_confidentiality_exhaustion_stops_sender()
 {
 
@@ -700,6 +741,8 @@ case_test_case "initial_salt_v1_key_derivation" --id native --mode self-reportin
 case_test_case "crypto_error_cert_verify" --id native --mode self-reporting --run case_tls_handshake_crypto_error_cert_verify
 case_test_case "crypto_error_not_fixed_enum" --id native --mode self-reporting --run case_tls_handshake_crypto_error_not_fixed_enum
 case_test_case "aead_confidentiality_boundary_updates_keys" --id native --mode self-reporting --run case_tls_handshake_aead_confidentiality_boundary_updates_keys
+case_test_case "aead_confidentiality_early_update" --id native --mode self-reporting --run case_tls_handshake_aead_confidentiality_early_update
+case_test_case "aead_confidentiality_deferred_update" --id native --mode self-reporting --run case_tls_handshake_aead_confidentiality_deferred_update
 case_test_case "aead_confidentiality_exhaustion_stops_sender" --id native --mode self-reporting --run case_tls_handshake_aead_confidentiality_exhaustion_stops_sender
 case_test_case "key_update_stale_deadline" --id 905 --mode self-reporting --run case_tls_handshake_key_update_stale_deadline
 
