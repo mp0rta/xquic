@@ -1021,7 +1021,7 @@ wlb_test_mark_unacked_since(wlb_test_fixture_t *f, xqc_path_ctx_t *p,
     ctl->ctl_bytes_ack_eliciting_inflight[XQC_PNS_APP_DATA] = 4000;
     ctl->ctl_progress_time = since;
 
-    /* 25 ms srtt + max(4 * 0, 2 ms) + 25 ms max_ack_delay */
+    /* 25 ms srtt + max(4 * 0, 1 ms) + 25 ms max_ack_delay */
     return xqc_send_ctl_calc_pto(ctl);
 }
 
@@ -1037,7 +1037,7 @@ xqc_test_wlb_unresponsive_path_evicted_before_pto(void)
     (void)wlb_test_invoke(&f, UINT32_MAX);
 
     xqc_usec_t pto = wlb_test_mark_unacked_since(&f, relay, g_fake_now_us);
-    CU_ASSERT_EQUAL(pto, 52000);
+    CU_ASSERT_EQUAL(pto, 51000);
     /* datagrams kept going out on the relay for 7 PTOs, unacknowledged */
     wlb_test_clock_advance(7 * pto);
     relay->path_send_ctl->ctl_time_of_last_sent_ack_eliciting_packet[
