@@ -13,12 +13,21 @@
 #include <stdio.h>
 #include <time.h>
 #include <inttypes.h>
+#include <openssl/ssl.h>
 #include <xquic/xquic.h>
 #include <xquic/xquic_typedef.h>
+#include <xquic/xqc_errno.h>
 #include <xquic/xqc_http3.h>
 #include "src/http3/xqc_h3_conn.h"
 #include "src/http3/xqc_h3_request.h"
+#include "src/transport/xqc_conn.h"
+#include "src/transport/xqc_engine.h"
+#include "src/transport/xqc_packet_out.h"
+#include "src/transport/xqc_frame_parser.h"
+#include "src/tls/xqc_crypto.h"
+#include "src/tls/xqc_tls.h"
 #include "platform.h"
+#include "test_h3_split_fin.h"
 #ifndef XQC_SYS_WINDOWS
 #include <unistd.h>
 #include <sys/socket.h>
@@ -66,6 +75,7 @@ printf_null(const char *format, ...)
 
 #define XQC_MAX_LOG_LEN 2048
 
+#define XQC_TEST_CASE_MP_FROZEN_UNNEGOTIATED 1302
 #define XQC_TEST_CASE_H3_RESERVED_UNI_STREAM 1000
 #define XQC_TEST_CASE_H3_CLIENT_PUSH_STREAM 1001
 #define XQC_TEST_CASE_H3_RESERVED_REQUEST_FRAME 1002
@@ -75,10 +85,68 @@ printf_null(const char *format, ...)
 #define XQC_TEST_CASE_H3_MAX_PUSH_ID_DECREASE 1006
 #define XQC_TEST_CASE_H3_SINGLE_VINT_VALID 1007
 #define XQC_TEST_CASE_H3_SINGLE_VINT_OVERLONG 1008
+#define XQC_TEST_CASE_H3_RESERVED_CONTROL_FRAME 1009
+#define XQC_TEST_CASE_H3_CANCEL_PUSH_UNSET 1010
 #define XQC_TEST_CASE_H3_FIELD_SECTION_VALID 1011
 #define XQC_TEST_CASE_H3_FIELD_SECTION_OVER_LIMIT 1012
+#define XQC_TEST_CASE_H3_LOWERCASE_RESPONSE 1013
+#define XQC_TEST_CASE_H3_UPPERCASE_RESPONSE 1014
+#define XQC_TEST_CASE_H3_H2_RESERVED_REQUEST_FRAME 1015
+#define XQC_TEST_CASE_H3_H2_RESERVED_CONTROL_FRAME 1016
+#define XQC_TEST_CASE_H3_GOAWAY_DECREASE 1017
+#define XQC_TEST_CASE_H3_GOAWAY_INCREASE 1018
+#define XQC_TEST_CASE_H3_PSEUDO_HEADER_ORDER_VALID 1019
+#define XQC_TEST_CASE_H3_PSEUDO_HEADER_ORDER_INVALID 1020
+#define XQC_TEST_CASE_H3_DATA_BEFORE_HEADERS 1021
+#define XQC_TEST_CASE_H3_CUSTOM_SETTINGS_ACCEPT 1026
+#define XQC_TEST_CASE_H3_CUSTOM_SETTINGS_REJECT 1027
+#define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_BELOW_LIMIT 902
+#define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_AT_LIMIT 903
+#define XQC_TEST_CASE_KEY_UPDATE_STALE_DEADLINE 905
+#define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_EARLY_UPDATE 906
+#define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE 907
+#define XQC_TEST_CASE_DATAGRAM_1RTT_ALLOWED 1201
+#define XQC_TEST_CASE_DATAGRAM_INITIAL_REJECTED 1202
+#define XQC_TEST_CASE_RETRY_INVALID_TOKEN_CLOSE 715
+#define XQC_TEST_CASE_RETRY_IGNORE_OLD_INITIAL_DCID 716
+#define XQC_TEST_CASE_RESET_FINAL_SIZE_VALID 722
+#define XQC_TEST_CASE_RESET_FINAL_SIZE_TOO_SMALL 723
+#define XQC_TEST_CASE_CLOSE_SEND_ONLY_STREAM 724
+#define XQC_TEST_CASE_CLOSE_RECV_ONLY_STREAM 725
+#define XQC_TEST_CASE_RELIABLE_RESET_PREFIX 739
+#define XQC_TEST_CASE_RELIABLE_RESET_INVALID_SIZE 740
+#define XQC_TEST_CASE_RELIABLE_RESET_CLOSE 741
+#define XQC_TEST_CASE_RELIABLE_RESET_ZERO_FINAL 742
+#define XQC_TEST_CASE_RELIABLE_RESET_ZERO_ERROR 743
+#define XQC_TEST_CASE_RELIABLE_RESET_DIRECTION_ERROR 744
+#define XQC_TEST_CASE_RELIABLE_RESET_ZERO_FIN 745
+#define XQC_TEST_CASE_RELIABLE_RESET_ZERO_CLOSE 746
+#define XQC_TEST_CASE_RESET_0RTT_DOWNGRADE 909
+#define XQC_TEST_CASE_RESET_0RTT_UPGRADE 910
+#define XQC_TEST_CASE_RESET_0RTT_DISABLED 911
+#define XQC_TEST_CASE_RESET_0RTT_ENABLED 912
+#define XQC_TEST_CASE_CLOSE_AFTER_DATA_RECVD 726
+#define XQC_TEST_CASE_HQ_REQUEST_FIN 1702
+#define XQC_TEST_CASE_HQ_REQUEST_DELAYED_FIN 1703
+
+static xqc_bool_t xqc_client_is_hq_case(void);
 
 typedef struct user_conn_s user_conn_t;
+
+typedef struct {
+    xqc_bool_t      started;
+    xqc_bool_t      replayed;
+    size_t          packet_len;
+    unsigned char   packet[XQC_PACKET_TMP_BUF_LEN];
+    user_conn_t    *user_conn;
+    struct event   *ev_release;
+    struct event   *ev_poll;
+} xqc_key_update_retention_test_t;
+
+static xqc_key_update_retention_test_t xqc_key_update_retention_test;
+
+static void xqc_client_release_key_update_packet(int fd, short what, void *arg);
+static void xqc_client_poll_key_update(int fd, short what, void *arg);
 
 static void xqc_client_send_test_uni_stream(xqc_h3_conn_t *h3_conn,
     xqc_h3_stream_type_t stream_type);
@@ -86,8 +154,24 @@ static xqc_int_t xqc_client_send_test_request_frame(
     xqc_h3_request_t *h3_request, uint64_t frame_type);
 static void xqc_client_send_test_max_push_ids(xqc_h3_conn_t *h3_conn,
     uint64_t first, uint64_t second);
+static void xqc_client_send_test_goaway_ids(xqc_h3_conn_t *h3_conn,
+    uint64_t first, uint64_t second);
 static void xqc_client_send_test_single_vint_frame(
     xqc_h3_conn_t *h3_conn, xqc_bool_t overlong);
+static xqc_int_t xqc_client_write_test_datagram_frame(
+    xqc_connection_t *conn, xqc_pkt_type_t pkt_type);
+static void xqc_client_send_reset_final_size_frames(xqc_connection_t *conn);
+static void xqc_client_test_reliable_reset(xqc_connection_t *conn);
+static void xqc_client_close_send_only_stream(xqc_connection_t *conn);
+static void xqc_client_close_after_data_recvd(int fd, short what, void *arg);
+static void xqc_client_key_update_add_timer(struct event *ev,
+    xqc_usec_t deadline);
+static void xqc_client_key_update_copy_packet(user_conn_t *user_conn,
+    const unsigned char *buf, size_t len);
+static void xqc_client_key_update_start(user_conn_t *user_conn);
+static void xqc_client_key_update_force(int fd, short what, void *arg);
+static void xqc_client_key_update_replay(int fd, short what, void *arg);
+static void xqc_client_key_update_conn_closed(void);
 
 
 #define XQC_TEST_DGRAM_BATCH_SZ 32
@@ -134,11 +218,14 @@ typedef struct user_stream_s {
     int                      body_read_notify_cnt;
     int                      h3_test_frame_queued;
     int                      h3_test_request_index;
+    int                      mp_frozen_injected;
     xqc_usec_t               last_recv_log_time;
     uint64_t                 recv_log_bytes;
 
     xqc_h3_ext_bytestream_t *h3_ext_bs;
     struct event            *ev_bytestream_timer;
+    struct event            *ev_stream_close_timer;
+    xqc_test_h3_split_fin_t  split_fin;
 
     int                      snd_times;
     int                      rcv_times;
@@ -185,9 +272,24 @@ typedef struct user_conn_s {
     uint64_t            black_hole_start_time;
     int                 tracked_pkt_cnt;
 
-    /* MASQUE client state (test case 800/801) */
+    /* MASQUE client state (XQC_TEST_CASE_MASQUE_*) */
     xqc_h3_request_t   *masque_request;
 } user_conn_t;
+
+/* state of case 905, see xqc_client_key_update_copy_packet */
+typedef struct {
+    int                 started;
+    int                 copied;
+    xqc_usec_t          first_deadline;
+    size_t              packet_len;
+    unsigned char       packet[XQC_PACKET_TMP_BUF_LEN];
+    user_conn_t        *user_conn;
+    xqc_connection_t   *conn;
+    struct event       *ev_force;
+    struct event       *ev_replay;
+} xqc_key_update_stale_test_t;
+
+static xqc_key_update_stale_test_t xqc_key_update_stale_test;
 
 #define XQC_DEMO_INTERFACE_MAX_LEN 64
 #define XQC_DEMO_MAX_PATH_COUNT    8
@@ -236,6 +338,12 @@ size_t dgram1_size = 0;
 size_t dgram2_size = 0;
 
 int dgram_drop_pkt1 = 0;
+int path_response_drop_pkt1 = 0;
+static unsigned char g_retry_original_initial[XQC_PACKET_TMP_BUF_LEN];
+static size_t g_retry_original_initial_len;
+static int g_retry_original_initial_saved;
+static int g_retry_original_initial_replayed;
+static int g_retry_token_corrupted;
 client_ctx_t ctx;
 struct event_base *eb;
 int g_send_dgram;
@@ -259,10 +367,11 @@ int g_spec_url;
 int g_is_get;
 uint64_t g_last_sock_op_time;
 /*
- * currently, the maximum used test case id is 704
+ * currently, the maximum used test case id is 1020
  * please keep this comment updated if you are adding more test cases. :-D
  * 55 for RFC 9114 Section 4.2 forbidden header e2e validation
  * 99 for pure fin
+ * 800 for PATH_RESPONSE no-repair e2e validation
  * 2XX for datagram testcases
  * 3XX for h3 ext bytestream testcases
  * 4XX for conn_settings configuration
@@ -270,11 +379,21 @@ uint64_t g_last_sock_op_time;
  * 701/702 for 0-RTT transport param validation
  * 703 for CRYPTO_ERROR validation
  * 704 for active_connection_id_limit validation
+ * 709/710 for active_connection_id_limit minimum validation
+ * 711/712 for PMTUD peer-option omission validation
  * 713/714 for max_ack_delay boundary validation
+ * 715/716 for Retry invalid token and old Initial validation
+ * 717 for RESET_STREAM on a peer-initiated unidirectional stream
+ * 718/719 for MAX_STREAM_DATA stream direction validation
+ * 722/723 for RESET_STREAM final-size validation
+ * 724-726 for stream close state and direction validation
+ * 727/728 for stream reassembly cap validation
  * 735/736 for max_pkt_out_size at and above its cap
- * 800/801 for MASQUE e2e testcases
  * 802/803 for the end-of-pass per-path app-limited check
  * 900/901 for cert_verify_failed_notify on a rejected / accepted certificate
+ * 902/903 for AEAD confidentiality-limit validation
+ * 1000-1021 for HTTP/3 protocol validation
+ * 1098/1099 for MASQUE CONNECT-IP e2e testcases (fork-local)
  */
 int g_test_case;
 int g_ipv6;
@@ -286,7 +405,7 @@ int g_epoch_timeout = 1000000; /* us */
 char g_write_file[256];
 char g_read_file[256];
 char g_log_path[256];
-char g_host[64] = "test.xquic.com";
+char g_host[256] = "test.xquic.com";
 char g_url_path[256] = "/path/resource";
 char g_scheme[8] = "https";
 char g_url[2048];
@@ -329,6 +448,8 @@ char test_long_value[XQC_TEST_LONG_HEADER_LEN] = {'\0'};
 int hsk_completed = 0;
 
 /* MASQUE client state */
+#define XQC_TEST_CASE_MASQUE_CONNECT_IP 1098
+#define XQC_TEST_CASE_MASQUE_CONNECT_IP_MP 1099
 int g_masque_mode = 0;
 int g_masque_send_count = 10;    /* total datagrams to echo */
 uint64_t g_masque_stream_id = 0;
@@ -442,6 +563,7 @@ static void xqc_client_bytestream_timeout_callback(int, short, void*);
 /* 用于路径增删debug */
 static void xqc_client_path_callback(int fd, short what, void *arg);
 static void xqc_client_epoch_callback(int fd, short what, void *arg);
+static void xqc_client_ready_to_create_path(const xqc_cid_t *cid, void *conn_user_data);
 
 /*
  * Cases 1300 and 1301: paths that fail silently. The client sends one small
@@ -1194,6 +1316,118 @@ xqc_client_read_token(unsigned char *token, unsigned token_len)
     return n;
 }
 
+static int
+xqc_test_read_vint_value(const unsigned char *buf, size_t size,
+    size_t *offset, uint64_t *value)
+{
+    if (*offset >= size) {
+        return 0;
+    }
+
+    size_t len = 1ULL << (buf[*offset] >> 6);
+    if (len > size - *offset) {
+        return 0;
+    }
+
+    uint64_t v = buf[*offset] & 0x3f;
+    for (size_t i = 1; i < len; i++) {
+        v = (v << 8) | buf[*offset + i];
+    }
+
+    *offset += len;
+    *value = v;
+    return 1;
+}
+
+
+static int
+xqc_test_parse_initial_token_range(const unsigned char *buf, size_t size,
+    size_t *token_offset, size_t *token_len)
+{
+    if (size < 7 || (buf[0] & 0x80) == 0 || ((buf[0] & 0x30) >> 4) != 0) {
+        return 0;
+    }
+
+    size_t offset = 5;
+    size_t dcid_len = buf[offset++];
+    if (dcid_len > size - offset) {
+        return 0;
+    }
+    offset += dcid_len;
+
+    if (offset >= size) {
+        return 0;
+    }
+
+    size_t scid_len = buf[offset++];
+    if (scid_len > size - offset) {
+        return 0;
+    }
+    offset += scid_len;
+
+    uint64_t len = 0;
+    if (!xqc_test_read_vint_value(buf, size, &offset, &len)
+        || len > size - offset)
+    {
+        return 0;
+    }
+
+    *token_offset = offset;
+    *token_len = (size_t)len;
+    return 1;
+}
+
+
+static void
+xqc_client_handle_retry_token_tests(unsigned char *send_buf, size_t send_buf_size,
+    int fd, const struct sockaddr *peer_addr, socklen_t peer_addrlen)
+{
+    size_t token_offset = 0;
+    size_t token_len = 0;
+
+    if (!xqc_test_parse_initial_token_range(send_buf, send_buf_size,
+                                            &token_offset, &token_len))
+    {
+        return;
+    }
+
+    if (g_test_case == XQC_TEST_CASE_RETRY_IGNORE_OLD_INITIAL_DCID
+        && token_len == 0 && !g_retry_original_initial_saved)
+    {
+        memcpy(g_retry_original_initial, send_buf, send_buf_size);
+        g_retry_original_initial_len = send_buf_size;
+        g_retry_original_initial_saved = 1;
+        printf("[retry-token-test]|save_original_initial|len:%zu|\n", send_buf_size);
+    }
+
+    if (g_test_case == XQC_TEST_CASE_RETRY_IGNORE_OLD_INITIAL_DCID
+        && token_len > 0 && g_retry_original_initial_saved
+        && !g_retry_original_initial_replayed)
+    {
+        ssize_t n = sendto(fd, g_retry_original_initial,
+                           g_retry_original_initial_len, 0,
+                           peer_addr, peer_addrlen);
+        if (n >= 0) {
+            g_retry_original_initial_replayed = 1;
+            printf("[retry-token-test]|replay_original_initial|len:%zu|\n",
+                   g_retry_original_initial_len);
+        } else {
+            printf("[retry-token-test]|replay_original_initial_failed|errno:%d|\n",
+                   get_sys_errno());
+        }
+    }
+
+    if (g_test_case == XQC_TEST_CASE_RETRY_INVALID_TOKEN_CLOSE
+        && token_len > 0 && !g_retry_token_corrupted)
+    {
+        send_buf[token_offset] ^= 0xff;
+        g_retry_token_corrupted = 1;
+        printf("[retry-token-test]|corrupt_retry_token|offset:%zu|len:%zu|\n",
+               token_offset, token_len);
+    }
+}
+
+
 int
 read_file_data(char *data, size_t data_len, char *filename)
 {
@@ -1276,6 +1510,21 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
         return size;
     }
 
+    /*
+     * RFC 9001 Section 6.1 old-key retention test: as soon as the local
+     * endpoint has initiated a key update, suppress outbound packets so no
+     * new-phase packet reaches the peer. The peer therefore stays on the old
+     * key phase and keeps replying with old-phase packets. Checking
+     * key_update_cnt synchronously here (rather than via the poll timer)
+     * closes the window in which a new-phase packet could otherwise leak out.
+     */
+    if (g_test_case == 904 && !xqc_key_update_retention_test.replayed
+        && user_conn->quic_conn != NULL
+        && user_conn->quic_conn->key_update_ctx.key_update_cnt > 0)
+    {
+        return send_buf_size;
+    }
+
     /* make initial packet loss to test 0rtt buffer */
     if (g_test_case == 39) {
         g_test_case = -1;
@@ -1294,6 +1543,13 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
             g_test_case = -1;
             set_sys_errno(EAGAIN);
             return XQC_SOCKET_EAGAIN;
+        }
+
+        if (g_test_case == XQC_TEST_CASE_RETRY_INVALID_TOKEN_CLOSE
+            || g_test_case == XQC_TEST_CASE_RETRY_IGNORE_OLD_INITIAL_DCID)
+        {
+            xqc_client_handle_retry_token_tests(send_buf, send_buf_size, fd,
+                                                peer_addr, peer_addrlen);
         }
 
         /* client Initial dcid corruption */
@@ -1390,19 +1646,39 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
 }
 
 int
+xqc_client_get_path_index_by_id(uint64_t path_id)
+{
+    if (!g_enable_multipath) {
+        return -1;
+    }
+
+    if (g_multi_interface_cnt > XQC_DEMO_MAX_PATH_COUNT) {
+        return -1;
+    }
+
+    for (int i = 0; i < g_multi_interface_cnt; i++) {
+        if (g_client_path[i].path_id == path_id) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+
+int
 xqc_client_get_path_fd_by_id(user_conn_t *user_conn, uint64_t path_id)
 {
     int fd = user_conn->fd;
+    int path_idx;
 
     if (!g_enable_multipath) {
         return fd;
     }
 
-    for (int i = 0; i < g_multi_interface_cnt; i++) {
-        if (g_client_path[i].path_id == path_id) {
-            fd = g_client_path[i].path_fd;
-            break;
-        }
+    path_idx = xqc_client_get_path_index_by_id(path_id);
+    if (path_idx >= 0) {
+        fd = g_client_path[path_idx].path_fd;
     }
 
     return fd;
@@ -1420,6 +1696,11 @@ xqc_client_write_socket_ex(uint64_t path_id,
     ssize_t res;
     int fd = 0;
     int header_type;
+    int path_idx = -1;
+
+    if (user_conn == NULL || buf == NULL) {
+        return XQC_SOCKET_ERROR;
+    }
 
     /* cases 1300-1301: the packet is lost without any error */
     if (xqc_client_silent_dropped(path_id)) {
@@ -1506,6 +1787,7 @@ xqc_client_write_socket_ex(uint64_t path_id,
 
     /* get path fd */
     fd = xqc_client_get_path_fd_by_id(user_conn, path_id);
+    path_idx = xqc_client_get_path_index_by_id(path_id);
 
     /* COPY to run corruption test cases */
     unsigned char send_buf[XQC_PACKET_TMP_BUF_LEN];
@@ -1518,6 +1800,18 @@ xqc_client_write_socket_ex(uint64_t path_id,
     send_buf_size = size;
     memcpy(send_buf, buf, send_buf_size);
     xqc_test_record_udp_payload(size);
+
+    /*
+     * RFC 9001 Section 6.1 old-key retention test: suppress outbound packets
+     * as soon as a key update has been initiated, so no new-phase packet
+     * reaches the peer. See xqc_client_write_socket.
+     */
+    if (g_test_case == 904 && !xqc_key_update_retention_test.replayed
+        && user_conn->quic_conn != NULL
+        && user_conn->quic_conn->key_update_ctx.key_update_cnt > 0)
+    {
+        return send_buf_size;
+    }
 
     /* make initial packet loss to test 0rtt buffer */
     if (g_test_case == 39) {
@@ -1537,16 +1831,21 @@ xqc_client_write_socket_ex(uint64_t path_id,
         }
     }
 
-    if (g_enable_multipath) {
-        g_client_path[path_id].send_size += size;
+    if (g_enable_multipath && path_idx >= 0) {
+        g_client_path[path_idx].send_size += size;
     }
 
     if (hsk_completed) {
-        if (g_test_case == 103 && path_id == 0 && g_client_path[0].send_size > g_send_body_size/10) {
-            fd = g_client_path[0].rebinding_path_fd;
+        if ((g_test_case == 103 || g_test_case == 800)
+            && path_id == 0 && path_idx >= 0
+            && g_client_path[path_idx].send_size > g_send_body_size/10)
+        {
+            fd = g_client_path[path_idx].rebinding_path_fd;
         }
-        else if (g_test_case == 104 && path_id == 1 && g_client_path[1].send_size > 10240) {
-            fd = g_client_path[1].rebinding_path_fd;
+        else if (g_test_case == 104 && path_id == 1 && path_idx >= 0
+                 && g_client_path[path_idx].send_size > 10240)
+        {
+            fd = g_client_path[path_idx].rebinding_path_fd;
         }
         /* D1: IP-change rebinding (case 105) and port-only rebinding
          * (case 106) reuse the case-103 send pattern on path 0. */
@@ -1569,6 +1868,13 @@ xqc_client_write_socket_ex(uint64_t path_id,
             g_test_case = -1;
             errno = EAGAIN;
             return XQC_SOCKET_EAGAIN;
+        }
+
+        if (g_test_case == XQC_TEST_CASE_RETRY_INVALID_TOKEN_CLOSE
+            || g_test_case == XQC_TEST_CASE_RETRY_IGNORE_OLD_INITIAL_DCID)
+        {
+            xqc_client_handle_retry_token_tests(send_buf, send_buf_size, fd,
+                                                peer_addr, peer_addrlen);
         }
 
         /* client Initial dcid corruption */
@@ -1621,6 +1927,19 @@ xqc_client_write_socket_ex(uint64_t path_id,
                     return send_buf_size;
                 }
             }
+        }
+
+        if (g_test_case == 800 && g_no_crypt && !path_response_drop_pkt1
+            && hsk_completed && path_id == 0 && path_idx >= 0
+            && g_client_path[path_idx].send_size > g_send_body_size/10
+            && send_buf_size > 13
+            && (send_buf[0] & 0x80) == 0 && send_buf[13] == 0x1b)
+        {
+            path_response_drop_pkt1 = 1;
+            printf("[path-response-e2e]|drop|path:%"PRIu64"|ordinal:1|\n",
+                   path_id);
+            fflush(stdout);
+            return send_buf_size;
         }
 
         res = sendto(fd, send_buf, send_buf_size, 0, peer_addr, peer_addrlen);
@@ -1692,9 +2011,10 @@ xqc_client_write_mmsg(const struct iovec *msg_iov, unsigned int vlen,
     user_conn_t *user_conn = (user_conn_t *) user;
     ssize_t res = 0;
     int fd = user_conn->fd;
+    unsigned int send_vlen = vlen > MAX_SEG ? MAX_SEG : vlen;
     struct mmsghdr mmsg[MAX_SEG];
     memset(&mmsg, 0, sizeof(mmsg));
-    for (int i = 0; i < vlen; i++) {
+    for (int i = 0; i < send_vlen; i++) {
         mmsg[i].msg_hdr.msg_iov = (struct iovec *)&msg_iov[i];
         mmsg[i].msg_hdr.msg_iovlen = 1;
     }
@@ -1708,7 +2028,7 @@ xqc_client_write_mmsg(const struct iovec *msg_iov, unsigned int vlen,
             return XQC_SOCKET_EAGAIN;
         }
 
-        res = sendmmsg(fd, mmsg, vlen, 0);
+        res = sendmmsg(fd, mmsg, send_vlen, 0);
         if (res < 0) {
             printf("sendmmsg err %zd %s\n", res, strerror(errno));
             if (errno == EAGAIN) {
@@ -1729,17 +2049,24 @@ xqc_client_mp_write_mmsg(uint64_t path_id,
     user_conn_t *user_conn = (user_conn_t *) user;
     ssize_t res = 0;
     int fd = 0;
+    int path_idx = -1;
 
     /* check whether it's initial path */
     if (path_id == 0) {
         fd = user_conn->fd;
     } else {
-        fd = g_client_path[path_id].path_fd;
+        path_idx = xqc_client_get_path_index_by_id(path_id);
+        if (path_idx >= 0) {
+            fd = g_client_path[path_idx].path_fd;
+        } else {
+            fd = xqc_client_get_path_fd_by_id(user_conn, path_id);
+        }
     }
 
     struct mmsghdr mmsg[MAX_SEG];
+    unsigned int send_vlen = vlen > MAX_SEG ? MAX_SEG : vlen;
     memset(&mmsg, 0, sizeof(mmsg));
-    for (int i = 0; i < vlen; i++) {
+    for (int i = 0; i < send_vlen; i++) {
         mmsg[i].msg_hdr.msg_iov = (struct iovec *)&msg_iov[i];
         mmsg[i].msg_hdr.msg_iovlen = 1;
     }
@@ -1753,7 +2080,7 @@ xqc_client_mp_write_mmsg(uint64_t path_id,
             return XQC_SOCKET_EAGAIN;
         }
 
-        res = sendmmsg(fd, mmsg, vlen, 0);
+        res = sendmmsg(fd, mmsg, send_vlen, 0);
         if (res < 0) {
             printf("sendmmsg err %zd %s\n", res, strerror(errno));
             if (errno == EAGAIN) {
@@ -1917,8 +2244,11 @@ xqc_client_create_path_socket(xqc_user_path_t *path,
         return XQC_ERROR;
     }
 
-    if (g_test_case == 103 || g_test_case == 104 || g_test_case == 106) {
-        /* Cases 103/104/106: kernel-chosen src IP (port-only rebinding). */
+    if (g_test_case == 103 || g_test_case == 104 || g_test_case == 106
+        || g_test_case == 800)
+    {
+        /* Cases 103/104/106: kernel-chosen src IP (port-only rebinding).
+         * Case 800: PATH_RESPONSE no-repair e2e validation. */
         path->rebinding_path_fd = xqc_client_create_socket((g_ipv6 ? AF_INET6 : AF_INET),
                                         path->peer_addr, path->peer_addrlen, path_interface);
         if (path->rebinding_path_fd < 0) {
@@ -1986,13 +2316,27 @@ xqc_client_create_path(xqc_user_path_t *path,
     
     path->ev_socket = event_new(eb, path->path_fd, 
                 EV_READ | EV_PERSIST, xqc_client_socket_event_callback, user_conn);
-    event_add(path->ev_socket, NULL);
+    if (path->ev_socket == NULL) {
+        return XQC_ERROR;
+    }
+    int path_event_ret = event_add(path->ev_socket, NULL);
+    if (path_event_ret != 0) {
+        return XQC_ERROR;
+    }
 
     if (g_test_case == 103 || g_test_case == 104
-        || g_test_case == 105 || g_test_case == 106) {
+        || g_test_case == 105 || g_test_case == 106
+        || g_test_case == 800)
+    {
         path->rebinding_ev_socket = event_new(eb, path->rebinding_path_fd, EV_READ | EV_PERSIST,
                                               xqc_client_socket_event_callback, user_conn);
-        event_add(path->rebinding_ev_socket, NULL);
+        if (path->rebinding_ev_socket == NULL) {
+            return XQC_ERROR;
+        }
+        int rebinding_event_ret = event_add(path->rebinding_ev_socket, NULL);
+        if (rebinding_event_ret != 0) {
+            return XQC_ERROR;
+        }
     }
 
     return XQC_OK;
@@ -2084,7 +2428,13 @@ xqc_client_create_conn_socket(user_conn_t *user_conn)
 
     user_conn->ev_socket = event_new(eb, user_conn->fd, EV_READ | EV_PERSIST, 
                                      xqc_client_socket_event_callback, user_conn);
-    event_add(user_conn->ev_socket, NULL);
+    if (user_conn->ev_socket == NULL) {
+        return -1;
+    }
+    int event_ret = event_add(user_conn->ev_socket, NULL);
+    if (event_ret != 0) {
+        return -1;
+    }
 
     return 0;
 }
@@ -2123,7 +2473,19 @@ xqc_client_path_removed(const xqc_cid_t *scid, uint64_t path_id,
             
             printf("***** path removed. index: %d, path_id: %" PRIu64 "\n", i, path_id);
 
-            xqc_client_set_path_debug_timer(user_conn);
+            if (g_test_case == 100 && path_id != XQC_INITIAL_PATH_ID) {
+                /* 次路径验证失败后迅速重试，避免初始路径成为唯一活跃路径。 */
+                struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
+                if (user_conn->ev_path == NULL) {
+                    user_conn->ev_path = event_new(eb, -1, 0, xqc_client_path_callback,
+                                                   user_conn);
+                }
+                printf("[mpns-close-initial]|retry_path_after_removal|\n");
+                event_add(user_conn->ev_path, &tv);
+
+            } else {
+                xqc_client_set_path_debug_timer(user_conn);
+            }
             
             break;
         }
@@ -2137,6 +2499,10 @@ xqc_client_conn_create_notify(xqc_connection_t *conn, const xqc_cid_t *cid, void
     DEBUG;
 
     user_conn_t *user_conn = (user_conn_t *)user_data;
+    if (conn == NULL || user_conn == NULL) {
+        return XQC_ERROR;
+    }
+
     xqc_conn_set_alp_user_data(conn, user_conn);
 
     user_conn->dgram_mss = xqc_datagram_get_mss(conn);
@@ -2157,6 +2523,10 @@ xqc_client_conn_close_notify(xqc_connection_t *conn, const xqc_cid_t *cid, void 
 
     user_conn_t *user_conn = (user_conn_t *)user_data;
 
+    if (g_test_case == XQC_TEST_CASE_KEY_UPDATE_STALE_DEADLINE) {
+        xqc_client_key_update_conn_closed();
+    }
+
     client_ctx_t *p_ctx;
     if (g_test_qch_mode) {
         p_ctx = user_conn->ctx;
@@ -2165,6 +2535,7 @@ xqc_client_conn_close_notify(xqc_connection_t *conn, const xqc_cid_t *cid, void 
     }
 
     xqc_int_t err = xqc_conn_get_errno(conn);
+    printf("conn_err_type:%d\n", (int)xqc_conn_get_err_type(conn));
     printf("should_clear_0rtt_ticket, conn_err:%d, clear_0rtt_ticket:%d\n", err, xqc_conn_should_clear_0rtt_ticket(err));
 
     xqc_conn_stats_t stats = xqc_conn_get_stats(p_ctx->engine, cid);
@@ -2208,6 +2579,11 @@ xqc_client_conn_update_cid_notify(xqc_connection_t *conn, const xqc_cid_t *retir
     DEBUG;
 
     user_conn_t *user_conn = (user_conn_t *) user_data;
+    if (user_conn == NULL || new_cid == NULL || retire_cid == NULL
+        || ctx.engine == NULL)
+    {
+        return;
+    }
 
     memcpy(&user_conn->cid, new_cid, sizeof(*new_cid));
 
@@ -2222,6 +2598,10 @@ xqc_client_conn_handshake_finished(xqc_connection_t *conn, void *user_data, void
 {
     DEBUG;
     user_conn_t *user_conn = (user_conn_t *) user_data;
+    if (user_conn == NULL) {
+        return;
+    }
+
     if (!g_test_qch_mode) {
         if (!g_mp_ping_on) {
             xqc_conn_send_ping(ctx.engine, &user_conn->cid, NULL);
@@ -2230,6 +2610,24 @@ xqc_client_conn_handshake_finished(xqc_connection_t *conn, void *user_data, void
 
         printf("====>DCID:%s\n", xqc_dcid_str_by_scid(ctx.engine, &user_conn->cid));
         printf("====>SCID:%s\n", xqc_scid_str(ctx.engine, &user_conn->cid));
+    }
+
+    if (g_test_case == XQC_TEST_CASE_RESET_FINAL_SIZE_VALID
+        || g_test_case == XQC_TEST_CASE_RESET_FINAL_SIZE_TOO_SMALL)
+    {
+        xqc_client_send_reset_final_size_frames(conn);
+    }
+
+    if (g_test_case == XQC_TEST_CASE_CLOSE_SEND_ONLY_STREAM
+        || g_test_case == XQC_TEST_CASE_CLOSE_AFTER_DATA_RECVD)
+    {
+        xqc_client_close_send_only_stream(conn);
+    }
+
+    if (g_test_case >= XQC_TEST_CASE_RELIABLE_RESET_PREFIX
+        && g_test_case <= XQC_TEST_CASE_RELIABLE_RESET_ZERO_CLOSE)
+    {
+        xqc_client_test_reliable_reset(conn);
     }
 
     hsk_completed = 1;
@@ -2261,15 +2659,34 @@ xqc_client_h3_conn_create_notify(xqc_h3_conn_t *conn, const xqc_cid_t *cid, void
     DEBUG;
 
     user_conn_t *user_conn = (user_conn_t *) user_data;
+    if (conn == NULL || user_conn == NULL) {
+        return XQC_ERROR;
+    }
 
     user_conn->dgram_mss = xqc_h3_ext_datagram_get_mss(conn);
     user_conn->h3_conn = conn;
+
+    if (g_test_case == 904) {
+        struct timeval tv = { 0, 1000 };
+        user_conn->quic_conn = xqc_h3_conn_get_xqc_conn(conn);
+        xqc_key_update_retention_test.ev_poll = event_new(eb, -1, 0,
+            xqc_client_poll_key_update, user_conn);
+        event_add(xqc_key_update_retention_test.ev_poll, &tv);
+        printf("[key-update-retention]|poll-started|\n");
+    }
 
     if (g_test_case == 200 || g_test_case == 201) {
         printf("[h3-dgram-200]|0RTT|initial_mss:%zu|\n", user_conn->dgram_mss);
     }
 
     printf("xqc_h3_conn_is_ready_to_send_early_data:%d\n", xqc_h3_conn_is_ready_to_send_early_data(conn));
+    if (g_test_case >= XQC_TEST_CASE_RESET_0RTT_DOWNGRADE
+        && g_test_case <= XQC_TEST_CASE_RESET_0RTT_ENABLED)
+    {
+        printf("[reset-0rtt]|cached:%d|early_ready:%d|\n",
+               conn->conn->remote_settings.reset_stream_at,
+               xqc_h3_conn_is_ready_to_send_early_data(conn));
+    }
     return 0;
 }
 
@@ -2282,6 +2699,11 @@ xqc_client_h3_conn_close_notify(xqc_h3_conn_t *conn, const xqc_cid_t *cid, void 
 
     user_conn_t *user_conn = (user_conn_t *) user_data;
     xqc_connection_t *transport_conn = xqc_h3_conn_get_xqc_conn(conn);
+
+    if (g_test_case == XQC_TEST_CASE_KEY_UPDATE_STALE_DEADLINE) {
+        xqc_client_key_update_conn_closed();
+    }
+
     printf("conn errno:%d\n", xqc_h3_conn_get_errno(conn));
     printf("conn_err_type:%d\n",
            (int)xqc_conn_get_err_type(transport_conn));
@@ -2305,6 +2727,13 @@ xqc_client_h3_conn_close_notify(xqc_h3_conn_t *conn, const xqc_cid_t *cid, void 
         printf("[h3-field-section-test]|client_conn_close|case:%d|"
                "conn_err:%d|\n", g_test_case, stats.conn_err);
         fflush(stdout);
+
+    } else if (g_test_case == XQC_TEST_CASE_H3_RESERVED_CONTROL_FRAME
+        || g_test_case == XQC_TEST_CASE_H3_CANCEL_PUSH_UNSET
+        || g_test_case == XQC_TEST_CASE_H3_H2_RESERVED_CONTROL_FRAME)
+    {
+        printf("[h3-control-frame-test]|case:%d|conn_err:%d|\n",
+               g_test_case, stats.conn_err);
     }
 
     if (!g_test_qch_mode) {
@@ -2396,7 +2825,7 @@ xqc_client_masque_start_tunnel(user_conn_t *user_conn)
     user_conn->masque_request = h3_request;
 
     /* Build Extended CONNECT headers */
-    char authority[128];
+    char authority[sizeof(g_host) + 16];
     snprintf(authority, sizeof(authority), "%s:%d", g_host, g_server_port);
     xqc_http_header_t hdrs[] = {
         { .name  = {.iov_base = ":method",   .iov_len = 7},
@@ -2431,6 +2860,584 @@ xqc_client_masque_start_tunnel(user_conn_t *user_conn)
     return 0;
 }
 
+/*
+ * issues #565 / #566 / #567: emit a frame that names a stream this endpoint
+ * does not own, so the peer must close the connection with STREAM_STATE_ERROR
+ * (RFC 9000 section 19.4, section 19.5 and section 19.8).
+ *
+ * The library never generates such a frame, and the illegal frame lives inside
+ * the encrypted 1-RTT payload, so it cannot be produced by corrupting bytes in
+ * the send callback the way the Initial-header cases do. The frame generators
+ * take a stream ID directly, so they are called on a freshly allocated packet
+ * without going through a stream object.
+ *
+ * Stream IDs, seen from the server that receives the frame:
+ *   2 -> XQC_CLI_UNI  client initiated, unidirectional: recv-only for server
+ *   3 -> XQC_SVR_UNI  server initiated, unidirectional: send-only for server
+ *   1 -> XQC_SVR_BID  server initiated, bidirectional: never created by server
+ */
+static void
+xqc_client_send_wrong_direction_frame(xqc_connection_t *conn)
+{
+    xqc_packet_out_t *packet_out;
+    ssize_t           ret = -1;
+    size_t            written = 0;
+    const unsigned char payload[1] = {0x00};
+
+    packet_out = xqc_write_new_packet(conn, XQC_PTYPE_SHORT_HEADER);
+    if (packet_out == NULL) {
+        printf("test case %d, xqc_write_new_packet error\n", g_test_case);
+        return;
+    }
+
+    switch (g_test_case) {
+    case 705:
+        /* RESET_STREAM on a stream that is send-only for the server */
+        ret = xqc_gen_reset_stream_frame(packet_out, 3, 0, 0);
+        break;
+
+    case 706:
+        /* STOP_SENDING on a stream that is recv-only for the server */
+        ret = xqc_gen_stop_sending_frame(packet_out, 2, 0);
+        break;
+
+    case 707:
+        /* STREAM on a stream that is send-only for the server */
+        ret = xqc_gen_stream_frame(packet_out, 3, 0, 0, payload,
+                                   sizeof(payload), &written);
+        break;
+
+    case 708:
+        /* STREAM on a server initiated stream the server never created */
+        ret = xqc_gen_stream_frame(packet_out, 1, 0, 0, payload,
+                                   sizeof(payload), &written);
+        break;
+
+    default:
+        break;
+    }
+
+    if (ret < 0) {
+        printf("test case %d, frame generation error:%zd\n", g_test_case, ret);
+        xqc_maybe_recycle_packet_out(packet_out, conn);
+        return;
+    }
+
+    packet_out->po_used_size += ret;
+    printf("test case %d, wrong direction frame written\n", g_test_case);
+}
+
+
+static xqc_int_t
+xqc_client_reset_test_read(xqc_stream_t *stream, void *user_data)
+{
+    unsigned char data[8];
+    uint8_t fin = 0;
+    ssize_t read;
+
+    do {
+        read = xqc_stream_recv(stream, data, sizeof(data), &fin);
+    } while (read > 0 && !fin);
+
+    return read < 0 && read != -XQC_EAGAIN && read != -XQC_ESTREAM_RESET
+           ? read : XQC_OK;
+}
+
+/* reliable-stream-reset-09 Sections 4 and 5.2. */
+static void
+xqc_client_test_reliable_reset(xqc_connection_t *conn)
+{
+    if (g_test_case == XQC_TEST_CASE_RELIABLE_RESET_CLOSE
+        || g_test_case == XQC_TEST_CASE_RELIABLE_RESET_ZERO_CLOSE)
+    {
+        user_stream_t *user_stream = calloc(1, sizeof(*user_stream));
+        if (user_stream == NULL) {
+            return;
+        }
+        user_stream->user_conn = conn->user_data;
+        xqc_stream_t *stream = xqc_stream_create_with_direction(conn,
+            XQC_STREAM_BIDI, user_stream);
+        if (stream == NULL) {
+            free(user_stream);
+            return;
+        }
+        user_stream->stream = stream;
+        int set = xqc_stream_set_reliable_size(stream,
+            g_test_case == XQC_TEST_CASE_RELIABLE_RESET_ZERO_CLOSE ? 0 : 3);
+        ssize_t sent = xqc_stream_send(stream, (unsigned char *)"abc", 3, 0);
+        int reset = xqc_stream_reset(stream, 9);
+        int closed = xqc_stream_close(stream);
+        printf("[reliable-reset-test]|api|set:%d|sent:%zd|reset:%d"
+               "|close:%d|conn_error:%"PRIu64"|\n", set, sent, reset,
+               closed, conn->conn_err);
+        if (g_test_case == XQC_TEST_CASE_RELIABLE_RESET_ZERO_CLOSE) {
+            int repeated = xqc_stream_close(stream);
+            printf("[reliable-reset-test]|repeat_close:%d|send_error:%"PRIu64
+                   "|stop:%d|\n", repeated, stream->reset_at.send_error,
+                   !!(stream->stream_flag
+                       & XQC_STREAM_FLAG_STOP_SENDING_SENT));
+        }
+        fflush(stdout);
+        return;
+    }
+
+    unsigned char frames[] = {
+        0x24, 2, 9, 8, 3,
+        0x0e, 2, 0, 8, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h',
+    };
+    size_t length = sizeof(frames);
+    if (g_test_case == XQC_TEST_CASE_RELIABLE_RESET_INVALID_SIZE) {
+        frames[4] = 9;
+    } else if (g_test_case == XQC_TEST_CASE_RELIABLE_RESET_ZERO_FINAL
+               || g_test_case == XQC_TEST_CASE_RELIABLE_RESET_ZERO_ERROR)
+    {
+        frames[4] = 0;
+        frames[5] = 0x04;
+        frames[6] = 2;
+        frames[7] = g_test_case == XQC_TEST_CASE_RELIABLE_RESET_ZERO_ERROR
+                    ? 10 : 9;
+        frames[8] = g_test_case == XQC_TEST_CASE_RELIABLE_RESET_ZERO_FINAL
+                    ? 9 : 8;
+        length = 9;
+    }
+    if (g_test_case == XQC_TEST_CASE_RELIABLE_RESET_DIRECTION_ERROR) {
+        static xqc_stream_callbacks_t callbacks = {
+            .stream_read_notify = xqc_client_reset_test_read,
+        };
+        /* RFC 9000 Section 3.2: create the locally initiated stream first. */
+        xqc_stream_t *stream = xqc_stream_create_with_direction(conn,
+            XQC_STREAM_BIDI, NULL);
+        if (stream == NULL || xqc_stream_id(stream) != 4) {
+            return;
+        }
+        stream->stream_if = &callbacks;
+        /* Mirror the zero-boundary reset injected below without more frames. */
+        stream->reset_at.send_error = 9;
+        xqc_stream_send_state_update(stream, XQC_SEND_STREAM_ST_RESET_SENT);
+        xqc_stream_shutdown_write(stream);
+
+        /* Retransmit the same peer reset after the server lowers its K. */
+        const unsigned char duplicates[] = {0x24, 4, 9, 0, 0,
+                                            0x24, 4, 9, 0, 0};
+        memcpy(frames, duplicates, sizeof(duplicates));
+        length = sizeof(duplicates);
+    } else if (g_test_case == XQC_TEST_CASE_RELIABLE_RESET_ZERO_FIN) {
+        /* -09 Section 5.2: matching FIN first, then changed Final Size. */
+        const unsigned char fins[] = {0x24, 2, 9, 8, 0,
+                                      0x0f, 2, 8, 0,
+                                      0x0f, 2, 8, 1, 'x'};
+        memcpy(frames, fins, sizeof(fins));
+        length = sizeof(fins);
+    }
+    xqc_packet_out_t *packet = xqc_write_new_packet(conn,
+        XQC_PTYPE_SHORT_HEADER);
+    if (packet == NULL || xqc_get_po_remained_size(packet) < length) {
+        if (packet != NULL) {
+            xqc_maybe_recycle_packet_out(packet, conn);
+        }
+        return;
+    }
+    memcpy(packet->po_buf + packet->po_used_size, frames, length);
+    packet->po_used_size += length;
+    packet->po_frame_types |= XQC_FRAME_BIT_RESET_STREAM_AT;
+    printf("[reliable-reset-test]|case:%d|injected|\n", g_test_case);
+    fflush(stdout);
+}
+
+
+static void
+xqc_client_send_reset_final_size_frames(xqc_connection_t *conn)
+{
+    const unsigned char payload[1] = {0x00};
+    xqc_packet_out_t *packet_out;
+    uint64_t final_size;
+    size_t written = 0;
+    ssize_t ret;
+
+    packet_out = xqc_write_new_packet(conn, XQC_PTYPE_SHORT_HEADER);
+    if (packet_out == NULL) {
+        printf("[reset-final-size-test]|case:%d|new_packet_failed|\n",
+               g_test_case);
+        return;
+    }
+
+    ret = xqc_gen_stream_frame(packet_out, 2, 5, 0, payload,
+                               sizeof(payload), &written);
+    if (ret < 0 || written != sizeof(payload)) {
+        printf("[reset-final-size-test]|case:%d|stream_frame_failed:%zd|\n",
+               g_test_case, ret);
+        xqc_maybe_recycle_packet_out(packet_out, conn);
+        return;
+    }
+    packet_out->po_used_size += ret;
+
+    final_size = g_test_case == XQC_TEST_CASE_RESET_FINAL_SIZE_VALID
+                 ? 6 : 5;
+    ret = xqc_gen_reset_stream_frame(packet_out, 2, 0, final_size);
+    if (ret < 0) {
+        printf("[reset-final-size-test]|case:%d|reset_frame_failed:%zd|\n",
+               g_test_case, ret);
+        xqc_maybe_recycle_packet_out(packet_out, conn);
+        return;
+    }
+    packet_out->po_used_size += ret;
+
+    printf("[reset-final-size-test]|case:%d|stream_id:2|offset:5|"
+           "data_length:1|final_size:%"PRIu64"|written|\n",
+           g_test_case, final_size);
+}
+
+
+static void
+xqc_client_close_after_data_recvd(int fd, short what, void *arg)
+{
+    user_stream_t *user_stream = (user_stream_t *) arg;
+    xqc_stream_t *stream = user_stream->stream;
+    xqc_send_stream_state_t state_before;
+    struct timeval tv = {0, 10000};
+    xqc_int_t ret;
+
+    if (stream->stream_state_send != XQC_SEND_STREAM_ST_DATA_RECVD) {
+        event_add(user_stream->ev_stream_close_timer, &tv);
+        return;
+    }
+
+    state_before = stream->stream_state_send;
+    event_free(user_stream->ev_stream_close_timer);
+    user_stream->ev_stream_close_timer = NULL;
+    ret = xqc_stream_close(stream);
+    printf("[stream-close-data-recvd-test]|case:%d|stream_id:%"PRIu64
+           "|state_before:%d|close_ret:%d|state_after:%d|\n",
+           g_test_case, xqc_stream_id(stream), state_before, ret,
+           stream->stream_state_send);
+    fflush(stdout);
+}
+
+
+static void
+xqc_client_key_update_add_timer(struct event *ev, xqc_usec_t deadline)
+{
+    xqc_usec_t now = xqc_now();
+    xqc_usec_t delay = deadline > now ? deadline - now : 0;
+    struct timeval tv;
+
+    tv.tv_sec = delay / 1000000;
+    tv.tv_usec = delay % 1000000;
+    event_add(ev, &tv);
+}
+
+
+/*
+ * Case 905, RFC 9001 Sections 6.1 and 6.5: a key update started while the
+ * old-key discard deadline of the previous update is pending keeps the read
+ * keys it retires until a packet protected with the peer's new keys has been
+ * unprotected, and then for three times the PTO. Keep a copy of the first
+ * server packet that the client unprotects with the keys of its first key
+ * update, start a second key update one PTO before the first update's discard
+ * deadline, and replay the copy once that deadline has passed: its keys have
+ * been retired by the second update, but must still be available.
+ *
+ * Header protection hides the key phase, so every datagram holding one short
+ * header packet is copied before processing until one of them turns out to be
+ * protected with the new keys.
+ */
+static void
+xqc_client_key_update_copy_packet(user_conn_t *user_conn,
+    const unsigned char *buf, size_t len)
+{
+    xqc_key_update_stale_test_t *test = &xqc_key_update_stale_test;
+    xqc_connection_t *conn = user_conn->quic_conn;
+
+    if (conn == NULL && user_conn->h3_conn != NULL) {
+        conn = xqc_h3_conn_get_xqc_conn(user_conn->h3_conn);
+    }
+
+    test->copied = 0;
+    if (test->started || conn == NULL || len > sizeof(test->packet)
+        || (buf[0] & 0x80) != 0
+        || conn->key_update_ctx.key_update_cnt != 1
+        || !conn->key_update_ctx.awaiting_peer_key_update)
+    {
+        return;
+    }
+
+    test->copied = 1;
+    test->user_conn = user_conn;
+    test->conn = conn;
+    test->packet_len = len;
+    memcpy(test->packet, buf, len);
+}
+
+
+/* called after each received datagram has been processed */
+static void
+xqc_client_key_update_start(user_conn_t *user_conn)
+{
+    xqc_key_update_stale_test_t *test = &xqc_key_update_stale_test;
+    xqc_connection_t *conn = user_conn->quic_conn;
+    xqc_timer_manager_t *timers;
+    xqc_usec_t now, pto;
+
+    if (conn == NULL && user_conn->h3_conn != NULL) {
+        conn = xqc_h3_conn_get_xqc_conn(user_conn->h3_conn);
+    }
+
+    if (test->started || conn == NULL
+        || conn->key_update_ctx.key_update_cnt != 1
+        || conn->key_update_ctx.awaiting_peer_key_update)
+    {
+        return;
+    }
+
+    test->started = 1;
+    timers = &conn->conn_timer_manager;
+    now = xqc_now();
+    pto = xqc_conn_get_max_pto(conn);
+    if (!test->copied || !xqc_timer_is_set(timers, XQC_TIMER_KEY_UPDATE)
+        || timers->timer[XQC_TIMER_KEY_UPDATE].expire_time < now + 2 * pto)
+    {
+        printf("[key-update-stale-deadline]|not-exercised|copied:%d|\n",
+               test->copied);
+        return;
+    }
+
+    test->first_deadline = timers->timer[XQC_TIMER_KEY_UPDATE].expire_time;
+    test->ev_force = event_new(eb, -1, 0, xqc_client_key_update_force, test);
+    xqc_client_key_update_add_timer(test->ev_force,
+                                    test->first_deadline - pto);
+
+    printf("[key-update-stale-deadline]|copy-old-key-packet|len:%zu|"
+           "deadline_in:%"PRIu64"|pto:%"PRIu64"|\n",
+           test->packet_len, test->first_deadline - now, pto);
+}
+
+
+static void
+xqc_client_key_update_force(int fd, short what, void *arg)
+{
+    xqc_key_update_stale_test_t *test = arg;
+    user_conn_t *user_conn = test->user_conn;
+    xqc_connection_t *conn = test->conn;
+    xqc_usec_t now;
+
+    if (conn == NULL) {
+        return;
+    }
+
+    now = xqc_now();
+    if (now >= test->first_deadline
+        || !xqc_timer_is_set(&conn->conn_timer_manager, XQC_TIMER_KEY_UPDATE))
+    {
+        printf("[key-update-stale-deadline]|not-exercised|late_by:%"PRId64"|\n",
+               (int64_t) (now - test->first_deadline));
+        return;
+    }
+
+    /*
+     * Let the next 1-RTT packet start the second key update now, while the
+     * first update's discard deadline is pending, as when that deadline and
+     * the initiation guard expire in the same engine tick.
+     */
+    conn->key_update_ctx.initiate_time_guard = 0;
+    conn->key_update_ctx.enc_pkt_cnt =
+        conn->conn_settings.keyupdate_pkt_threshold;
+    if (user_conn->h3_conn != NULL) {
+        xqc_h3_conn_send_ping(user_conn->ctx->engine, &user_conn->cid, NULL);
+
+    } else {
+        xqc_conn_send_ping(user_conn->ctx->engine, &user_conn->cid, NULL);
+    }
+    xqc_engine_main_logic(user_conn->ctx->engine);
+
+    if (test->conn == NULL) {
+        printf("[key-update-stale-deadline]|not-exercised|closed|\n");
+        return;
+    }
+
+    if (conn->key_update_ctx.key_update_cnt != 2) {
+        printf("[key-update-stale-deadline]|not-exercised|key_update_cnt:%u|\n",
+               (unsigned int) conn->key_update_ctx.key_update_cnt);
+        return;
+    }
+
+    test->ev_replay = event_new(eb, -1, 0, xqc_client_key_update_replay, test);
+    xqc_client_key_update_add_timer(test->ev_replay,
+                                    test->first_deadline + 1000);
+
+    printf("[key-update-stale-deadline]|second-update|before_deadline:%"PRId64
+           "|\n", (int64_t) (test->first_deadline - now));
+}
+
+
+static void
+xqc_client_key_update_replay(int fd, short what, void *arg)
+{
+    xqc_key_update_stale_test_t *test = arg;
+    user_conn_t *user_conn = test->user_conn;
+    xqc_connection_t *conn = test->conn;
+    xqc_timer_manager_t *timers;
+    xqc_usec_t now = xqc_now();
+    uint64_t dropped;
+
+    if (conn == NULL) {
+        return;
+    }
+    timers = &conn->conn_timer_manager;
+
+    /* wait until the engine has handled the first update's deadline */
+    if (xqc_timer_is_set(timers, XQC_TIMER_KEY_UPDATE)
+        && timers->timer[XQC_TIMER_KEY_UPDATE].expire_time
+           == test->first_deadline
+        && now < test->first_deadline + 1000000)
+    {
+        xqc_client_key_update_add_timer(test->ev_replay, now + 1000);
+        return;
+    }
+
+    dropped = conn->packet_dropped_count;
+    xqc_engine_packet_process(user_conn->ctx->engine, test->packet,
+                              test->packet_len, user_conn->local_addr,
+                              user_conn->local_addrlen, user_conn->peer_addr,
+                              user_conn->peer_addrlen, xqc_now(), user_conn);
+    if (test->conn == NULL) {
+        printf("[key-update-stale-deadline]|not-exercised|closed|\n");
+        return;
+    }
+    dropped = conn->packet_dropped_count - dropped;
+    xqc_engine_finish_recv(user_conn->ctx->engine);
+
+    printf("[key-update-stale-deadline]|RESULT|%s|after_deadline:%"PRId64"|\n",
+           dropped > 0 ? "dropped" : "retained",
+           (int64_t) (now - test->first_deadline));
+}
+
+
+/* the connection is going away: its pointers must not be used any more */
+static void
+xqc_client_key_update_conn_closed(void)
+{
+    xqc_key_update_stale_test_t *test = &xqc_key_update_stale_test;
+
+    test->started = 1;
+    test->conn = NULL;
+    if (test->ev_force != NULL) {
+        event_del(test->ev_force);
+    }
+    if (test->ev_replay != NULL) {
+        event_del(test->ev_replay);
+    }
+}
+
+
+static void
+xqc_client_close_send_only_stream(xqc_connection_t *conn)
+{
+    const unsigned char payload = 0;
+    user_stream_t *user_stream;
+    xqc_stream_t *stream;
+    struct timeval tv = {0, 10000};
+    xqc_int_t ret;
+
+    user_stream = calloc(1, sizeof(*user_stream));
+    if (user_stream == NULL) {
+        printf("[stream-close-direction-test]|case:%d|alloc_failed|\n",
+               g_test_case);
+        return;
+    }
+
+    stream = xqc_stream_create_with_direction(conn, XQC_STREAM_UNI,
+                                              user_stream);
+    if (stream == NULL) {
+        printf("[stream-close-direction-test]|case:%d|stream_unavailable|\n",
+               g_test_case);
+        free(user_stream);
+        return;
+    }
+
+    user_stream->stream = stream;
+
+    if (g_test_case == XQC_TEST_CASE_CLOSE_AFTER_DATA_RECVD) {
+        ret = xqc_stream_send(stream, (unsigned char *) &payload,
+                              sizeof(payload), 1);
+        if (ret != sizeof(payload)) {
+            printf("[stream-close-data-recvd-test]|case:%d|stream_id:%"PRIu64
+                   "|send_ret:%d|\n", g_test_case,
+                   xqc_stream_id(stream), ret);
+            return;
+        }
+
+        user_stream->ev_stream_close_timer = event_new(
+            eb, -1, 0, xqc_client_close_after_data_recvd, user_stream);
+        if (user_stream->ev_stream_close_timer == NULL) {
+            printf("[stream-close-data-recvd-test]|case:%d|timer_failed|\n",
+                   g_test_case);
+            return;
+        }
+        event_add(user_stream->ev_stream_close_timer, &tv);
+        printf("[stream-close-data-recvd-test]|case:%d|stream_id:%"PRIu64
+               "|send_ret:%d|\n", g_test_case, xqc_stream_id(stream), ret);
+        fflush(stdout);
+        return;
+    }
+
+    ret = xqc_stream_close(stream);
+    printf("[stream-close-direction-test]|case:%d|stream_id:%"PRIu64
+           "|close_ret:%d|\n", g_test_case, xqc_stream_id(stream), ret);
+    fflush(stdout);
+}
+
+
+static void
+xqc_client_send_max_stream_data_test_frame(xqc_connection_t *conn)
+{
+    xqc_packet_out_t *packet_out;
+    xqc_stream_id_t   stream_id;
+    ssize_t           ret;
+
+    packet_out = xqc_write_new_packet(conn, XQC_PTYPE_SHORT_HEADER);
+    if (packet_out == NULL) {
+        printf("test case %d, xqc_write_new_packet error\n", g_test_case);
+        return;
+    }
+
+    stream_id = g_test_case == 718 ? 3 : 2;
+    ret = xqc_gen_max_stream_data_frame(packet_out, stream_id,
+                                        XQC_MAX_FLOW_CONTROL_WINDOW);
+    if (ret < 0) {
+        printf("test case %d, MAX_STREAM_DATA generation error:%zd\n",
+               g_test_case, ret);
+        xqc_maybe_recycle_packet_out(packet_out, conn);
+        return;
+    }
+
+    packet_out->po_used_size += ret;
+    printf("[max-stream-data-test]|case:%d|stream_id:%"PRIu64
+           "|limit:%"PRIu64"|\n", g_test_case, stream_id,
+           XQC_MAX_FLOW_CONTROL_WINDOW);
+}
+
+static xqc_int_t
+xqc_client_write_test_datagram_frame(xqc_connection_t *conn,
+    xqc_pkt_type_t pkt_type)
+{
+    const unsigned char payload[1] = {0};
+    xqc_packet_out_t   *packet_out;
+    xqc_int_t           ret;
+
+    packet_out = xqc_write_new_packet(conn, pkt_type);
+    if (packet_out == NULL) {
+        return -XQC_ENOBUF;
+    }
+
+    ret = xqc_gen_datagram_frame(packet_out, payload, sizeof(payload));
+    if (ret == XQC_OK) {
+        printf("[dgram-encryption-level-test]|packet_type:%d|written|\n",
+               pkt_type);
+    }
+
+    return ret;
+}
+
 void
 xqc_client_h3_conn_handshake_finished(xqc_h3_conn_t *h3_conn, void *user_data)
 {
@@ -2448,8 +3455,25 @@ xqc_client_h3_conn_handshake_finished(xqc_h3_conn_t *h3_conn, void *user_data)
         xqc_h3_conn_send_ping(p_ctx->engine, &user_conn->cid, &g_ping_id);
     }
 
+    /* issues #565/#566/#567: wrong direction frame, 1-RTT is available here */
+    if (g_test_case >= 705 && g_test_case <= 708) {
+        xqc_client_send_wrong_direction_frame(h3_conn->conn);
+    }
+
+    if (g_test_case == 718 || g_test_case == 719) {
+        xqc_client_send_max_stream_data_test_frame(h3_conn->conn);
+    }
+
     xqc_conn_stats_t stats = xqc_conn_get_stats(p_ctx->engine, &user_conn->cid);
     printf("0rtt_flag:%d\n", stats.early_data_flag);
+
+    if (g_test_case >= XQC_TEST_CASE_RESET_0RTT_DOWNGRADE
+        && g_test_case <= XQC_TEST_CASE_RESET_0RTT_ENABLED)
+    {
+        printf("[reset-0rtt]|negotiated:%d|session_reused:%d|\n",
+               h3_conn->conn->remote_settings.reset_stream_at,
+               SSL_session_reused(xqc_tls_get_ssl(h3_conn->conn->tls)));
+    }
 
     if (g_enable_multipath) {
         printf("transport_parameter:enable_multipath=%d\n", stats.enable_multipath);
@@ -2459,6 +3483,33 @@ xqc_client_h3_conn_handshake_finished(xqc_h3_conn_t *h3_conn, void *user_data)
     printf("====>SCID:%s\n", xqc_scid_str(p_ctx->engine, &user_conn->cid));
 
     hsk_completed = 1;
+
+    if (g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_BELOW_LIMIT
+        || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_AT_LIMIT
+        || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_EARLY_UPDATE
+        || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE)
+    {
+        xqc_connection_t *conn = xqc_h3_conn_get_xqc_conn(h3_conn);
+        uint32_t cipher_id = xqc_tls_get_1rtt_cipher_id(conn->tls);
+        uint64_t limit = xqc_aead_confidentiality_limit(cipher_id);
+
+        conn->key_update_ctx.enc_pkt_cnt =
+            g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_BELOW_LIMIT
+            ? limit - 1
+            : g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_EARLY_UPDATE
+              || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE
+            ? limit - (limit >> 3) - 1 : limit;
+        conn->key_update_ctx.aead_confidentiality_limit = limit;
+        if (g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE) {
+            /* hold the initiation guard closed past the early trigger */
+            conn->key_update_ctx.initiate_time_guard = xqc_now() + 20000;
+        }
+        printf("[aead-confidentiality-test]|case:%d|cipher_id:%u|"
+               "encrypted:%"PRIu64"|limit:%"PRIu64"|\n",
+               g_test_case, cipher_id,
+               conn->key_update_ctx.enc_pkt_cnt, limit);
+        fflush(stdout);
+    }
 
     user_conn->dgram_mss = xqc_h3_ext_datagram_get_mss(h3_conn);
     if (user_conn->dgram_mss == 0) {
@@ -2486,6 +3537,12 @@ xqc_client_h3_conn_handshake_finished(xqc_h3_conn_t *h3_conn, void *user_data)
 
     } else if (g_test_case == XQC_TEST_CASE_H3_MAX_PUSH_ID_DECREASE) {
         xqc_client_send_test_max_push_ids(h3_conn, 3, 1);
+
+    } else if (g_test_case == XQC_TEST_CASE_H3_GOAWAY_DECREASE) {
+        xqc_client_send_test_goaway_ids(h3_conn, 3, 1);
+
+    } else if (g_test_case == XQC_TEST_CASE_H3_GOAWAY_INCREASE) {
+        xqc_client_send_test_goaway_ids(h3_conn, 1, 3);
 
     } else if (g_test_case == XQC_TEST_CASE_H3_SINGLE_VINT_VALID) {
         xqc_client_send_test_single_vint_frame(h3_conn, XQC_FALSE);
@@ -2543,7 +3600,7 @@ xqc_client_send_test_request_frame(xqc_h3_request_t *h3_request,
                                             XQC_FALSE);
 
     } else {
-        unsigned char frame[] = { 0x21, 0x00 };
+        unsigned char frame[] = { (unsigned char)frame_type, 0x00 };
         ret = xqc_var_buf_save_data(buf, frame, sizeof(frame));
         if (ret == XQC_OK) {
             ret = xqc_list_buf_to_tail(&h3_stream->send_buf, buf);
@@ -2578,6 +3635,23 @@ xqc_client_send_test_max_push_ids(xqc_h3_conn_t *h3_conn,
     xqc_int_t send_ret = xqc_h3_stream_send_buffer(control);
 
     printf("[h3-max-push-id-test]|first:%" PRIu64 "|second:%" PRIu64
+           "|write:%d,%d|send:%d|\n",
+           first, second, first_ret, second_ret, send_ret);
+}
+
+
+static void
+xqc_client_send_test_goaway_ids(xqc_h3_conn_t *h3_conn,
+    uint64_t first, uint64_t second)
+{
+    xqc_h3_stream_t *control = h3_conn->control_stream_out;
+    xqc_int_t first_ret = xqc_h3_frm_write_goaway(
+        &control->send_buf, first, XQC_FALSE);
+    xqc_int_t second_ret = xqc_h3_frm_write_goaway(
+        &control->send_buf, second, XQC_FALSE);
+    xqc_int_t send_ret = xqc_h3_stream_send_buffer(control);
+
+    printf("[h3-goaway-test]|first:%" PRIu64 "|second:%" PRIu64
            "|write:%d,%d|send:%d|\n",
            first, second, first_ret, second_ret, send_ret);
 }
@@ -2639,6 +3713,16 @@ xqc_client_h3_conn_init_settings_notify(xqc_h3_conn_t *h3_conn,
     xqc_h3_conn_settings_t *current_settings, void *h3c_user_data)
 {
     current_settings->qpack_dec_max_table_capacity = 64 * 1024;
+    if (g_test_case == XQC_TEST_CASE_H3_CUSTOM_SETTINGS_ACCEPT
+        || g_test_case == XQC_TEST_CASE_H3_CUSTOM_SETTINGS_REJECT)
+    {
+        int first = xqc_h3_conn_settings_add_extern(current_settings,
+            0x2c7cf000, 1);
+        int second = xqc_h3_conn_settings_add_extern(current_settings, 0x2b61,
+            UINT64_C(1) << 40);
+        printf("[h3-custom-settings-test]|register:%d,%d|\n", first, second);
+        fflush(stdout);
+    }
 }
 
 void
@@ -2654,6 +3738,13 @@ xqc_client_h3_conn_update_cid_notify(xqc_h3_conn_t *conn, const xqc_cid_t *retir
     printf("====>SCID:%s\n", xqc_scid_str(ctx.engine, new_cid));
     printf("====>DCID:%s\n", xqc_dcid_str_by_scid(ctx.engine, new_cid));
 
+}
+
+static xqc_bool_t
+xqc_client_is_hq_case(void)
+{
+    return g_test_case == XQC_TEST_CASE_HQ_REQUEST_FIN
+           || g_test_case == XQC_TEST_CASE_HQ_REQUEST_DELAYED_FIN;
 }
 
 int
@@ -2708,7 +3799,9 @@ xqc_client_stream_send(xqc_stream_t *stream, void *user_data)
     }
 
     int fin = 1;
-    if (g_test_case == 4) { /* test fin_only */
+    if (g_test_case == 4
+        || g_test_case == XQC_TEST_CASE_HQ_REQUEST_DELAYED_FIN)
+    {
         fin = 0;
     }
 
@@ -2747,6 +3840,38 @@ xqc_client_stream_write_notify(xqc_stream_t *stream, void *user_data)
     user_stream_t *user_stream = (user_stream_t *) user_data;
     ret = xqc_client_stream_send(stream, user_stream);
     return ret;
+}
+
+int
+xqc_client_stream_create_notify(xqc_stream_t *stream, void *user_data)
+{
+    user_stream_t *user_stream;
+    xqc_int_t first_ret = XQC_OK;
+    xqc_int_t second_ret = XQC_OK;
+
+    if (g_test_case != XQC_TEST_CASE_CLOSE_RECV_ONLY_STREAM
+        || !xqc_stream_is_recv_only(stream->stream_conn->conn_type,
+                                    xqc_stream_id(stream)))
+    {
+        return XQC_OK;
+    }
+
+    user_stream = calloc(1, sizeof(*user_stream));
+    if (user_stream == NULL) {
+        return XQC_ERROR;
+    }
+
+    user_stream->stream = stream;
+    xqc_stream_set_user_data(stream, user_stream);
+
+    first_ret = xqc_stream_close(stream);
+    second_ret = xqc_stream_close(stream);
+    printf("[stream-close-direction-test]|case:%d|stream_id:%"PRIu64
+           "|first_ret:%d|second_ret:%d|\n", g_test_case,
+           xqc_stream_id(stream), first_ret, second_ret);
+    fflush(stdout);
+
+    return first_ret != XQC_OK ? first_ret : second_ret;
 }
 
 int
@@ -2831,6 +3956,18 @@ xqc_client_stream_read_notify(xqc_stream_t *stream, void *user_data)
     }
 
     if (fin) {
+        if (g_test_case == XQC_TEST_CASE_HQ_REQUEST_DELAYED_FIN
+            && !user_stream->recv_fin)
+        {
+            /* RFC 9000, Section 19.8: FIN may follow the request bytes. */
+            ssize_t ret = xqc_stream_send(stream, NULL, 0, 1);
+            printf("[hq-request]|stream_id:%"PRIu64
+                   "|fin_after_response:%zd|\n", xqc_stream_id(stream), ret);
+            if (ret < 0) {
+                return -1;
+            }
+        }
+
         user_stream->recv_fin = 1;
         xqc_usec_t now_us = xqc_now();
         printf("\033[33m>>>>>>>> request time cost:%"PRIu64" us, speed:%"PRIu64" Kbit/s \n"
@@ -2871,6 +4008,7 @@ xqc_client_stream_close_notify(xqc_stream_t *stream, void *user_data)
 {
     DEBUG;
     user_stream_t *user_stream = (user_stream_t*)user_data;
+    user_conn_t *user_conn = user_stream->user_conn;
     if (g_echo_check) {
         int pass = 0;
         printf("user_stream->recv_fin:%d, user_stream->send_body_len:%zu, user_stream->recv_body_len:%zd\n",
@@ -2893,9 +4031,35 @@ xqc_client_stream_close_notify(xqc_stream_t *stream, void *user_data)
     if (g_test_case == 14) {
         printf("\033[33m>>>>>>>> abnormal pass:%d count:%d\033[0m\n", user_stream->abnormal_count == 0 ? 1 : 0, user_stream->abnormal_count);
     }
+    if (user_stream->ev_stream_close_timer != NULL) {
+        event_free(user_stream->ev_stream_close_timer);
+    }
     free(user_stream->send_body);
     free(user_stream->recv_body);
     free(user_stream);
+
+    if (xqc_client_is_hq_case() && stream->stream_err == 0
+        && stream->stream_conn->conn_state < XQC_CONN_STATE_CLOSING)
+    {
+        if (g_req_cnt >= g_req_max) {
+            return xqc_conn_close(user_conn->ctx->engine, &user_conn->cid);
+        }
+
+        user_stream = calloc(1, sizeof(*user_stream));
+        if (user_stream == NULL) {
+            return -1;
+        }
+        user_stream->user_conn = user_conn;
+        user_stream->stream = xqc_stream_create(user_conn->ctx->engine,
+                                              &user_conn->cid, NULL,
+                                              user_stream);
+        if (user_stream->stream == NULL) {
+            free(user_stream);
+            return -1;
+        }
+        g_req_cnt++;
+        return xqc_client_stream_send(user_stream->stream, user_stream);
+    }
     return 0;
 }
 
@@ -3082,9 +4246,62 @@ xqc_client_request_send_fin_only(int fd, short what, void *arg)
     }
 }
 
+static void
+xqc_client_try_inject_mp_frozen(user_stream_t *user_stream)
+{
+    xqc_connection_t *conn;
+    xqc_path_ctx_t *path;
+    xqc_app_path_status_t path_status;
+    xqc_multipath_version_t mp_version;
+    xqc_int_t ret;
+    client_ctx_t *p_ctx;
+
+    if (g_test_case != XQC_TEST_CASE_MP_FROZEN_UNNEGOTIATED
+        || user_stream->mp_frozen_injected)
+    {
+        return;
+    }
+
+    p_ctx = g_test_qch_mode ? user_stream->user_conn->ctx : &ctx;
+    conn = xqc_engine_conns_hash_find(p_ctx->engine,
+                                       &user_stream->user_conn->cid, 's');
+    if (conn == NULL || !(conn->conn_flag & XQC_CONN_FLAG_CAN_SEND_1RTT)) {
+        return;
+    }
+
+    path = conn->conn_initial_path;
+    if (path == NULL) {
+        printf("mp_frozen_injection_failed:no_initial_path\n");
+        return;
+    }
+
+    path_status = path->app_path_status;
+    mp_version = conn->conn_settings.multipath_version;
+    conn->conn_settings.multipath_version = XQC_MULTIPATH_10;
+    path->app_path_status = XQC_APP_PATH_STATUS_FROZEN;
+    ret = xqc_write_path_status_frame_to_packet(conn, path);
+    path->app_path_status = path_status;
+    conn->conn_settings.multipath_version = mp_version;
+    printf("mp_frozen_injected:%d\n", ret == XQC_OK);
+
+    if (ret == XQC_OK) {
+        user_stream->mp_frozen_injected = 1;
+        g_test_case = -1;
+        xqc_conn_continue_send(p_ctx->engine, &user_stream->user_conn->cid);
+    }
+}
+
 int
 xqc_client_request_send(xqc_h3_request_t *h3_request, user_stream_t *user_stream)
 {
+    if (xqc_test_h3_split_fin_case(g_test_case)) {
+        client_ctx_t *p_ctx = user_stream->user_conn->ctx
+                              ? user_stream->user_conn->ctx : &ctx;
+        xqc_test_h3_split_fin_init(&user_stream->split_fin, h3_request,
+            p_ctx->engine, g_test_qch_mode ? p_ctx->eb : eb, g_test_case,
+            "client", xqc_test_h3_split_fin_uplink(g_test_case));
+    }
+
     if (g_test_case == 99) {
         xqc_h3_request_finish(h3_request);
         return 0;
@@ -3096,14 +4313,26 @@ xqc_client_request_send(xqc_h3_request_t *h3_request, user_stream_t *user_stream
     ssize_t ret = 0;
     char content_len[10];
 
+    if (user_stream->header_sent) {
+        xqc_client_try_inject_mp_frozen(user_stream);
+    }
+
     if (!user_stream->h3_test_frame_queued
         && (g_test_case == XQC_TEST_CASE_H3_RESERVED_REQUEST_FRAME
-            || g_test_case == XQC_TEST_CASE_H3_CLIENT_PUSH_PROMISE))
+            || g_test_case == XQC_TEST_CASE_H3_CLIENT_PUSH_PROMISE
+            || g_test_case == XQC_TEST_CASE_H3_H2_RESERVED_REQUEST_FRAME
+            || g_test_case == XQC_TEST_CASE_H3_DATA_BEFORE_HEADERS))
     {
-        uint64_t frame_type =
-            g_test_case == XQC_TEST_CASE_H3_CLIENT_PUSH_PROMISE
-            ? XQC_H3_FRM_PUSH_PROMISE
-            : 0x21;
+        uint64_t frame_type = XQC_H3_FRM_RESERVED_PRIORITY;
+        if (g_test_case == XQC_TEST_CASE_H3_CLIENT_PUSH_PROMISE) {
+            frame_type = XQC_H3_FRM_PUSH_PROMISE;
+
+        } else if (g_test_case == XQC_TEST_CASE_H3_RESERVED_REQUEST_FRAME) {
+            frame_type = 0x21;
+
+        } else if (g_test_case == XQC_TEST_CASE_H3_DATA_BEFORE_HEADERS) {
+            frame_type = XQC_H3_FRM_DATA;
+        }
         ret = xqc_client_send_test_request_frame(h3_request, frame_type);
         if (ret != XQC_OK) {
             return ret;
@@ -3112,7 +4341,9 @@ xqc_client_request_send(xqc_h3_request_t *h3_request, user_stream_t *user_stream
     }
 
     if (g_test_case == XQC_TEST_CASE_H3_RESERVED_REQUEST_FRAME
-        || g_test_case == XQC_TEST_CASE_H3_CLIENT_PUSH_PROMISE)
+        || g_test_case == XQC_TEST_CASE_H3_CLIENT_PUSH_PROMISE
+        || g_test_case == XQC_TEST_CASE_H3_H2_RESERVED_REQUEST_FRAME
+        || g_test_case == XQC_TEST_CASE_H3_DATA_BEFORE_HEADERS)
     {
         return XQC_OK;
     }
@@ -3424,6 +4655,8 @@ xqc_client_request_send(xqc_h3_request_t *h3_request, user_stream_t *user_stream
             user_stream->header_sent = 1;
         }
 
+        xqc_client_try_inject_mp_frozen(user_stream);
+
         if (g_test_case == 30) {
             usleep(200*1000);
             ret = xqc_h3_request_send_headers(h3_request, &headers, header_only);
@@ -3458,6 +4691,11 @@ xqc_client_request_send(xqc_h3_request_t *h3_request, user_stream_t *user_stream
     }
 
     int fin = 1;
+    if (xqc_test_h3_split_fin_case(g_test_case)
+        && user_stream->split_fin.sender)
+    {
+        fin = 0;
+    }
     if (g_test_case == 4 || g_test_case == 31 || g_test_case == 35 || g_test_case == 36) { /* test fin_only */
         fin = 0;
     }
@@ -3507,6 +4745,13 @@ xqc_client_request_send(xqc_h3_request_t *h3_request, user_stream_t *user_stream
         }
     }
 next:
+    if (xqc_test_h3_split_fin_case(g_test_case)
+        && user_stream->send_offset == user_stream->send_body_len)
+    {
+        return xqc_test_h3_split_fin_after_send(&user_stream->split_fin,
+            user_stream->send_body_len);
+    }
+
     /* send trailer header */
     if (user_stream->send_offset == user_stream->send_body_len) {
         if (g_test_case == 31) {
@@ -3715,6 +4960,32 @@ xqc_client_request_read_notify(xqc_h3_request_t *h3_request, xqc_request_notify_
 
         for (int i = 0; i < headers->count; i++) {
             printf("%s = %s\n", (char *)headers->headers[i].name.iov_base, (char *)headers->headers[i].value.iov_base);
+
+            if ((g_test_case == XQC_TEST_CASE_H3_LOWERCASE_RESPONSE
+                 || g_test_case == XQC_TEST_CASE_H3_UPPERCASE_RESPONSE)
+                && headers->headers[i].name.iov_len == 16
+                && memcmp(headers->headers[i].name.iov_base,
+                          "x-uppercase-test", 16) == 0
+                && headers->headers[i].value.iov_len == 9
+                && memcmp(headers->headers[i].value.iov_base,
+                          "lowercase", 9) == 0)
+            {
+                printf("lowercase_header_received:1\n");
+            }
+
+            if ((g_test_case
+                 == XQC_TEST_CASE_H3_PSEUDO_HEADER_ORDER_VALID
+                 || g_test_case
+                    == XQC_TEST_CASE_H3_PSEUDO_HEADER_ORDER_INVALID)
+                && headers->headers[i].name.iov_len == 14
+                && memcmp(headers->headers[i].name.iov_base,
+                          "x-pseudo-order", 14) == 0
+                && headers->headers[i].value.iov_len == 5
+                && memcmp(headers->headers[i].value.iov_base,
+                          "value", 5) == 0)
+            {
+                printf("pseudo_header_order_received:1\n");
+            }
         }
 
         user_stream->header_recvd = 1;
@@ -3798,6 +5069,11 @@ xqc_client_request_read_notify(xqc_h3_request_t *h3_request, xqc_request_notify_
     }
 
 
+    if (xqc_test_h3_split_fin_case(g_test_case)) {
+        xqc_test_h3_split_fin_on_read(&user_stream->split_fin,
+            user_stream->recv_body_len, fin, flag);
+    }
+
     if (fin) {
         user_stream->recv_fin = 1;
         xqc_request_stats_t stats;
@@ -3839,6 +5115,9 @@ xqc_client_request_close_notify(xqc_h3_request_t *h3_request, void *user_data)
 {
     DEBUG;
     user_stream_t *user_stream = (user_stream_t *)user_data;
+    if (xqc_test_h3_split_fin_case(g_test_case)) {
+        xqc_test_h3_split_fin_close(&user_stream->split_fin);
+    }
     user_conn_t *user_conn = user_stream->user_conn;
     client_ctx_t *p_ctx;
     if (g_test_qch_mode) {
@@ -3861,8 +5140,44 @@ xqc_client_request_close_notify(xqc_h3_request_t *h3_request, void *user_data)
     printf("retx:%u, sent:%u, max_pto:%u\n", stats.retrans_cnt,
            stats.sent_pkt_cnt, stats.max_pto_backoff);
 
+    if (g_test_case == XQC_TEST_CASE_H3_LOWERCASE_RESPONSE
+        && stats.stream_err == 0
+        && user_stream->header_recvd)
+    {
+        printf("lowercase_header_request_succeeded:1\n");
+    }
+
+    if (g_test_case == XQC_TEST_CASE_H3_UPPERCASE_RESPONSE) {
+        if (stats.stream_err == H3_MESSAGE_ERROR) {
+            printf("uppercase_header_stream_error:1\n");
+
+        } else if (stats.stream_err == 0 && user_stream->header_recvd) {
+            printf("post_error_request_succeeded:1\n");
+        }
+    }
+
+    if (g_test_case == XQC_TEST_CASE_H3_PSEUDO_HEADER_ORDER_VALID
+        && stats.stream_err == 0
+        && user_stream->header_recvd)
+    {
+        printf("pseudo_header_order_request_succeeded:1\n");
+    }
+
+    if (g_test_case == XQC_TEST_CASE_H3_PSEUDO_HEADER_ORDER_INVALID) {
+        if (stats.stream_err == H3_MESSAGE_ERROR) {
+            printf("pseudo_header_order_stream_error:1\n");
+
+        } else if (stats.stream_err == 0 && user_stream->header_recvd) {
+            printf("post_pseudo_header_order_error_request_succeeded:1\n");
+        }
+    }
+
     if (g_echo_check
         && !(g_test_case == XQC_TEST_CASE_H3_FIELD_SECTION_OVER_LIMIT
+             && stats.stream_err == H3_MESSAGE_ERROR)
+        && !(g_test_case == XQC_TEST_CASE_H3_UPPERCASE_RESPONSE
+             && stats.stream_err == H3_MESSAGE_ERROR)
+        && !(g_test_case == XQC_TEST_CASE_H3_PSEUDO_HEADER_ORDER_INVALID
              && stats.stream_err == H3_MESSAGE_ERROR))
     {
         int pass = 0;
@@ -3928,6 +5243,94 @@ xqc_client_socket_write_handler(user_conn_t *user_conn)
         p_ctx = &ctx;
     }
     xqc_conn_continue_send(p_ctx->engine, &user_conn->cid);
+}
+
+
+static void
+xqc_client_poll_key_update(int fd, short what, void *arg)
+{
+    xqc_key_update_retention_test_t *test = &xqc_key_update_retention_test;
+    user_conn_t *user_conn = arg;
+    struct timeval tv = { 0, 1000 };
+
+    if (g_test_case != 904 || test->started || user_conn == NULL) {
+        return;
+    }
+
+    if (user_conn->quic_conn != NULL
+        && user_conn->quic_conn->key_update_ctx.key_update_cnt > 0)
+    {
+        /*
+         * Hold the peer's old-phase packet longer than the 3*PTO old-key
+         * retention window so that, if old read keys are discarded before a
+         * new-key packet is unprotected (the RFC 9001 Section 6.1 defect),
+         * the replay below cannot decrypt it. The 2s floor also guarantees
+         * the peer has time to retransmit an old-phase packet while outbound
+         * is suppressed.
+         */
+        xqc_usec_t delay = 3 * xqc_conn_get_max_pto(user_conn->quic_conn)
+                           + 500000;
+        struct timeval release_tv;
+
+        if (delay < 2000000) {
+            delay = 2000000;
+        }
+        release_tv.tv_sec = delay / 1000000;
+        release_tv.tv_usec = delay % 1000000;
+
+        test->started = XQC_TRUE;
+        test->user_conn = user_conn;
+        test->ev_release = event_new(eb, -1, 0,
+            xqc_client_release_key_update_packet, NULL);
+        event_add(test->ev_release, &release_tv);
+        printf("[key-update-retention]|hold-old-key-packet|delay:%"PRIu64"|\n",
+               delay);
+        return;
+    }
+
+    event_add(test->ev_poll, &tv);
+}
+
+
+static void
+xqc_client_release_key_update_packet(int fd, short what, void *arg)
+{
+    xqc_key_update_retention_test_t *test = &xqc_key_update_retention_test;
+    user_conn_t *user_conn = test->user_conn;
+    xqc_connection_t *conn;
+    uint64_t dropped_before;
+    uint64_t dropped_after;
+
+    if (user_conn == NULL || test->packet_len == 0) {
+        printf("[key-update-retention]|missing-old-key-packet|\n");
+        return;
+    }
+
+    conn = user_conn->quic_conn;
+    dropped_before = (conn != NULL) ? conn->packet_dropped_count : 0;
+
+    test->replayed = XQC_TRUE;
+    xqc_engine_packet_process(user_conn->ctx->engine, test->packet,
+        test->packet_len, user_conn->local_addr, user_conn->local_addrlen,
+        user_conn->peer_addr, user_conn->peer_addrlen, xqc_now(), user_conn);
+    xqc_engine_finish_recv(user_conn->ctx->engine);
+
+    dropped_after = (conn != NULL) ? conn->packet_dropped_count : 0;
+
+    /*
+     * RFC 9001 Section 6.1: an endpoint MUST retain old read keys until it has
+     * successfully unprotected a packet sent using the new keys. The replayed
+     * packet is protected with the peer's old-phase read key. If old keys were
+     * discarded before any new-key packet was unprotected (the defect), the
+     * replay cannot decrypt it and packet_dropped_count increases; correct
+     * retention decrypts it with no drop.
+     */
+    if (dropped_after > dropped_before) {
+        printf("[key-update-retention]|RESULT|dropped|delta:%"PRIu64"|\n",
+               dropped_after - dropped_before);
+    } else {
+        printf("[key-update-retention]|RESULT|retained|\n");
+    }
 }
 
 
@@ -4056,6 +5459,11 @@ xqc_client_socket_read_handler(user_conn_t *user_conn, int fd)
             continue;
         }
 
+        if (g_test_case == XQC_TEST_CASE_KEY_UPDATE_STALE_DEADLINE) {
+            xqc_client_key_update_copy_packet(user_conn, packet_buf,
+                                              recv_size);
+        }
+
         if (g_test_case == 6) { /* socket recv fail */
             g_test_case = -1;
             break;
@@ -4090,6 +5498,18 @@ xqc_client_socket_read_handler(user_conn_t *user_conn, int fd)
             }
         }
 
+        if (g_test_case == 904 && xqc_key_update_retention_test.started
+            && !xqc_key_update_retention_test.replayed)
+        {
+            if (xqc_key_update_retention_test.packet_len == 0) {
+                memcpy(xqc_key_update_retention_test.packet, packet_buf, recv_size);
+                xqc_key_update_retention_test.packet_len = recv_size;
+                printf("[key-update-retention]|cached-old-key-packet|len:%zd|\n",
+                       recv_size);
+            }
+            continue;
+        }
+
         ret = xqc_engine_packet_process(p_ctx->engine, packet_buf, recv_size,
                                       user_conn->local_addr, user_conn->local_addrlen,
                                       user_conn->peer_addr, user_conn->peer_addrlen,
@@ -4097,6 +5517,10 @@ xqc_client_socket_read_handler(user_conn_t *user_conn, int fd)
         if (ret != XQC_OK) {
             printf("xqc_client_read_handler: packet process err, ret: %d\n", ret);
             return;
+        }
+
+        if (g_test_case == XQC_TEST_CASE_KEY_UPDATE_STALE_DEADLINE) {
+            xqc_client_key_update_start(user_conn);
         }
 
         if (g_test_case == 9) { /* duplicate packet */
@@ -4461,9 +5885,22 @@ xqc_client_epoch_callback(int fd, short what, void *arg)
         }
     }
 
-        /* close initial path */
-    if (g_test_case == 100 && g_cur_epoch > 3) {
-        xqc_conn_close_path(ctx.engine, &user_conn->cid, 0);
+    /* 次路径验证成功后关闭初始路径。 */
+    if (g_test_case == 100 && g_cur_epoch > 1) {
+        xqc_conn_stats_t stats = xqc_conn_get_stats(ctx.engine, &user_conn->cid);
+        if (stats.mp_state == 1) {
+            if (g_cur_epoch > 5) {
+                ret = xqc_conn_close_path(ctx.engine, &user_conn->cid, 0);
+                if (ret < 0) {
+                    printf("xqc_conn_close_path err = %d\n", ret);
+                }
+            }
+
+        } else {
+            printf("[mpns-close-initial]|epoch:%d|mp_state:%d|recreate_path|\n",
+                   g_cur_epoch, stats.mp_state);
+            xqc_client_ready_to_create_path(&user_conn->cid, user_conn);
+        }
     }
 
     /* close new path */
@@ -4624,13 +6061,19 @@ xqc_client_cert_verify_failed_notify(int x509_err, void *conn_user_data)
     printf("cert_verify_failed_notify|x509_err:%d|\n", x509_err);
 }
 
-void 
+static void
 xqc_client_ready_to_create_path(const xqc_cid_t *cid, 
     void *conn_user_data)
 {
     printf("***** on_ready_to_create_path\n");
     uint64_t path_id = 0;
     user_conn_t *user_conn = (user_conn_t *) conn_user_data;
+
+    if (user_conn == NULL || ctx.engine == NULL
+        || g_multi_interface_cnt > XQC_DEMO_MAX_PATH_COUNT)
+    {
+        return;
+    }
 
     if (!g_enable_multipath) {
         return;
@@ -4765,6 +6208,11 @@ static void xqc_client_concurrent_callback(int fd, short what, void *arg){
             .stream_close_notify = xqc_client_stream_close_notify,
         }
     };
+
+    if (g_test_case == XQC_TEST_CASE_CLOSE_RECV_ONLY_STREAM) {
+        ap_cbs.stream_cbs.stream_create_notify =
+            xqc_client_stream_create_notify;
+    }
 
     xqc_engine_register_alpn(ctx->engine, XQC_ALPN_TRANSPORT, 9, &ap_cbs, NULL);
 
@@ -4979,7 +6427,7 @@ void usage(int argc, char *argv[]) {
 "   -x    Test case ID\n"
 "   -N    No encryption\n"
 "   -6    IPv6\n"
-"   -M    Enable multi-path on. |\n"
+"   -M    Enable multi-path on.\n"
 "   -v    Multipath Version Negotiation.\n"
 "   -i    Multi-path interface. e.g. -i interface1 -i interface2.\n"
 "   -R    Enable reinjection. Default is 0, no reinjection.\n"
@@ -4992,11 +6440,13 @@ void usage(int argc, char *argv[]) {
 "   -b    Create connection per second. default is 100.\n"
 "   -B    Max connection num. default is 1000.\n"
 "   -J    Random CID. default is 0.\n"
-"   -Q    Multipath backup path standby, set backup_mode on(1). default backup_mode is 0(off).\n"
+"   -Q    Max datagram frame size.\n"
 "   -A    Multipath request accelerate on. default is 0(off).\n"
 "   -y    multipath backup path standby.\n"
 "   -z    periodically send request.\n"
 "   -S    request per second.\n"
+"   -U    Send datagram. 0: off, 1: on, 2: on + batch.\n"
+"   -g    Enable FEC on.\n"
 , prog);
 }
 
@@ -5398,7 +6848,12 @@ int main(int argc, char *argv[]) {
         }
 
     }
-    
+
+    if (g_test_case == 800 && !g_no_crypt) {
+        printf("test case 800 requires -N to inspect short-header frame type\n");
+        exit(1);
+    }
+
     memset(g_header_key, 'k', sizeof(g_header_key));
     memset(g_header_value, 'v', sizeof(g_header_value));
     memset(&ctx, 0, sizeof(ctx));
@@ -5517,14 +6972,20 @@ int main(int argc, char *argv[]) {
         .close_dgram_redundancy = XQC_RED_NOT_USE
     };
 
-    strncpy(conn_settings.conn_option_str, conn_options, XQC_CO_STR_MAX_LEN - 1);
-    conn_settings.conn_option_str[XQC_CO_STR_MAX_LEN - 1] = '\0';
+    memcpy(conn_settings.conn_option_str, conn_options,
+           XQC_CO_STR_MAX_LEN);
 
 #ifdef XQC_PROTECT_POOL_MEM
     if (g_test_case == 600) {
         conn_settings.protect_pool_mem = 1;
     }
 #endif
+
+    if (g_test_case >= XQC_TEST_CASE_RELIABLE_RESET_PREFIX
+        && g_test_case <= XQC_TEST_CASE_RELIABLE_RESET_ZERO_CLOSE)
+    {
+        conn_settings.enable_reset_stream_at = 1;
+    }
 
     xqc_stream_settings_t stream_settings = { .recv_rate_bytes_per_sec = 0 };
 
@@ -5540,6 +7001,13 @@ int main(int argc, char *argv[]) {
 
     if (g_pmtud_on) {
         conn_settings.enable_pmtud = 3;
+    }
+
+    if (g_test_case == 711) {
+        conn_settings.enable_pmtud = XQC_PMTUD_FORCE_ENABLE;
+
+    } else if (g_test_case == 712) {
+        conn_settings.enable_pmtud = XQC_PMTUD_ENABLE_CLIENT;
     }
 
     if (g_test_case == 450) {
@@ -5568,11 +7036,13 @@ int main(int argc, char *argv[]) {
     }
 
     /* MASQUE E2E test cases */
-    if (g_test_case == 800 || g_test_case == 801) {
+    if (g_test_case == XQC_TEST_CASE_MASQUE_CONNECT_IP
+        || g_test_case == XQC_TEST_CASE_MASQUE_CONNECT_IP_MP)
+    {
         g_masque_mode = 1;
         g_max_dgram_size = 65535;
         g_send_dgram = 0;  /* we handle datagram send ourselves */
-        if (g_test_case == 801) {
+        if (g_test_case == XQC_TEST_CASE_MASQUE_CONNECT_IP_MP) {
             g_enable_multipath = 1;
         }
         printf("[masque-e2e] test_case=%d masque_mode=%d multipath=%d\n",
@@ -5617,6 +7087,16 @@ int main(int argc, char *argv[]) {
     if (g_test_case == 901) {
         g_verify_cert = 1;
         g_verify_cert_allow_self_sign = 1;
+    }
+
+    if (g_test_case == XQC_TEST_CASE_RETRY_IGNORE_OLD_INITIAL_DCID) {
+        memset(g_host, 'a', 63);
+        g_host[63] = '.';
+        memset(g_host + 64, 'b', 63);
+        g_host[127] = '.';
+        memset(g_host + 128, 'c', 63);
+        snprintf(g_host + 191, sizeof(g_host) - 191, ".test.xquic.com");
+        printf("[retry-token-test]|large_sni_len:%zu|\n", strlen(g_host));
     }
 
     g_conn_settings = &conn_settings;
@@ -5681,8 +7161,20 @@ int main(int argc, char *argv[]) {
     }
 
     /* test key update */
-    if (g_test_case == 40) {
+    if (g_test_case == 40
+        || g_test_case == XQC_TEST_CASE_KEY_UPDATE_STALE_DEADLINE)
+    {
         conn_settings.keyupdate_pkt_threshold = 30;
+
+    } else if (g_test_case == 904) {
+        /*
+         * Trigger the key update only after the request body has been fully
+         * sent (so the peer starts echoing) but while the echo is still in
+         * flight. The request is ~87 packets at -s 102400, so a threshold of
+         * 100 fires during the echo, leaving the peer with unacknowledged
+         * old-phase data to retransmit while outbound is suppressed.
+         */
+        conn_settings.keyupdate_pkt_threshold = 100;
     }
 
     if (g_test_case == 42) {
@@ -5790,7 +7282,10 @@ int main(int argc, char *argv[]) {
         },
     };
 
-    if (g_test_case == 502) {
+    if (g_test_case == 502
+        || g_test_case == XQC_TEST_CASE_H3_CUSTOM_SETTINGS_ACCEPT
+        || g_test_case == XQC_TEST_CASE_H3_CUSTOM_SETTINGS_REJECT)
+    {
         /* test h3 init settings callback */
         h3_cbs.h3c_cbs.h3_conn_init_settings = xqc_client_h3_conn_init_settings_notify;
     }
@@ -5896,7 +7391,15 @@ int main(int argc, char *argv[]) {
         }
     };
 
-    xqc_engine_register_alpn(ctx.engine, XQC_ALPN_TRANSPORT, 9, &ap_cbs, NULL);
+    if (g_test_case == XQC_TEST_CASE_CLOSE_RECV_ONLY_STREAM) {
+        ap_cbs.stream_cbs.stream_create_notify =
+            xqc_client_stream_create_notify;
+    }
+
+    const char *transport_alpn = xqc_client_is_hq_case()
+                                ? "hq-interop" : XQC_ALPN_TRANSPORT;
+    xqc_engine_register_alpn(ctx.engine, transport_alpn,
+                             strlen(transport_alpn), &ap_cbs, NULL);
     /* test alpn negotiation failure */
     xqc_engine_register_alpn(ctx.engine, XQC_ALPN_TRANSPORT_TEST, 14, &ap_cbs, NULL);
 
@@ -6076,7 +7579,7 @@ int main(int argc, char *argv[]) {
         } else {
             cid = xqc_connect(ctx.engine, &conn_settings, user_conn->token, user_conn->token_len,
                             server_addr, g_no_crypt, &conn_ssl_config, user_conn->peer_addr, 
-                            user_conn->peer_addrlen, XQC_ALPN_TRANSPORT, user_conn);
+                            user_conn->peer_addrlen, transport_alpn, user_conn);
         }
     }
 
@@ -6088,6 +7591,14 @@ int main(int argc, char *argv[]) {
 
     /* copy cid to its own memory space to prevent crashes caused by internal cid being freed */
     memcpy(&user_conn->cid, cid, sizeof(*cid));
+
+    if (g_test_case == XQC_TEST_CASE_DATAGRAM_INITIAL_REJECTED
+        && user_conn->quic_conn != NULL)
+    {
+        xqc_int_t ret = xqc_client_write_test_datagram_frame(
+            user_conn->quic_conn, XQC_PTYPE_INIT);
+        printf("[dgram-encryption-level-test]|initial_write_ret:%d|\n", ret);
+    }
 
     user_conn->dgram_blk = calloc(1, sizeof(user_dgram_blk_t));
     user_conn->dgram_blk->data_sent = 0;

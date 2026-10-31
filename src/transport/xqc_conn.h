@@ -39,6 +39,16 @@
 
 #define XQC_MAX_RECV_WINDOW (16 * 1024 * 1024)
 
+/* RFC 9000: variable-length integer max value, used as flow control upper bound */
+#define XQC_MAX_FLOW_CONTROL_WINDOW (((uint64_t)1 << 62) - 1)
+
+/* clamp a flow control value to the RFC 9000 variable-length integer maximum */
+static inline uint64_t
+xqc_clamp_to_max_flow_ctl(uint64_t value)
+{
+    return value > XQC_MAX_FLOW_CONTROL_WINDOW ? XQC_MAX_FLOW_CONTROL_WINDOW : value;
+}
+
 #define XQC_MP_SETTINGS_STR_LEN (30)
 
 static const uint32_t MAX_RSP_CONN_CLOSE_CNT = 3;
@@ -57,18 +67,38 @@ static const uint32_t MAX_RSP_CONN_CLOSE_CNT = 3;
         }                                     \
     } while (0)
 
+/*
+ * RFC 9000 Section 16 limits QUIC variable-length integers to 62 bits.
+ * Reserve bit 63 internally so conn_err itself preserves whether the stored
+ * error belongs to the application namespace. Public and wire boundaries
+ * strip this bit before exposing the error code.
+ */
+#define XQC_CONN_ERR_APPLICATION_FLAG ((uint64_t) 1 << 63)
+#define XQC_CONN_ERR_CODE(err) \
+    ((uint64_t) (err) & ~XQC_CONN_ERR_APPLICATION_FLAG)
+#define XQC_CONN_ERR_IS_APPLICATION(err) \
+    (((uint64_t) (err) & XQC_CONN_ERR_APPLICATION_FLAG) != 0)
+#define XQC_CONN_ERR_ENCODE_APPLICATION(err) \
+    ((uint64_t) (err) | XQC_CONN_ERR_APPLICATION_FLAG)
+
 /* send CONNECTION_CLOSE with err */
-#define XQC_CONN_ERR(conn, err)                                                   \
+#define XQC_CONN_ERR_INTERNAL(conn, err)                                          \
     do {                                                                          \
-        if ((conn)->conn_err == 0) {                                              \
-            (conn)->conn_err = (err);                                             \
-            XQC_CONN_CLOSE_MSG(conn, "local error");                              \
-            (conn)->conn_flag |= XQC_CONN_FLAG_ERROR;                             \
-            xqc_conn_closing(conn);                                               \
+        if ((conn)->conn_err == 0) {                                             \
+            (conn)->conn_err = (err);                                            \
+            XQC_CONN_CLOSE_MSG(conn, "local error");                             \
+            (conn)->conn_flag |= XQC_CONN_FLAG_ERROR;                            \
+            xqc_conn_closing(conn);                                              \
             xqc_log((conn)->log, XQC_LOG_ERROR, "|conn:%p|err:0x%xi|%s|", (conn), \
-                    (uint64_t)(err), xqc_conn_addr_str(conn));                    \
+                    XQC_CONN_ERR_CODE(err), xqc_conn_addr_str(conn));            \
         }                                                                         \
     } while (0)
+
+#define XQC_CONN_ERR(conn, err)                     \
+    XQC_CONN_ERR_INTERNAL(conn, err)
+
+#define XQC_CONN_APP_ERR(conn, err)                 \
+    XQC_CONN_ERR_INTERNAL(conn, XQC_CONN_ERR_ENCODE_APPLICATION(err))
 
 extern xqc_conn_settings_t internal_default_conn_settings;
 extern const xqc_tls_callbacks_t xqc_conn_tls_cbs;
@@ -230,19 +260,20 @@ typedef struct {
     uint64_t no_crypto;
     uint64_t enable_multipath;
     xqc_multipath_version_t multipath_version;
-    uint16_t max_datagram_frame_size;
-    uint32_t conn_options[XQC_CO_MAX_NUM];
-    uint8_t conn_option_num;
+    uint64_t                max_datagram_frame_size;
+    xqc_bool_t              reset_stream_at;
+    uint32_t                conn_options[XQC_CO_MAX_NUM];
+    uint8_t                 conn_option_num;
 
-    xqc_fec_version_t fec_version;
-    uint64_t enable_encode_fec;
-    uint64_t enable_decode_fec;
-    uint64_t fec_max_symbols_num;
-    xqc_fec_schemes_e fec_encoder_schemes[XQC_FEC_MAX_SCHEME_NUM];
-    xqc_fec_schemes_e fec_decoder_schemes[XQC_FEC_MAX_SCHEME_NUM];
-    xqc_int_t fec_encoder_schemes_num;
-    xqc_int_t fec_decoder_schemes_num;
-
+    xqc_fec_version_t       fec_version;
+    uint64_t                enable_encode_fec;
+    uint64_t                enable_decode_fec;
+    uint64_t                fec_max_symbols_num;
+    xqc_fec_schemes_e       fec_encoder_schemes[XQC_FEC_MAX_SCHEME_NUM];
+    xqc_fec_schemes_e       fec_decoder_schemes[XQC_FEC_MAX_SCHEME_NUM];
+    xqc_int_t               fec_encoder_schemes_num;
+    xqc_int_t               fec_decoder_schemes_num;
+    
     xqc_dgram_red_setting_e close_dgram_redundancy;
     uint64_t init_max_path_id;
 
@@ -278,18 +309,36 @@ typedef struct {
     char data[];
 } xqc_hs_buffer_t;
 
+/* the read keys of the key phase other than the current one */
+typedef enum {
+    XQC_KU_RX_KEYS_NONE,    /* none */
+    XQC_KU_RX_KEYS_OLD,     /* the previous key phase, not discarded yet */
+    XQC_KU_RX_KEYS_NEXT,    /* the next key phase */
+} xqc_ku_rx_keys_t;
+
 typedef struct {
     xqc_uint_t cur_out_key_phase; /* key phase used in current sent packets */
     xqc_uint_t next_in_key_phase; /* key phase expected in next received packets */
     xqc_uint_t key_update_cnt;    /* number of key updates per connection */
 
     /* for current out key phase */
-    xqc_packet_number_t
-        first_sent_pktno; /* lowest packet number sent with each key phase */
-    xqc_packet_number_t
-        first_recv_pktno;           /* lowest packet number recv with each key phase */
-    uint64_t enc_pkt_cnt;           /* number of packet encrypt with each key phase */
-    xqc_usec_t initiate_time_guard; /* time limit for initiating next key update */
+    xqc_ku_rx_keys_t        other_rx_keys;
+    uint64_t                enc_pkt_cnt;       /* number of packet encrypt with each key phase */
+    /* cached RFC 9001 Section 6.6 confidentiality limit */
+    uint64_t                aead_confidentiality_limit;
+    xqc_usec_t              initiate_time_guard;  /* time limit for initiating next key update */
+    /* a packet sent with the current keys has been acknowledged */
+    xqc_bool_t              current_keys_acked;
+
+    /*
+     * RFC 9001 Section 6.1: set TRUE when the local endpoint initiates a key
+     * update. Old read keys MUST be retained until a packet protected with the
+     * peer's new keys is successfully unprotected; this flag stays TRUE until
+     * then, and is cleared at that point where the 3*PTO old-key discard timer
+     * is finally armed. It is FALSE for the responder role, which arms the
+     * timer immediately after decrypting the peer's new-phase packet.
+     */
+    xqc_bool_t              awaiting_peer_key_update;
 
 } xqc_key_update_ctx_t;
 
@@ -532,16 +581,17 @@ struct xqc_connection_s {
 
     /* receved pkts stats */
     struct {
-        xqc_pkt_type_t pkt_types[3];
-        xqc_frame_type_bit_t pkt_frames[3];
-        uint32_t pkt_size[3];
-        uint32_t pkt_udp_size[3];
-        int pkt_err[3];
-        xqc_usec_t pkt_timestamp[3];
-        xqc_packet_number_t pkt_pn[3];
-        uint8_t curr_index;
-        uint32_t conn_rcvd_pkts;
-        uint32_t conn_udp_pkts;
+        xqc_pkt_type_t              pkt_types[3];
+        xqc_frame_type_bit_t        pkt_frames[3];
+        uint32_t                    pkt_size[3];
+        uint32_t                    pkt_udp_size[3];
+        int                         pkt_err[3];
+        xqc_usec_t                  pkt_timestamp[3];
+        xqc_packet_number_t         pkt_pn[3];
+        uint8_t                     curr_index;
+        uint32_t                    conn_rcvd_pkts;
+        uint32_t                    conn_authenticated_pkts;
+        uint32_t                    conn_udp_pkts;
     } rcv_pkt_stats;
 
     struct {
@@ -684,6 +734,7 @@ xqc_int_t xqc_conn_check_handshake_complete(xqc_connection_t *conn);
 xqc_int_t xqc_conn_get_available_path_id(xqc_connection_t *conn, uint64_t *path_id);
 xqc_int_t xqc_conn_try_add_new_conn_id(xqc_connection_t *conn, uint64_t retire_prior_to);
 xqc_int_t xqc_conn_check_dcid(xqc_connection_t *conn, xqc_cid_t *dcid);
+void xqc_conn_purge_removed_scid(xqc_connection_t *conn, xqc_cid_inner_t *inner_cid);
 void xqc_conn_destroy_cids(xqc_connection_t *conn);
 xqc_int_t xqc_conn_update_user_scid(xqc_connection_t *conn);
 xqc_int_t xqc_conn_set_cid_retired_ts(xqc_connection_t *conn, xqc_cid_inner_t *inner_cid);
@@ -717,7 +768,18 @@ xqc_int_t xqc_conn_check_0rtt_reduced_params(xqc_connection_t *conn,
 /* get idle timeout in milliseconds */
 xqc_msec_t xqc_conn_get_idle_timeout(xqc_connection_t *conn);
 
-xqc_int_t xqc_conn_confirm_key_update(xqc_connection_t *conn);
+/* record, on every path, the first packet number sent with the keys of
+   the key phase that starts now */
+void xqc_conn_record_key_phase_start(xqc_connection_t *conn);
+
+void xqc_conn_on_key_phase_acked(xqc_path_ctx_t *path,
+    xqc_packet_number_t pkt_num, xqc_usec_t ack_recv_time);
+
+void xqc_conn_discard_old_rx_keys(xqc_connection_t *conn);
+
+xqc_int_t xqc_conn_confirm_key_update(xqc_connection_t *conn,
+    xqc_bool_t initiated);
+void xqc_conn_confirm_peer_key_update(xqc_connection_t *conn);
 
 /* from send_ctl */
 void xqc_conn_decrease_unacked_stream_ref(xqc_connection_t *conn,
@@ -751,7 +813,10 @@ void xqc_conn_closing(xqc_connection_t *conn);
 
 void xqc_conn_closing_notify(xqc_connection_t *conn);
 
-xqc_int_t xqc_conn_send_path_challenge(xqc_connection_t *conn, xqc_path_ctx_t *path);
+xqc_int_t xqc_conn_send_rebinding_path_challenge(xqc_connection_t *conn,
+    xqc_path_ctx_t *path, const struct sockaddr *peer_addr, socklen_t peer_addrlen,
+    unsigned char *challenge_data, xqc_bool_t min_padding, uint64_t max_send_bytes,
+    size_t *sent_bytes);
 
 int xqc_conn_buff_0rtt_datagram(xqc_connection_t *conn, void *data, size_t data_len,
                                 uint64_t dgram_id, xqc_data_qos_level_t qos_level);
@@ -850,7 +915,7 @@ void xqc_conn_set_init_idle_timeout(xqc_connection_t *conn,
                                     xqc_msec_t init_idle_time_out);
 void xqc_conn_try_to_enable_pmtud(xqc_connection_t *conn);
 
-xqc_int_t xqc_conn_server_accept(xqc_connection_t *c);
+xqc_int_t xqc_conn_server_accept(xqc_connection_t *c, xqc_packet_in_t *packet_in);
 
 void xqc_conn_flush_or_defer(xqc_connection_t *conn);
 #endif /* _XQC_CONN_H_INCLUDED_ */
