@@ -147,3 +147,15 @@ groups:
   runner: case_test/webtransport/demo.sh
   execution: implemented
   port_offset: 140
+- id: fork.core
+  module: transport
+  source_paths:
+  - src/tls/*
+  - src/transport/xqc_conn*
+  - src/transport/xqc_multipath*
+  - src/transport/xqc_send_ctl*
+  - src/transport/xqc_stream*
+  - src/transport/xqc_datagram*
+  runner: case_test/fork/core.sh
+  execution: implemented
+  port_offset: 150
