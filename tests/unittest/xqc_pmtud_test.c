@@ -348,7 +348,8 @@ xqc_test_pmtud_search_stops_within_precision(void)
     conn->max_pkt_out_size = 1300 + XQC_PMTUD_SEARCH_PRECISION - 1;
     conn->probing_pkt_out_size = 1301;
     conn->conn_flag |= XQC_CONN_FLAG_PMTUD_PROBING
-                       | XQC_CONN_FLAG_CAN_SEND_1RTT;
+                       | XQC_CONN_FLAG_CAN_SEND_1RTT
+                       | XQC_CONN_FLAG_HANDSHAKE_COMPLETED;
 
     xqc_conn_ptmud_probing(conn);
 
@@ -371,7 +372,8 @@ xqc_test_pmtud_search_probes_wide_range(void)
     conn->probing_pkt_out_size = 1350;
     conn->probing_cnt = 0;
     conn->conn_flag |= XQC_CONN_FLAG_PMTUD_PROBING
-                       | XQC_CONN_FLAG_CAN_SEND_1RTT;
+                       | XQC_CONN_FLAG_CAN_SEND_1RTT
+                       | XQC_CONN_FLAG_HANDSHAKE_COMPLETED;
     conn->conn_initial_path->path_state = XQC_PATH_STATE_ACTIVE;
 
     xqc_conn_ptmud_probing(conn);
