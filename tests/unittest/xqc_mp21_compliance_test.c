@@ -3,6 +3,7 @@
  */
 
 #include <CUnit/CUnit.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include "xquic/xquic.h"
@@ -1707,6 +1708,90 @@ xqc_test_mp21_max_path_id_grant_rate_limited(void)
 /* ------------------------------------------------------------------
  * PR5 L5b validation hardening — draft-21 §3.1 MUSTs.
  * ------------------------------------------------------------------ */
+
+typedef struct {
+    char expected[128];
+    unsigned int calls;
+} mp21_response_log_t;
+
+static void
+mp21_capture_response_log(xqc_log_level_t level, const void *buf, size_t size,
+    void *user_data)
+{
+    const char prefix[] = "|xqc_process_path_response_frame|";
+    mp21_response_log_t *capture = user_data;
+
+    if (level != XQC_LOG_DEBUG || size < sizeof(prefix) - 1
+        || memcmp(buf, prefix, sizeof(prefix) - 1) != 0)
+    {
+        return;
+    }
+
+    capture->calls++;
+    CU_ASSERT_EQUAL(size, strlen(capture->expected));
+    if (size == strlen(capture->expected)) {
+        CU_ASSERT_EQUAL(memcmp(buf, capture->expected, size), 0);
+    }
+}
+
+static void
+mp21_path_response_debug_log(int match)
+{
+    xqc_connection_t *conn = xqc_test_mp21_make_conn(NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    xqc_path_ctx_t *path =
+        xqc_test_helper_path_synthesize(conn, 1, XQC_PATH_STATE_VALIDATING);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+    xqc_send_ctl_t send_ctl = {0};
+    mp21_response_log_t capture = {0};
+    xqc_log_callbacks_t callbacks = {
+        .xqc_log_write_err = mp21_capture_response_log,
+    };
+
+    conn->conn_type = XQC_CONN_TYPE_CLIENT;
+    conn->log->log_level = XQC_LOG_DEBUG;
+    conn->log->log_callbacks = &callbacks;
+    conn->log->user_data = &capture;
+    path->path_send_ctl = &send_ctl;
+    send_ctl.path_timer_manager.log = conn->log;
+
+    /* RFC 9000 Section 19.18: eight opaque bytes, no terminating NUL. */
+    unsigned char frame[] = {0x1b, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'};
+    memcpy(path->path_challenge_data, frame + 1, XQC_PATH_CHALLENGE_DATA_LEN);
+    if (!match) {
+        path->path_challenge_data[0] ^= 1;
+    }
+    xqc_packet_in_t pi = {0};
+    pi.buf = pi.pos = frame;
+    pi.last = frame + sizeof(frame);
+    pi.buf_size = sizeof(frame);
+    pi.pi_path_id = path->path_id;
+    snprintf(capture.expected, sizeof(capture.expected),
+             "|xqc_process_path_response_frame|path:1|state:%d|"
+             "RECV path_response_data:ABCDEFGH|", XQC_PATH_STATE_VALIDATING);
+
+    CU_ASSERT_EQUAL(xqc_process_path_response_frame(conn, &pi), XQC_OK);
+    CU_ASSERT_EQUAL(capture.calls, 1);
+    CU_ASSERT_EQUAL(path->path_state,
+                    match ? XQC_PATH_STATE_ACTIVE : XQC_PATH_STATE_VALIDATING);
+    CU_ASSERT_EQUAL(conn->validated_path_count, match ? 1 : 0);
+    CU_ASSERT_PTR_EQUAL(pi.pos, pi.last);
+
+    xqc_test_helper_path_destroy(path);
+    xqc_test_mp21_free_conn(conn);
+}
+
+void
+xqc_test_mp21_path_response_debug_log_match(void)
+{
+    mp21_path_response_debug_log(1);
+}
+
+void
+xqc_test_mp21_path_response_debug_log_mismatch(void)
+{
+    mp21_path_response_debug_log(0);
+}
 
 /* Forge a minimal PATH_CHALLENGE-bearing QUIC packet view, with the
  * UDP-datagram size faked via packet_in->buf_size. The wire payload

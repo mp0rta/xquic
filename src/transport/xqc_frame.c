@@ -2516,7 +2516,7 @@ xqc_process_path_response_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_
     }
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|path:%ui|state:%d|RECV path_response_data:%*s|",
-            path->path_id, path->path_state, XQC_PATH_CHALLENGE_DATA_LEN,
+            path->path_id, path->path_state, (size_t)XQC_PATH_CHALLENGE_DATA_LEN,
             path_response_data);
 
     /*
