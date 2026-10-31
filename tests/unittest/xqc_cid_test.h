@@ -32,6 +32,24 @@ void xqc_test_cid_abandoned_set_off_list(void);
 
 /* a set that leaves ABANDONED goes back to cid_set_list */
 void xqc_test_cid_abandoned_set_back_on_list(void);
+/* rejected NEW_CONNECTION_ID must not leave orphaned engine hash entries */
+void xqc_test_new_conn_id_insert_failure_hash_rollback();
+
+/* two-phase retirement cleanup of a single expired SCID */
+void xqc_test_retired_scid_cleanup();
+
+/* expired RETIRED CIDs are purged in batch; non-expired ones stay and the
+ * timer is re-armed */
+void xqc_test_retired_scid_batch_cleanup();
+
+/* safety-net branch: pre-existing REMOVED CIDs are purged when the timer fires */
+void xqc_test_removed_scid_safety_net();
+
+/* CID hash removal must preserve an equal key owned by another connection. */
+void xqc_test_conns_hash_remove_owned_entry();
+
+/* Removing an equal key with a non-owner must leave all mappings intact. */
+void xqc_test_conns_hash_reject_non_owner();
 
 #endif
 

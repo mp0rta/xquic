@@ -86,6 +86,28 @@ typedef enum {
     XQC_PATH_CLASS_PERF_CLASS_SIZE,
 } xqc_path_perf_class_t;
 
+#define XQC_REBINDING_MAX_MTU_PROBE_RETRIES 3
+
+typedef enum {
+    XQC_REBINDING_IDLE = 0,
+    XQC_REBINDING_ADDRESS_VALIDATING,
+    XQC_REBINDING_MTU_VALIDATING,
+} xqc_rebinding_state_t;
+
+typedef struct {
+    /* Path lifetime statistics are preserved when a candidate is cleared. */
+    uint32_t              count;
+    uint32_t              valid;
+    unsigned char         addr[sizeof(struct sockaddr_in6)];
+    socklen_t             addrlen;
+    uint64_t              recv_bytes;
+    uint64_t              sent_bytes;
+    uint32_t              mtu_probe_retries;
+    xqc_rebinding_state_t state;
+    xqc_bool_t            initial_challenge_padded;
+    unsigned char         challenge_data[XQC_PATH_CHALLENGE_DATA_LEN];
+} xqc_path_rebinding_t;
+
 /* path context */
 struct xqc_path_ctx_s {
 
@@ -103,23 +125,12 @@ struct xqc_path_ctx_s {
     char                addr_str[2*(XQC_MAX_CID_LEN + INET6_ADDRSTRLEN) + 10];
     socklen_t           addr_str_len;
 
-    /* server receives a packet from different address (NAT rebinding) */
-    uint32_t            rebinding_count;
-    /* server validate NAT rebinding (PATH_CHALLENGE & PATH_RESPONSE) */
-    uint32_t            rebinding_valid;
-
-    unsigned char       rebinding_addr[sizeof(struct sockaddr_in6)];
-    socklen_t           rebinding_addrlen;
-    int                 rebinding_check_response;
+    /* server-side NAT rebinding candidate and validation state */
+    xqc_path_rebinding_t rebinding;
 
     /* Path_state */
     xqc_path_state_t    path_state;
     unsigned char       path_challenge_data[XQC_PATH_CHALLENGE_DATA_LEN];
-
-    /* draft-21 §3.1 ¶10 (G-P3): counts consecutive PATH_CHALLENGE
-     * retransmit attempts observed on the loss-detection cycle without
-     * a matching PATH_RESPONSE. Reset to 0 on PATH_RESPONSE match. */
-    uint8_t             path_challenge_attempts;
 
     xqc_path_flag_t     path_flag;
 
@@ -134,6 +145,13 @@ struct xqc_path_ctx_s {
     /* Path cc & ack tracking */
     xqc_send_ctl_t     *path_send_ctl;
     xqc_pn_ctl_t       *path_pn_ctl;
+
+    /* lowest packet number sent on this path with the current key phase;
+       0 on a path created after the last key update */
+    xqc_packet_number_t path_ku_first_sent_pktno;
+    /* lowest packet number received on this path with the current key
+       phase, XQC_MAX_UINT64_VALUE until one arrives */
+    xqc_packet_number_t path_ku_first_recv_pktno;
 
 
     /* path send buffer, used to store packets scheduled to this path */
@@ -198,6 +216,8 @@ xqc_bool_t xqc_is_same_addr_as_any_path(xqc_connection_t *conn, const struct soc
 
 xqc_int_t xqc_generate_path_challenge_data(xqc_connection_t *conn, xqc_path_ctx_t *path);
 
+xqc_int_t xqc_path_init(xqc_path_ctx_t *path, xqc_connection_t *conn);
+
 /* check mp support */
 xqc_multipath_mode_t xqc_conn_enable_multipath(xqc_connection_t *conn);
 
@@ -228,6 +248,17 @@ xqc_int_t xqc_conn_server_init_path_addr(xqc_connection_t *conn, uint64_t path_i
     const struct sockaddr *local_addr, socklen_t local_addrlen,
     const struct sockaddr *peer_addr, socklen_t peer_addrlen);
 
+void xqc_path_rebinding_clear(xqc_path_ctx_t *path);
+xqc_path_ctx_t *xqc_path_rebinding_find_by_challenge(xqc_connection_t *conn,
+    const unsigned char *challenge_data);
+xqc_int_t xqc_path_rebinding_on_authenticated_datagram(xqc_connection_t *conn,
+    xqc_path_ctx_t *path, const struct sockaddr *peer_addr, socklen_t peer_addrlen,
+    size_t recv_bytes, xqc_usec_t now);
+xqc_int_t xqc_path_rebinding_on_response(xqc_connection_t *conn,
+    xqc_path_ctx_t *path, const unsigned char *challenge_data, xqc_usec_t now);
+void xqc_path_rebinding_on_timeout(xqc_connection_t *conn, xqc_path_ctx_t *path,
+    xqc_usec_t now);
+
 xqc_int_t xqc_conn_client_init_path_addr(xqc_connection_t *conn);
 
 void xqc_set_path_state(xqc_path_ctx_t *path, xqc_path_state_t state);
@@ -240,31 +271,6 @@ xqc_int_t xqc_path_immediate_close(xqc_path_ctx_t *path);
  * transitions path_state to CLOSING. Idempotent for paths already
  * >= CLOSING. */
 xqc_int_t xqc_path_request_abandon(xqc_path_ctx_t *path, uint64_t error_code);
-
-/* G-P3 (draft-21 §3.1 ¶10): after this many consecutive PATH_CHALLENGE
- * retransmits without a matching PATH_RESPONSE, the path is treated as
- * failing validation and explicitly closed. Spec does not pin a
- * specific value; 3 is the implementer-chosen default matching QUIC's
- * general retry-budget shape. Cadence is the loss-detection cycle
- * (PTO/RTT-scaled), NOT a fixed wall-clock interval — see
- * docs/audit-notes/pr5-l5b-audit.md row "Pre-5 cadence". */
-#define XQC_PATH_VALIDATION_MAX_ATTEMPTS  3
-
-/* G-P3 retx-cycle callback: invoked each time a PATH_CHALLENGE on a
- * VALIDATING path is observed as lost by the loss-detection cycle.
- * Increments path->path_challenge_attempts; on reaching the threshold,
- * explicitly closes the path with PATH_UNSTABLE_OR_POOR.
- *
- * Returns XQC_OK on success (regardless of whether the threshold
- * triggered). Idempotent on already-CLOSING paths. */
-xqc_int_t xqc_path_validation_on_retx(xqc_path_ctx_t *path);
-
-/* G-P3 companion: invoked once per PTO event on a VALIDATING path,
- * since a fully black-holed PATH_CHALLENGE never generates the
- * acknowledgments (possibly carried on another path) that
- * xqc_path_validation_on_retx relies on. No-op on non-VALIDATING
- * paths. */
-void xqc_path_validation_on_pto(xqc_path_ctx_t *path);
 
 /* path state: "ACTIVE/CLOSING/DRAINING" -> "CLOSED" */
 xqc_int_t xqc_path_closed(xqc_path_ctx_t *path);
@@ -296,6 +302,8 @@ void xqc_stream_path_metrics_on_send(xqc_connection_t *conn, xqc_packet_out_t *p
 void xqc_stream_path_metrics_on_recv(xqc_connection_t *conn, xqc_stream_t *stream, xqc_packet_in_t *pi);
 
 xqc_msec_t xqc_path_get_idle_timeout(xqc_path_ctx_t *path);
+
+xqc_usec_t xqc_path_get_validation_timeout(xqc_path_ctx_t *path);
 
 void xqc_path_validate(xqc_path_ctx_t *path);
 
@@ -330,6 +338,11 @@ xqc_int_t xqc_conn_update_curr_max_path_id(xqc_connection_t *conn);
  * give peer ~8 fresh paths per grant which matches typical XQC_MAX_PATHS
  * deployments. */
 #define XQC_MAX_PATH_ID_GRANT_INCREMENT  8
+
+/* Bound on the reciprocal MAX_PATH_ID grant when
+ * max_path_id_grant_max_value is unset. Matches the grant bound mqvpn
+ * servers set, so a client mirroring a server's grant is not limited. */
+#define XQC_MAX_PATH_ID_MIRROR_DEFAULT   128
 
 /* Evaluate whether a MAX_PATH_ID credit grant should fire on receipt of
  * PATHS_BLOCKED. Side-effects: when the grant fires, advances
@@ -373,5 +386,4 @@ double xqc_path_recent_loss_rate(xqc_path_ctx_t *path);
 double xqc_conn_recent_loss_rate(xqc_connection_t *conn);
 
 #endif /* XQC_MULTIPATH_H */
-
 

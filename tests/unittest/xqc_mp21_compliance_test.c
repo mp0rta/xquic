@@ -60,6 +60,7 @@ xqc_test_mp21_make_conn(const xqc_test_mp21_conn_params_t *p)
     conn->remote_settings.init_max_path_id = conn->remote_max_path_id;
     conn->local_settings.enable_multipath = 1;
     conn->remote_settings.enable_multipath = 1;
+    conn->enable_multipath = 1;
     conn->local_settings.multipath_version = XQC_MULTIPATH_3E;
     conn->remote_settings.multipath_version = XQC_MULTIPATH_3E;
 
@@ -468,6 +469,63 @@ xqc_test_mp21_max_path_id_validation(void)
                     XQC_MAX_PATH_ID_ACCEPT);
 
     xqc_test_mp21_free_conn(conn);
+}
+
+/* A received MAX_PATH_ID raises our own limit in return only up to our
+ * grant bound, not to the peer's value. */
+static void
+mp21_recv_max_path_id(xqc_connection_t *conn, uint64_t grant_max,
+                      uint64_t expect_local)
+{
+    /* MAX_PATH_ID (0x3e7a), Maximum Path Identifier 2^32-1 */
+    unsigned char buf[] = {0x80, 0x00, 0x3e, 0x7a,
+                           0xc0, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff};
+    xqc_packet_in_t pi;
+
+    conn->enable_multipath = 1;
+    conn->conn_settings.multipath_version = XQC_MULTIPATH_3E;
+    conn->conn_settings.max_path_id_grant_max_value = grant_max;
+
+    memset(&pi, 0, sizeof(pi));
+    pi.buf = buf;
+    pi.buf_size = sizeof(buf);
+    pi.pos = buf;
+    pi.last = buf + sizeof(buf);
+    pi.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+
+    CU_ASSERT_EQUAL(xqc_process_max_path_id_frame(conn, &pi), XQC_OK);
+    CU_ASSERT_EQUAL(conn->remote_max_path_id, 0xffffffffULL);
+    CU_ASSERT_EQUAL(conn->local_max_path_id, expect_local);
+    CU_ASSERT_EQUAL(conn->curr_max_path_id, expect_local);
+
+    /* CID sets exist for path IDs 0..expect_local only */
+    xqc_list_head_t *pos;
+    uint64_t sets = 0;
+    xqc_list_for_each(pos, &conn->scid_set.cid_set_list) {
+        sets++;
+    }
+    CU_ASSERT_EQUAL(sets, expect_local + 1);
+}
+
+void
+xqc_test_mp21_max_path_id_mirror_bounded(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    mp21_recv_max_path_id(conn, 0, XQC_MAX_PATH_ID_MIRROR_DEFAULT);
+    xqc_engine_destroy(conn->engine);
+
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    mp21_recv_max_path_id(conn, 16, 16);
+    xqc_engine_destroy(conn->engine);
+
+    /* the largest path ID ends the loop */
+    conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->enable_multipath = 1;
+    CU_ASSERT_EQUAL(xqc_conn_add_path_cid_sets(conn, 0xfffffffeU, 0xffffffffU), XQC_OK);
+    xqc_engine_destroy(conn->engine);
 }
 
 void
@@ -1711,45 +1769,27 @@ xqc_test_mp21_path_challenge_1200b_validation(void)
     xqc_test_mp21_free_conn(conn);
 }
 
-/* G-P3 (draft-21 §3.1 ¶10): N consecutive PATH_CHALLENGE retx attempts
- * without a matching PATH_RESPONSE MUST cause the endpoint to explicitly
- * close the path. The threshold is XQC_PATH_VALIDATION_MAX_ATTEMPTS (3).
- *
- * The retx cadence in production is the loss-detection cycle
- * (PTO/RTT-scaled). The unit test calls the path-level callback
- * directly to keep the harness engine-less. */
+/* RFC 9000 Section 8.2.1: a sub-1200 PATH_CHALLENGE on an ACTIVE path (a
+ * NAT rebinding probe under the anti-amplification limit) is answered. */
 void
-xqc_test_mp21_path_validation_timeout(void)
+xqc_test_mp21_path_challenge_small_on_active_path(void)
 {
-    xqc_test_mp21_conn_params_t p = {
-        .local_max_path_id = 4,
-        .remote_max_path_id = 4,
-        .scid_len = 8,
-        .dcid_len = 8,
-    };
-    xqc_connection_t *conn = xqc_test_mp21_make_conn(&p);
+    xqc_connection_t *conn = test_engine_connect();
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
-    conn->enable_multipath = 1;
+    xqc_path_ctx_t *path = conn->conn_initial_path;
+    CU_ASSERT_EQUAL_FATAL(path->path_state, XQC_PATH_STATE_ACTIVE);
 
-    xqc_path_ctx_t *path =
-        xqc_test_helper_path_synthesize(conn, 1, XQC_PATH_STATE_VALIDATING);
-    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+    unsigned char frame_buf[1 + XQC_PATH_CHALLENGE_DATA_LEN];
+    xqc_packet_in_t pi;
+    mp21_forge_path_challenge_packet_in(&pi, frame_buf, sizeof(frame_buf),
+                                        /*fake_datagram_size=*/38, path->path_id);
 
-    /* Attempt 1 + 2: path remains in VALIDATING. */
-    CU_ASSERT_EQUAL(xqc_path_validation_on_retx(path), XQC_OK);
-    CU_ASSERT_EQUAL(path->path_challenge_attempts, 1);
-    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_VALIDATING);
+    CU_ASSERT_EQUAL(xqc_process_path_challenge_frame(conn, &pi), XQC_OK);
+    CU_ASSERT_PTR_NOT_NULL(
+        xqc_test_find_packet_with_frame(conn, XQC_FRAME_BIT_PATH_RESPONSE));
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_ACTIVE);
 
-    CU_ASSERT_EQUAL(xqc_path_validation_on_retx(path), XQC_OK);
-    CU_ASSERT_EQUAL(path->path_challenge_attempts, 2);
-    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_VALIDATING);
-
-    /* Attempt 3 crosses the threshold → explicit close. */
-    CU_ASSERT_EQUAL(xqc_path_validation_on_retx(path), XQC_OK);
-    CU_ASSERT(path->path_state >= XQC_PATH_STATE_CLOSING);
-
-    xqc_test_helper_path_destroy(path);
-    xqc_test_mp21_free_conn(conn);
+    xqc_engine_destroy(conn->engine);
 }
 
 /* ------------------------------------------------------------------
