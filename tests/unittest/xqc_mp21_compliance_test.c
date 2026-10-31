@@ -1768,6 +1768,29 @@ xqc_test_mp21_path_challenge_1200b_validation(void)
     xqc_test_mp21_free_conn(conn);
 }
 
+/* RFC 9000 Section 8.2.1: a sub-1200 PATH_CHALLENGE on an ACTIVE path (a
+ * NAT rebinding probe under the anti-amplification limit) is answered. */
+void
+xqc_test_mp21_path_challenge_small_on_active_path(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    xqc_path_ctx_t *path = conn->conn_initial_path;
+    CU_ASSERT_EQUAL_FATAL(path->path_state, XQC_PATH_STATE_ACTIVE);
+
+    unsigned char frame_buf[1 + XQC_PATH_CHALLENGE_DATA_LEN];
+    xqc_packet_in_t pi;
+    mp21_forge_path_challenge_packet_in(&pi, frame_buf, sizeof(frame_buf),
+                                        /*fake_datagram_size=*/38, path->path_id);
+
+    CU_ASSERT_EQUAL(xqc_process_path_challenge_frame(conn, &pi), XQC_OK);
+    CU_ASSERT_PTR_NOT_NULL(
+        xqc_test_find_packet_with_frame(conn, XQC_FRAME_BIT_PATH_RESPONSE));
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_ACTIVE);
+
+    xqc_engine_destroy(conn->engine);
+}
+
 /* ------------------------------------------------------------------
  * PR6 L5c — G-F9 + G-F19 loss-replay stale-frame suppression
  *

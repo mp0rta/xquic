@@ -2448,21 +2448,17 @@ xqc_process_path_challenge_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
             xqc_dcid_str(conn->engine, &packet_in->pi_pkt.pkt_dcid));
 
     /* draft-21 §3.1 ¶6 (G-P2): 1200B MTU MUST on validation receive.
-     * Gated on VALIDATING — a stray sub-1200 on an ACTIVE path is the
-     * peer's fault and must not tear down an established path; drop the
-     * challenge instead. See audit memo row G-P2. */
-    if (packet_in->buf_size < XQC_QUIC_MIN_MSS) {
-        if (path->path_state == XQC_PATH_STATE_VALIDATING) {
-            xqc_log(conn->log, XQC_LOG_WARN,
-                    "|G-P2 MTU validation failed|path_id:%ui|buf_size:%uz|min:%d|",
-                    path->path_id, packet_in->buf_size, XQC_QUIC_MIN_MSS);
-            (void)xqc_path_request_abandon(path, TRA_PATH_UNSTABLE_OR_POOR);
-            return XQC_OK;
-        }
+     * Gated on VALIDATING. On an ACTIVE path a sub-1200 challenge is
+     * answered: a peer validating our new address after NAT rebinding
+     * sends one when the anti-amplification limit allows no more, and
+     * RFC 9000 Section 8.2.1 forbids discarding it. */
+    if (packet_in->buf_size < XQC_QUIC_MIN_MSS
+        && path->path_state == XQC_PATH_STATE_VALIDATING)
+    {
         xqc_log(conn->log, XQC_LOG_WARN,
-                "|G-P2 stray sub-1200 PATH_CHALLENGE on ACTIVE path, dropping"
-                "|path_id:%ui|state:%d|buf_size:%uz|",
-                path->path_id, path->path_state, packet_in->buf_size);
+                "|G-P2 MTU validation failed|path_id:%ui|buf_size:%uz|min:%d|",
+                path->path_id, packet_in->buf_size, XQC_QUIC_MIN_MSS);
+        (void)xqc_path_request_abandon(path, TRA_PATH_UNSTABLE_OR_POOR);
         return XQC_OK;
     }
 
