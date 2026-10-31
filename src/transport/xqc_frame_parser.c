@@ -72,6 +72,7 @@ xqc_gen_datagram_frame(xqc_packet_out_t *packet_out, const unsigned char *payloa
 
     packet_out->po_frame_types |= XQC_FRAME_BIT_DATAGRAM;
     packet_out->po_used_size += p - dst_buf;
+    packet_out->po_dgram_payload_size += size;
 
     return XQC_OK;
 }
@@ -509,14 +510,12 @@ xqc_gen_padding_frame(xqc_connection_t *conn, xqc_packet_out_t *packet_out)
 {
     size_t total_len = XQC_PACKET_INITIAL_MIN_LENGTH - XQC_TLS_AEAD_OVERHEAD_MAX_LEN;
 
-    if (conn->enable_pmtud
-        && !(packet_out->po_flag & XQC_POF_PATH_MIN_PADDING))
-    {
-        if ((packet_out->po_frame_types & (XQC_FRAME_BIT_PATH_CHALLENGE | XQC_FRAME_BIT_PATH_RESPONSE))
-            || (packet_out->po_flag & XQC_POF_PMTUD_PROBING))
-        {
-            total_len = packet_out->po_buf_size + XQC_ACK_SPACE;
-        }
+    /* Only a PMTUD probe takes the size it probes. PATH_CHALLENGE and
+     * PATH_RESPONSE are expanded to 1200 bytes (RFC 9000 s8.2.1, s8.2.2),
+     * not to the size found on another path: a new path with a smaller MTU
+     * would never validate. */
+    if (conn->enable_pmtud && (packet_out->po_flag & XQC_POF_PMTUD_PROBING)) {
+        total_len = xqc_min(packet_out->po_buf_size + XQC_ACK_SPACE, XQC_MSS);
     }
 
     if (packet_out->po_used_size < total_len) {

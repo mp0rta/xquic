@@ -16,6 +16,11 @@ void xqc_test_conn_pmtud_force_enable();
 void xqc_test_conn_pmtud_legacy_compatibility();
 void xqc_test_conn_early_data_reject();
 void xqc_test_conn_early_data_reject_flow_ctl();
+void xqc_test_conn_stream_unsent_cap();
+void xqc_test_conn_closed_path_perf_class(void);
+void xqc_test_conn_open_path_perf_class(void);
+void xqc_test_conn_closed_path_leaves_path_list(void);
+void xqc_test_conn_closed_path_still_counted(void);
 void xqc_test_key_update_old_key_retention();
 void xqc_test_key_update_ack_on_any_path(void);
 

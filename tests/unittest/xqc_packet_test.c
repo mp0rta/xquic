@@ -16,6 +16,9 @@
 #include "src/common/xqc_str.h"
 #include "xqc_common_test.h"
 #include "src/transport/xqc_conn.h"
+#include "src/transport/xqc_packet_out.h"
+#include "src/transport/xqc_frame_parser.h"
+#include "src/transport/xqc_recv_record.h"
 
 
 #define XQC_TEST_SHORT_HEADER_PACKET_A "\x40\xAB\x3f\x12\x0a\xcd\xef\x00\x89"
@@ -495,6 +498,98 @@ xqc_test_stateless_reset_parse_boundary(void)
     CU_ASSERT(sr_token == pkt + 22 - XQC_STATELESS_RESET_TOKENLEN);
 }
 
+/*
+ * An ACK may spill XQC_ACK_SPACE past po_buf_size, but never past XQC_MSS:
+ * a packet at the size cap has no ACK room and a smaller one keeps all of it.
+ */
+void
+xqc_test_ack_room_capped_at_mss(void)
+{
+    xqc_packet_out_t *po = xqc_packet_out_create(XQC_QUIC_MAX_MSS);
+    CU_ASSERT_FATAL(po != NULL);
+
+    CU_ASSERT_EQUAL(XQC_MAX_PACKET_OUT_SIZE, XQC_MSS);
+
+    po->po_used_size = XQC_QUIC_MAX_MSS;
+    CU_ASSERT_EQUAL(xqc_get_po_remained_size_with_ack_spc(po), XQC_ACK_SPACE);
+
+    po->po_buf_size = XQC_MAX_PACKET_OUT_SIZE;
+    po->po_used_size = XQC_MAX_PACKET_OUT_SIZE - 20;
+    CU_ASSERT_EQUAL(xqc_get_po_remained_size_with_ack_spc(po), 20);
+
+    po->po_used_size = XQC_MAX_PACKET_OUT_SIZE;
+    CU_ASSERT_EQUAL(xqc_get_po_remained_size_with_ack_spc(po), 0);
+
+    po->po_used_size = XQC_MAX_PACKET_OUT_SIZE - 4;
+    po->po_reserved_size = 8;
+    CU_ASSERT_EQUAL(xqc_get_po_remained_size_with_ack_spc(po), 0);
+
+    xqc_packet_out_destroy(po);
+}
+
+/*
+ * A full packet at the size cap refuses an ACK with XQC_ENOBUF and is left
+ * untouched, so the ACK goes into a new packet; a full packet below the cap
+ * still takes one.
+ */
+void
+xqc_test_ack_refused_by_full_packet_at_cap(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+
+    xqc_recv_record_t record;
+    memset(&record, 0, sizeof(record));
+    xqc_init_list_head(&record.list_head);
+    for (xqc_packet_number_t pn = 1; pn <= 5; pn += 2) {
+        xqc_recv_record_add(&record, pn);
+    }
+
+    xqc_packet_out_t *po = xqc_packet_out_create(XQC_MAX_PACKET_OUT_SIZE);
+    CU_ASSERT_FATAL(po != NULL);
+
+    int has_gap = 0;
+    xqc_packet_number_t largest_ack = 0;
+    ssize_t ret;
+
+    po->po_used_size = XQC_MAX_PACKET_OUT_SIZE;
+    ret = xqc_gen_ack_frame(conn, po, 1000, 3, &record, 0, &has_gap,
+                            &largest_ack);
+    CU_ASSERT_EQUAL(ret, -XQC_ENOBUF);
+    CU_ASSERT_EQUAL(po->po_used_size, XQC_MAX_PACKET_OUT_SIZE);
+
+    po->po_buf_size = XQC_QUIC_MAX_MSS;
+    po->po_used_size = XQC_QUIC_MAX_MSS;
+    ret = xqc_gen_ack_frame(conn, po, 1000, 3, &record, 0, &has_gap,
+                            &largest_ack);
+    CU_ASSERT(ret > 0);
+    CU_ASSERT(po->po_used_size + ret <= XQC_MSS);
+    CU_ASSERT_EQUAL(largest_ack, 5);
+
+    conn->pkt_out_size = XQC_MAX_PACKET_OUT_SIZE;
+    CU_ASSERT_EQUAL(xqc_conn_get_mss(conn), XQC_MSS);
+    conn->pkt_out_size = XQC_QUIC_MAX_MSS;
+    CU_ASSERT_EQUAL(xqc_conn_get_mss(conn), XQC_MSS);
+
+    xqc_packet_out_destroy(po);
+    xqc_recv_record_destroy(&record);
+    xqc_engine_destroy(conn->engine);
+}
+
+/* A version field with the top bit set (any byte >= 0x80 first) must not
+ * shift into the sign bit of an int: that is undefined behaviour, and the
+ * long-header version comes straight from the network. */
+void
+xqc_test_parse_uint32_high_bytes(void)
+{
+    const unsigned char all[4] = {0xff, 0xff, 0xff, 0xff};
+    const unsigned char high[4] = {0x80, 0x00, 0x00, 0x01};
+    const unsigned char v1[4] = {0x00, 0x00, 0x00, 0x01};
+
+    CU_ASSERT_EQUAL(xqc_parse_uint32(all), 0xffffffffU);
+    CU_ASSERT_EQUAL(xqc_parse_uint32(high), 0x80000001U);
+    CU_ASSERT_EQUAL(xqc_parse_uint32(v1), 0x00000001U);
+}
 
 static xqc_int_t
 xqc_test_coalesced_setup(test_ctx *cli, test_ctx *svr)

@@ -77,8 +77,14 @@ xqc_test_seed_cids(xqc_connection_t *conn, size_t n)
     if (conn->dcid_set.cid_set_list.next == NULL) {
         xqc_init_list_head(&conn->dcid_set.cid_set_list);
     }
+    if (conn->dcid_set.abandoned_set_list.next == NULL) {
+        xqc_init_list_head(&conn->dcid_set.abandoned_set_list);
+    }
     if (conn->scid_set.cid_set_list.next == NULL) {
         xqc_init_list_head(&conn->scid_set.cid_set_list);
+    }
+    if (conn->scid_set.abandoned_set_list.next == NULL) {
+        xqc_init_list_head(&conn->scid_set.abandoned_set_list);
     }
 
     for (size_t i = 0; i < n; i++) {

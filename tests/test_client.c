@@ -103,6 +103,8 @@ printf_null(const char *format, ...)
 #define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_BELOW_LIMIT 902
 #define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_AT_LIMIT 903
 #define XQC_TEST_CASE_KEY_UPDATE_STALE_DEADLINE 905
+#define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_EARLY_UPDATE 906
+#define XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE 907
 #define XQC_TEST_CASE_DATAGRAM_1RTT_ALLOWED 1201
 #define XQC_TEST_CASE_DATAGRAM_INITIAL_REJECTED 1202
 #define XQC_TEST_CASE_RETRY_INVALID_TOKEN_CLOSE 715
@@ -386,6 +388,9 @@ uint64_t g_last_sock_op_time;
  * 722/723 for RESET_STREAM final-size validation
  * 724-726 for stream close state and direction validation
  * 727/728 for stream reassembly cap validation
+ * 735/736 for max_pkt_out_size at and above its cap
+ * 802/803 for the end-of-pass per-path app-limited check
+ * 900/901 for cert_verify_failed_notify on a rejected / accepted certificate
  * 902/903 for AEAD confidentiality-limit validation
  * 1000-1021 for HTTP/3 protocol validation
  * 1098/1099 for MASQUE CONNECT-IP e2e testcases (fork-local)
@@ -560,6 +565,234 @@ static void xqc_client_path_callback(int fd, short what, void *arg);
 static void xqc_client_epoch_callback(int fd, short what, void *arg);
 static void xqc_client_ready_to_create_path(const xqc_cid_t *cid, void *conn_user_data);
 
+/*
+ * Cases 1300 and 1301: paths that fail silently. The client sends one small
+ * datagram per epoch, so it stays application-limited, and the server echoes
+ * each one. Half a second after the first XQC_TEST_SILENT_WARMUP echoes have
+ * arrived with two paths active, the blackhole starts: every packet sent or
+ * received on an affected path is dropped without an error, as on a dead
+ * link.
+ *   1300: the path that carried the most bytes in that half second stops
+ *         delivering for the rest of the run, XQC_TEST_SILENT_RUN_US.
+ *   1301: every path stops delivering for XQC_TEST_SILENT_ALL_US, then
+ *         comes back for the rest of the run, XQC_TEST_SILENT_RUN_US.
+ */
+#define XQC_TEST_SILENT_DGRAM_SIZE      100
+#define XQC_TEST_SILENT_WARMUP          25
+#define XQC_TEST_SILENT_MARK_US         500000
+#define XQC_TEST_SILENT_ALL_US          1000000
+#define XQC_TEST_SILENT_RUN_US          4000000
+
+typedef struct xqc_test_silent_path_s {
+    xqc_usec_t  mark_time;  /* 0 until the warm-up is over */
+    size_t      mark[XQC_DEMO_MAX_PATH_COUNT];
+    xqc_usec_t  start;      /* 0 until the blackhole starts */
+    xqc_usec_t  end;        /* 0 if it lasts until the end of the run */
+    int         all_paths;
+    uint64_t    path_id;
+    size_t      sent;
+    size_t      echoed;
+    xqc_usec_t  last_echo;
+    xqc_usec_t  max_gap;    /* longest time without an echo from start */
+    xqc_usec_t  resumed;    /* first echo after end */
+} xqc_test_silent_path_t;
+
+static xqc_test_silent_path_t g_silent;
+
+static int
+xqc_client_silent_case(void)
+{
+    return g_test_case == 1300 || g_test_case == 1301;
+}
+
+static int
+xqc_client_silent_dropped(uint64_t path_id)
+{
+    if (!xqc_client_silent_case() || g_silent.start == 0) {
+        return 0;
+    }
+
+    if (g_silent.end != 0 && xqc_now() >= g_silent.end) {
+        return 0;
+    }
+
+    return g_silent.all_paths || path_id == g_silent.path_id;
+}
+
+/* cases 804-805: a path that drops every datagram above 1300 bytes, which
+ * only PMTUD probes exceed. 805 also drops one ordinary full-size packet,
+ * a real loss next to the probe losses. */
+#define XQC_TEST_CASE_PATH_MTU 1300
+
+static int
+xqc_client_mtu_dropped(const unsigned char *buf, size_t size)
+{
+    static int full_pkts = 0;
+    static int big_pkts = 0;
+
+    /* case 806: the path shrinks during the transfer, after 300 datagrams
+     * above 1300 bytes got through, and drops every one of them from then on */
+    if (g_test_case == 806) {
+        return size > XQC_TEST_CASE_PATH_MTU && ++big_pkts > 300;
+    }
+
+    /* case 807: the path is smaller than the base size (1298) from the
+     * start: only datagrams up to 1260 bytes get through */
+    if (g_test_case == 807) {
+        return size > 1260;
+    }
+
+    /* case 808: an outage at the base size: after 300 short header
+     * packets, every datagram is lost for one second */
+    if (g_test_case == 808) {
+        static uint64_t outage_start = 0;
+        if (outage_start == 0) {
+            if ((buf[0] & 0x80) == 0 && ++full_pkts == 300) {
+                outage_start = xqc_now();
+            }
+            return outage_start != 0;
+        }
+        return xqc_now() - outage_start < 1000000;
+    }
+
+    if (g_test_case != 804 && g_test_case != 805) {
+        return 0;
+    }
+
+    if (size > XQC_TEST_CASE_PATH_MTU) {
+        return 1;
+    }
+
+    /* the 20th full-size short header packet */
+    if (g_test_case == 805 && (buf[0] & 0x80) == 0 && size >= 1000
+        && ++full_pkts == 20)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+static void
+xqc_client_silent_update_gap(xqc_usec_t now)
+{
+    xqc_usec_t from = g_silent.last_echo > g_silent.start
+                      ? g_silent.last_echo : g_silent.start;
+
+    if (g_silent.start != 0 && now > from
+        && now - from > g_silent.max_gap)
+    {
+        g_silent.max_gap = now - from;
+    }
+}
+
+static void
+xqc_client_silent_on_echo(void)
+{
+    xqc_usec_t now = xqc_now();
+
+    xqc_client_silent_update_gap(now);
+    if (g_silent.end != 0 && now >= g_silent.end && g_silent.resumed == 0) {
+        g_silent.resumed = now;
+    }
+    g_silent.last_echo = now;
+    g_silent.echoed++;
+}
+
+static int
+xqc_client_silent_active_paths(user_conn_t *user_conn)
+{
+    xqc_conn_stats_t stats = xqc_conn_get_stats(ctx.engine, &user_conn->cid);
+    int active = 0;
+
+    for (uint32_t i = 0; i < stats.paths_info_count; i++) {
+        if (stats.paths_info[i].path_state == XQC_PATH_STATE_ACTIVE) {
+            active++;
+        }
+    }
+    free(stats.paths_info);
+    return active;
+}
+
+static void
+xqc_client_silent_start(xqc_usec_t now)
+{
+    size_t most = 0;
+
+    g_silent.start = now;
+    if (g_test_case == 1301) {
+        g_silent.all_paths = 1;
+        g_silent.end = now + XQC_TEST_SILENT_ALL_US;
+        printf("[dgram]|silent_path|start|path:all|\n");
+        return;
+    }
+
+    for (int i = 0; i < XQC_DEMO_MAX_PATH_COUNT; i++) {
+        size_t bytes = g_client_path[i].send_size - g_silent.mark[i];
+        if (bytes > most) {
+            most = bytes;
+            g_silent.path_id = i;
+        }
+    }
+    printf("[dgram]|silent_path|start|path:%"PRIu64"|\n", g_silent.path_id);
+}
+
+static void
+xqc_client_silent_report(user_conn_t *user_conn, xqc_usec_t now)
+{
+    /* count a gap that is still open */
+    xqc_client_silent_update_gap(now);
+    printf("[dgram]|silent_path|sent:%zu|echoed:%zu|max_gap_ms:%"PRIu64"|"
+           "resume_ms:%"PRId64"|\n", g_silent.sent, g_silent.echoed,
+           g_silent.max_gap / 1000,
+           g_silent.resumed
+           ? (int64_t) (g_silent.resumed - g_silent.end) / 1000
+           : (int64_t) -1);
+    xqc_conn_close(ctx.engine, &user_conn->cid);
+}
+
+/* returns 0 once the run is over, so that no further epoch is scheduled */
+static int
+xqc_client_silent_epoch(user_conn_t *user_conn)
+{
+    unsigned char dgram[XQC_TEST_SILENT_DGRAM_SIZE];
+    xqc_usec_t now = xqc_now();
+    uint64_t dgram_id;
+
+    if (g_silent.mark_time == 0) {
+        if (g_silent.echoed >= XQC_TEST_SILENT_WARMUP
+            && xqc_client_silent_active_paths(user_conn) >= 2)
+        {
+            g_silent.mark_time = now;
+            for (int i = 0; i < XQC_DEMO_MAX_PATH_COUNT; i++) {
+                g_silent.mark[i] = g_client_path[i].send_size;
+            }
+        }
+
+    } else if (g_silent.start == 0) {
+        if (now - g_silent.mark_time >= XQC_TEST_SILENT_MARK_US) {
+            xqc_client_silent_start(now);
+        }
+
+    } else if (now >= (g_silent.end ? g_silent.end : g_silent.start)
+                      + XQC_TEST_SILENT_RUN_US)
+    {
+        xqc_client_silent_report(user_conn, now);
+        return 0;
+    }
+
+    if (user_conn->dgram_mss >= sizeof(dgram)) {
+        memset(dgram, 0x31, sizeof(dgram));
+        if (xqc_datagram_send(user_conn->quic_conn, dgram, sizeof(dgram),
+                              &dgram_id, g_dgram_qos_level) == XQC_OK)
+        {
+            g_silent.sent++;
+        }
+    }
+
+    return 1;
+}
+
 /*  */
 
 static void 
@@ -591,6 +824,13 @@ xqc_client_datagram_send(user_conn_t *user_conn)
     if (g_send_dgram == 1) {
         if (g_test_case == 203 && user_conn->dgram_mss) {
             g_test_case = -1;
+            user_conn->dgram_mss++;
+        }
+        /* 736: one byte over the clamped MSS must be refused */
+        if (g_test_case == 736 && user_conn->dgram_mss
+            && user_conn->dgram_mss
+               == xqc_datagram_get_mss(user_conn->quic_conn))
+        {
             user_conn->dgram_mss++;
         }
         uint64_t dgram_id;
@@ -691,6 +931,9 @@ static void
 xqc_client_datagram_read_callback(xqc_connection_t *conn, void *user_data, const void *data, size_t data_len, uint64_t dgram_ts)
 {
     user_conn_t *user_conn = (user_conn_t*)user_data;
+    if (xqc_client_silent_case()) {
+        xqc_client_silent_on_echo();
+    }
     if (g_echo_check) {
         memcpy(user_conn->dgram_blk->recv_data + user_conn->dgram_blk->data_recv, data, data_len);
     }
@@ -1219,6 +1462,29 @@ end:
     return ret;
 }
 
+/*
+ * 735/736: the largest UDP payload sent must stay within a 1500-byte IPv6
+ * packet (1452) when max_pkt_out_size is at or above its cap
+ */
+static size_t g_max_udp_payload;
+
+static void
+xqc_test_record_udp_payload(size_t size)
+{
+    if (g_test_case != 735 && g_test_case != 736) {
+        return;
+    }
+
+    if (size > 1452) {
+        printf("[udp-735]|oversize|size:%zu|\n", size);
+    }
+
+    if (size > g_max_udp_payload) {
+        g_max_udp_payload = size;
+        printf("[udp-735]|max|size:%zu|\n", size);
+    }
+}
+
 ssize_t 
 xqc_client_write_socket(const unsigned char *buf, size_t size,
     const struct sockaddr *peer_addr, socklen_t peer_addrlen, void *user)
@@ -1237,6 +1503,12 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
     }
     send_buf_size = size;
     memcpy(send_buf, buf, send_buf_size);
+    xqc_test_record_udp_payload(size);
+
+    /* cases 804-808 */
+    if (xqc_client_mtu_dropped(buf, size)) {
+        return size;
+    }
 
     /*
      * RFC 9001 Section 6.1 old-key retention test: as soon as the local
@@ -1430,6 +1702,30 @@ xqc_client_write_socket_ex(uint64_t path_id,
         return XQC_SOCKET_ERROR;
     }
 
+    /* cases 1300-1301: the packet is lost without any error */
+    if (xqc_client_silent_dropped(path_id)) {
+        return size;
+    }
+
+    /* cases 804-808 */
+    if (xqc_client_mtu_dropped(buf, size)) {
+        return size;
+    }
+
+    /* cases 809-810: the second path carries only 1300 bytes, less than
+     * what the first one was found to carry */
+    if ((g_test_case == 809 || g_test_case == 810) && path_id == 1
+        && size > 1300)
+    {
+        return size;
+    }
+
+    /* case 803: every packet sent on the second path is lost, so that path
+     * never validates */
+    if (g_test_case == 803 && path_id == 1) {
+        return size;
+    }
+
     /* test stateless reset after handshake completed */
     if (g_test_case == 41) {
         if (hsk_completed && ((buf[0] & 0xC0) == 0x40)) {
@@ -1503,6 +1799,7 @@ xqc_client_write_socket_ex(uint64_t path_id,
     }
     send_buf_size = size;
     memcpy(send_buf, buf, send_buf_size);
+    xqc_test_record_udp_payload(size);
 
     /*
      * RFC 9001 Section 6.1 old-key retention test: suppress outbound packets
@@ -2145,7 +2442,9 @@ xqc_client_create_conn_socket(user_conn_t *user_conn)
 void
 xqc_client_set_path_debug_timer(user_conn_t *user_conn)
 {
-    if (g_debug_path || g_test_case == 110) {
+    if (g_debug_path || g_test_case == 110
+        || (g_test_case == 810 && g_client_path[1].is_in_used == 0))
+    {
         if (user_conn->ev_path == NULL) {
             user_conn->ev_path = event_new(eb, -1, 0, xqc_client_path_callback, user_conn);
         }
@@ -2343,6 +2642,10 @@ xqc_client_conn_handshake_finished(xqc_connection_t *conn, void *user_data, void
     }
     if (g_test_case == 200 || g_test_case == 201) {
         printf("[dgram-200]|1RTT|updated_mss:%zu|\n", user_conn->dgram_mss);
+    }
+
+    if (g_test_case == 735 || g_test_case == 736) {
+        printf("[dgram-735]|1RTT|updated_mss:%zu|\n", user_conn->dgram_mss);
     }
     
     if (g_send_dgram && user_conn->dgram_retry_in_hs_cb) {
@@ -3182,7 +3485,9 @@ xqc_client_h3_conn_handshake_finished(xqc_h3_conn_t *h3_conn, void *user_data)
     hsk_completed = 1;
 
     if (g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_BELOW_LIMIT
-        || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_AT_LIMIT)
+        || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_AT_LIMIT
+        || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_EARLY_UPDATE
+        || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE)
     {
         xqc_connection_t *conn = xqc_h3_conn_get_xqc_conn(h3_conn);
         uint32_t cipher_id = xqc_tls_get_1rtt_cipher_id(conn->tls);
@@ -3190,8 +3495,15 @@ xqc_client_h3_conn_handshake_finished(xqc_h3_conn_t *h3_conn, void *user_data)
 
         conn->key_update_ctx.enc_pkt_cnt =
             g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_BELOW_LIMIT
-            ? limit - 1 : limit;
+            ? limit - 1
+            : g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_EARLY_UPDATE
+              || g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE
+            ? limit - (limit >> 3) - 1 : limit;
         conn->key_update_ctx.aead_confidentiality_limit = limit;
+        if (g_test_case == XQC_TEST_CASE_AEAD_CONFIDENTIALITY_DEFERRED_UPDATE) {
+            /* hold the initiation guard closed past the early trigger */
+            conn->key_update_ctx.initiate_time_guard = xqc_now() + 20000;
+        }
         printf("[aead-confidentiality-test]|case:%d|cipher_id:%u|"
                "encrypted:%"PRIu64"|limit:%"PRIu64"|\n",
                g_test_case, cipher_id,
@@ -5142,6 +5454,11 @@ xqc_client_socket_read_handler(user_conn_t *user_conn, int fd)
 
         if (TEST_DROP) continue;
 
+        /* cases 1300-1301 */
+        if (xqc_client_silent_dropped(path_id)) {
+            continue;
+        }
+
         if (g_test_case == XQC_TEST_CASE_KEY_UPDATE_STALE_DEADLINE) {
             xqc_client_key_update_copy_packet(user_conn, packet_buf,
                                               recv_size);
@@ -5461,7 +5778,8 @@ xqc_client_path_callback(int fd, short what, void *arg)
         xqc_client_set_path_debug_timer(user_conn);
     }
 
-    if (b_add_path == 0) {
+    /* case 810: one path added, none removed */
+    if (b_add_path == 0 && g_test_case != 810) {
         static int base = 0;
         int path_index = rand() % 2;
         base++;
@@ -5483,7 +5801,12 @@ xqc_client_epoch_callback(int fd, short what, void *arg)
     printf("|xqc_client_epoch_callback|epoch:%d|\n", g_cur_epoch);
 
     if (g_send_dgram) {
-        if (user_conn->h3 == 1) {
+        if (xqc_client_silent_case()) {
+            if (!xqc_client_silent_epoch(user_conn)) {
+                return;
+            }
+
+        } else if (user_conn->h3 == 1) {
             xqc_client_datagram_send(user_conn);
 
         } else if (user_conn->h3 == 2) {
@@ -5732,6 +6055,12 @@ xqc_client_cert_verify(const unsigned char *certs[],
     return 0;
 }
 
+void
+xqc_client_cert_verify_failed_notify(int x509_err, void *conn_user_data)
+{
+    printf("cert_verify_failed_notify|x509_err:%d|\n", x509_err);
+}
+
 static void
 xqc_client_ready_to_create_path(const xqc_cid_t *cid, 
     void *conn_user_data)
@@ -5750,7 +6079,8 @@ xqc_client_ready_to_create_path(const xqc_cid_t *cid,
         return;
     }
 
-    if (g_test_case != 110) {
+    /* case 810: the second path comes later, from the path debug timer */
+    if (g_test_case != 110 && g_test_case != 810) {
         for (int i = 0; i < g_multi_interface_cnt; i++) {
             if (g_client_path[i].is_in_used == 1) {
                 continue;
@@ -6566,6 +6896,7 @@ int main(int argc, char *argv[]) {
         .ready_to_create_path_notify = xqc_client_ready_to_create_path,
         .path_removed_notify = xqc_client_path_removed,
         .conn_closing = xqc_client_conn_closing_notify,
+        .cert_verify_failed_notify = xqc_client_cert_verify_failed_notify,
     };
 
     xqc_cong_ctrl_callback_t cong_ctrl;
@@ -6748,9 +7079,14 @@ int main(int argc, char *argv[]) {
         conn_settings.datagram_redundant_probe = 30000;
     }
 
-    if (g_test_case == 703) {
+    if (g_test_case == 703 || g_test_case == 900) {
         g_verify_cert = 1;
         g_verify_cert_allow_self_sign = 0;
+    }
+
+    if (g_test_case == 901) {
+        g_verify_cert = 1;
+        g_verify_cert_allow_self_sign = 1;
     }
 
     if (g_test_case == XQC_TEST_CASE_RETRY_IGNORE_OLD_INITIAL_DCID) {
@@ -6847,6 +7183,29 @@ int main(int argc, char *argv[]) {
 
     if (g_test_case == 201) {
         conn_settings.max_pkt_out_size = 1216;
+    }
+
+    if (g_test_case == 735) {
+        conn_settings.max_pkt_out_size = 1436;
+    }
+
+    if (g_test_case == 736) {
+        conn_settings.max_pkt_out_size = 1500;
+    }
+
+    /* cases 807-810: mqvpn's base size, and no search above it in 808 */
+    if (g_test_case == 807 || g_test_case == 808
+        || g_test_case == 809 || g_test_case == 810)
+    {
+        conn_settings.max_pkt_out_size = 1298;
+    }
+    /* case 810: the second path once the first has grown, after
+     * XQC_PMTUD_START_DELAY (multipath waits that long to start PMTUD) */
+    if (g_test_case == 810) {
+        g_path_timeout = 7000000;
+    }
+    if (g_test_case == 808) {
+        conn_settings.probing_pkt_out_size = 1298;
     }
     
 

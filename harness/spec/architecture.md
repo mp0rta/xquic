@@ -140,3 +140,26 @@ both independent foundations.
 These boundaries are initially documented rather than mechanically enforced.
 When the same class of violation recurs, promote the invariant into a test,
 lint, or structural check.
+
+## Consumer Contract (mqvpn)
+
+mp0rta/mqvpn pins this fork at a commit on `mqvpn-main` and relies on the
+following beyond what upstream documents:
+
+- Path capacity is dynamic (`PATHS_BLOCKED` / `MAX_PATH_ID`); the fixed
+  `XQC_MAX_PATHS_COUNT` cap was removed and must not return. The remaining
+  ceiling is the `XQC_PATH_HARD_CAP` safety bound, not a negotiated limit.
+- `xqc_conn_close_path()` stays non-blocking: `PATH_ABANDON` is queued on an
+  alternate active path when one exists, falling back to the abandoned path
+  on a single-path tail. A close must not stall the surviving paths.
+- The WLB scheduler pins datagram flows by `po_flow_hash` only; STREAM
+  packets carry hash 0 and take the MinRTT fallback by design.
+- ECN accounting is out of scope: `PATH_ACK_ECN` keeps the PATH_ACK recovery
+  semantics (draft-21 §4.1); its ECN counts are parsed and discarded.
+- `xqc_conn_stats_t.paths_info` is dynamically sized (`paths_info_count`);
+  `xqc_path_state_t` values are pinned by value in mqvpn's
+  `tests/test_xquic_abi_pin.c`.
+- `xqc_engine_destroy()` frees the HTTP/3 context; consumers must not call
+  `xqc_h3_ctx_destroy()` as well.
+- mqvpn maps its INFO log level to xquic WARN; WARN-level logging must not
+  be per-packet.

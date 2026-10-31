@@ -138,42 +138,81 @@ xqc_insert_stream_frame(xqc_connection_t *conn, xqc_stream_t *stream,
                         xqc_stream_frame_t *new_frame)
 {
     /* CWE-770 mitigation (RFC 9000 §21.7 stream fragmentation attacks):
-     * bound the number of buffered out-of-order frame nodes per stream,
-     * with one slot held in reserve for a frame that extends the
-     * contiguous prefix (data_offset <= merged_offset_end < data_offset +
-     * data_length). Rejecting prefix-extending retransmissions at the cap
-     * would make the leftmost reassembly hole unfillable — the buffered
-     * beyond-hole frames could never merge or become readable and the
-     * stream would livelock. Beyond-hole frames therefore stop at
-     * (cap - 1) so they cannot consume the reserved slot, and
-     * prefix-extending frames stop at the cap, keeping the hard bound.
-     * The reserved slot cannot be farmed: frames entirely below
-     * merged_offset_end never reach this function (the caller drops them
-     * as already received), zero-length FIN-only frames never qualify as
-     * prefix-extenders (the caller's stream_determined gate stops the
-     * at-final-offset repeats; beyond-hole FIN duplicates stay under the
+     * bound the buffered out-of-order frame nodes per stream, with one slot
+     * held in reserve for a frame that extends the contiguous prefix
+     * (data_offset <= merged_offset_end < data_offset + data_length).
+     *
+     * Two limits, because a node count alone cannot separate an attack from a
+     * busy stream. 8192 nodes is the sparse-fragment threshold: past it a
+     * stream must carry at least XQC_MIN_STREAM_BUFFERED_BYTES_PER_FRAME of
+     * payload per node, which a 1-byte-fragment attack cannot. Dense
+     * packet-sized frames instead run up to the hard ceiling, which covers a
+     * full 16 MiB receive window -- application backpressure and multipath
+     * reordering can legitimately queue more than 8192 packet-sized frames.
+     * A conn_settings override collapses both tiers onto the operator's
+     * value, so a configured cap stays the absolute bound it used to be.
+     *
+     * Why the reserved slot: rejecting prefix-extending retransmissions at
+     * the cap would make the leftmost reassembly hole unfillable -- the
+     * buffered beyond-hole frames could never merge or become readable and
+     * the stream would livelock. Beyond-hole frames therefore stop one short
+     * of each limit so they cannot consume the reserved slot, while a
+     * prefix-extending frame may take it. The slot cannot be farmed: frames
+     * entirely below merged_offset_end never reach this function (the caller
+     * drops them as already received), zero-length FIN-only frames never
+     * qualify as prefix-extenders (the caller's stream_determined gate stops
+     * the at-final-offset repeats; beyond-hole FIN duplicates stay under the
      * beyond-hole bound), and every admitted prefix-extender advances
-     * merged_offset_end, making buffered data
-     * readable so the application can drain it. The caller converts the
-     * rejection into a whole-packet unacked drop, not a connection
-     * error. First rejection of an episode logs at WARN, the rest at
-     * DEBUG (a single episode can span thousands of packets). */
+     * merged_offset_end, making buffered data readable so the application can
+     * drain it. The caller converts the rejection into a whole-packet unacked
+     * drop, not a connection error. First rejection of an episode logs at
+     * WARN, the rest at DEBUG (a single episode can span thousands of
+     * packets). */
     {
-        uint64_t cap = conn->conn_settings.max_stream_frame_buffered_cnt > 0
-                           ? conn->conn_settings.max_stream_frame_buffered_cnt
-                           : XQC_MAX_STREAM_FRAME_BUFFERED_COUNT;
-        uint64_t buffered = stream->stream_data_in.buffered_frame_count;
+        uint64_t cfg = conn->conn_settings.max_stream_frame_buffered_cnt;
+        uint64_t sparse_cap = cfg > 0 ? cfg : XQC_MAX_STREAM_FRAME_BUFFERED_COUNT;
+        uint64_t hard_cap = cfg > 0 ? cfg : XQC_MAX_STREAM_FRAME_BUFFERED_COUNT_HARD;
+        uint64_t buffered_count = stream->stream_data_in.buffered_frame_count;
+        uint64_t buffered_bytes = stream->stream_data_in.buffered_data_bytes;
         int extends_prefix =
             new_frame->data_offset <= stream->stream_data_in.merged_offset_end
             && new_frame->data_offset + new_frame->data_length
                 > stream->stream_data_in.merged_offset_end;
 
-        if (buffered + (extends_prefix ? 0 : 1) >= cap) {
+        /* The reserved slot has to exempt the frame from BOTH limits. Using
+         * the real post-insert node count as the density budget looks more
+         * honest, but it re-breaks the invariant: a stream sitting at the
+         * sparse threshold with exactly the minimum density rejects the one
+         * small frame that would fill the leftmost hole, because that node
+         * drops the average below the minimum. Nothing changes on rejection,
+         * so the retransmission is refused forever and the stream livelocks.
+         * Charging the density budget at count_after keeps the exemption
+         * coherent across both tiers. It is reusable but not farmable, and
+         * not because a prefix-extender advances merged_offset_end -- that
+         * makes data readable but reclaims nothing; only xqc_stream_recv()
+         * decrements these counters. Two bounds hold with no application
+         * drain at all. Admission under the density tier requires
+         * B + L >= C*m, so after insertion B' >= (C' - 1)*m: the average can
+         * sit one reserved node below the minimum and no lower, however many
+         * prefix frames arrive. And a prefix-extender still needs
+         * count_after < hard_cap, so the node count stops at hard_cap. */
+        uint64_t count_after = buffered_count + (extends_prefix ? 0 : 1);
+
+        xqc_bool_t hard_limit = count_after >= hard_cap;
+        xqc_bool_t sparse_limit =
+            count_after >= sparse_cap
+            && buffered_bytes + new_frame->data_length
+                   < count_after * XQC_MIN_STREAM_BUFFERED_BYTES_PER_FRAME;
+
+        if (hard_limit || sparse_limit) {
             xqc_log_level_t lvl = stream->stream_data_in.cap_reject_logged
                                       ? XQC_LOG_DEBUG : XQC_LOG_WARN;
             xqc_log(conn->log, lvl,
-                    "|stream frame buffered count exceed|stream_id:%ui|count:%ui|limit:%ui|",
-                    stream->stream_id, buffered, cap);
+                    "|stream frame buffered count exceed|stream_id:%ui|count:%ui|"
+                    "bytes:%ui|sparse_cap:%ui|hard_cap:%ui|"
+                    "sparse_limit:%d|hard_limit:%d|",
+                    stream->stream_id, buffered_count, buffered_bytes,
+                    sparse_cap, hard_cap, (int)sparse_limit, (int)hard_limit);
             stream->stream_data_in.cap_reject_logged = 1;
             return -XQC_ELIMIT;
         }
@@ -266,6 +305,7 @@ xqc_insert_stream_frame(xqc_connection_t *conn, xqc_stream_t *stream,
     /* update buffered resource counter */
     stream->stream_data_in.buffered_frame_count++;
     stream->stream_data_in.cap_reject_logged = 0;
+    stream->stream_data_in.buffered_data_bytes += new_frame->data_length;
 
     return XQC_OK;
 }
@@ -1882,7 +1922,13 @@ xqc_process_reset_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
         conn->conn_flow_ctl.fc_data_read +=
             (int64_t)final_size - (int64_t)stream->stream_data_in.next_read_offset;
         xqc_destroy_frame_list(&stream->stream_data_in.frames_tailq);
+        /* Both counters feed the reassembly density gate, so they have to be
+         * cleared together. Nothing reaches that gate on this stream again
+         * (xqc_process_stream_frame returns early once the recv state is
+         * RESET_RECVD), but a stale byte count would relax the gate if that
+         * early return is ever narrowed. */
         stream->stream_data_in.buffered_frame_count = 0;
+        stream->stream_data_in.buffered_data_bytes = 0;
         xqc_stream_ready_to_read(stream);
     }
 
@@ -2402,21 +2448,17 @@ xqc_process_path_challenge_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
             xqc_dcid_str(conn->engine, &packet_in->pi_pkt.pkt_dcid));
 
     /* draft-21 §3.1 ¶6 (G-P2): 1200B MTU MUST on validation receive.
-     * Gated on VALIDATING — a stray sub-1200 on an ACTIVE path is the
-     * peer's fault and must not tear down an established path; drop the
-     * challenge instead. See audit memo row G-P2. */
-    if (packet_in->buf_size < XQC_QUIC_MIN_MSS) {
-        if (path->path_state == XQC_PATH_STATE_VALIDATING) {
-            xqc_log(conn->log, XQC_LOG_WARN,
-                    "|G-P2 MTU validation failed|path_id:%ui|buf_size:%uz|min:%d|",
-                    path->path_id, packet_in->buf_size, XQC_QUIC_MIN_MSS);
-            (void)xqc_path_request_abandon(path, TRA_PATH_UNSTABLE_OR_POOR);
-            return XQC_OK;
-        }
+     * Gated on VALIDATING. On an ACTIVE path a sub-1200 challenge is
+     * answered: a peer validating our new address after NAT rebinding
+     * sends one when the anti-amplification limit allows no more, and
+     * RFC 9000 Section 8.2.1 forbids discarding it. */
+    if (packet_in->buf_size < XQC_QUIC_MIN_MSS
+        && path->path_state == XQC_PATH_STATE_VALIDATING)
+    {
         xqc_log(conn->log, XQC_LOG_WARN,
-                "|G-P2 stray sub-1200 PATH_CHALLENGE on ACTIVE path, dropping"
-                "|path_id:%ui|state:%d|buf_size:%uz|",
-                path->path_id, path->path_state, packet_in->buf_size);
+                "|G-P2 MTU validation failed|path_id:%ui|buf_size:%uz|min:%d|",
+                path->path_id, packet_in->buf_size, XQC_QUIC_MIN_MSS);
+        (void)xqc_path_request_abandon(path, TRA_PATH_UNSTABLE_OR_POOR);
         return XQC_OK;
     }
 
@@ -2991,12 +3033,18 @@ xqc_process_max_path_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
 
     /* Implementation policy: mirror peer's cap so curr_max_path_id can
      * advance (draft-21 §3.2.1 — peer MUST NOT issue CIDs above our limit).
-     * Inherits peer's grant bound (max_path_id_grant_max_value). */
-    if (max_path_id > conn->local_max_path_id) {
-        conn->local_max_path_id = max_path_id;
-        (void)xqc_write_max_path_id_to_packet(conn, max_path_id);
+     * Bounded by our own grant bound: every path ID up to the mirrored
+     * value gets CID sets, so the peer's value alone must not size them. */
+    uint64_t mirror_cap = conn->conn_settings.max_path_id_grant_max_value;
+    if (mirror_cap == 0) {
+        mirror_cap = XQC_MAX_PATH_ID_MIRROR_DEFAULT;
+    }
+    uint64_t mirror = xqc_min(max_path_id, mirror_cap);
+    if (mirror > conn->local_max_path_id) {
+        conn->local_max_path_id = mirror;
+        (void)xqc_write_max_path_id_to_packet(conn, mirror);
         xqc_log(conn->log, XQC_LOG_INFO,
-                "|MAX_PATH_ID reciprocal grant|new_local_max:%ui|", max_path_id);
+                "|MAX_PATH_ID reciprocal grant|new_local_max:%ui|", mirror);
     }
 
     new_max_path_id = xqc_min(conn->local_max_path_id, conn->remote_max_path_id);

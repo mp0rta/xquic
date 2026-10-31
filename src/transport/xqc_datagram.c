@@ -102,7 +102,8 @@ xqc_datagram_record_mss(xqc_connection_t *conn)
                                 (uint64_t) udp_payload_limit);
     conn->dgram_mss = xqc_min((size_t) dgram_frame_limit, mtu_limit);
 end:
-    if (conn->dgram_mss > old_mss) {
+    /* notify a smaller MSS too: PMTUD shrinks it on a black hole */
+    if (conn->dgram_mss != old_mss && conn->dgram_mss > 0) {
         conn->conn_flag |= XQC_CONN_FLAG_DGRAM_MSS_NOTIFY;
 
     } else {
@@ -162,9 +163,15 @@ xqc_datagram_get_mss_on_path(xqc_connection_t *conn, uint64_t path_id)
         if (conn->conn_settings.fec_params.fec_encoder_scheme) {
             headroom += XQC_FEC_SPACE;
         }
+        size_t path_size = path->path_max_pkt_out_size;
+        /* PMTUD: no more than the path is known to carry, which is less than
+         * the connection size on a path not yet validated */
+        if (conn->enable_pmtud && path->curr_pkt_out_size < path_size) {
+            path_size = path->curr_pkt_out_size;
+        }
         size_t path_mtu_limit = 0;
-        if (path->path_max_pkt_out_size >= headroom) {
-            path_mtu_limit = path->path_max_pkt_out_size - headroom;
+        if (path_size >= headroom) {
+            path_mtu_limit = path_size - headroom;
         }
         if (path_mtu_limit < mss) {
             mss = path_mtu_limit;

@@ -19,6 +19,8 @@
 #define XQC_kPersistentCongestionThreshold  3
 
 #define XQC_CONSECUTIVE_PTO_THRESH          2
+/* cap of xqc_send_ctl_get_effective_pto_count(), as the PTO backoff's */
+#define XQC_EFFECTIVE_PTO_COUNT_MAX         16
 /*
  * RFC 9002 Section 6.1.2 recommends a timer granularity of 1 ms.
  */
@@ -96,6 +98,10 @@ typedef struct xqc_send_ctl_s {
 
     xqc_usec_t                  ctl_last_inflight_pkt_sent_time;
     xqc_usec_t                  ctl_time_of_last_sent_ack_eliciting_packet[XQC_PNS_N];
+    /* for xqc_send_ctl_get_effective_pto_count(): the last progress on the
+     * path, when its application data bytes in flight became non-zero or an
+     * ACK acknowledged a packet sent on it */
+    xqc_usec_t                  ctl_progress_time;
     xqc_packet_number_t         ctl_last_sent_ack_eliciting_packet_number[XQC_PNS_N];
     xqc_usec_t                  ctl_srtt,
                                 ctl_rttvar,
@@ -111,6 +117,17 @@ typedef struct xqc_send_ctl_s {
     xqc_timer_manager_t         path_timer_manager;
 
     unsigned                    ctl_pto_count;
+
+    /* PMTUD black hole detection (RFC 8899 s4.3): the largest 1-RTT packet
+     * number acked among large packets (xqc_pmtud_big_size), and how many such
+     * packets sent after it were lost since. Enough of them make the path
+     * suspect; probes at the current size then confirm it or not. */
+    xqc_packet_number_t         ctl_largest_big_acked;
+    unsigned                    ctl_big_lost_cnt;
+    xqc_usec_t                  ctl_bh_suspect_time;
+    xqc_usec_t                  ctl_bh_probe_time;
+    unsigned                    ctl_bh_probes_sent;
+    unsigned                    ctl_bh_probes_lost;
 
     unsigned                    ctl_send_count;
     unsigned                    ctl_lost_count;
@@ -191,6 +208,33 @@ xqc_send_ctl_calc_pto(xqc_send_ctl_t *send_ctl)
 {
     return send_ctl->ctl_srtt + xqc_max(4 * send_ctl->ctl_rttvar, XQC_kGranularity * 1000)
         + send_ctl->ctl_conn->remote_settings.max_ack_delay * 1000;
+}
+
+unsigned xqc_send_ctl_count_hidden_ptos(xqc_send_ctl_t *send_ctl);
+
+/**
+ * The PTO count the path would have if new ack-eliciting packets did not
+ * restart its PTO timer: the number of backed-off PTO expiries between its
+ * last progress (ctl_progress_time) and its last ack-eliciting send, or
+ * ctl_pto_count if that is larger. Path schedulers compare this, not
+ * ctl_pto_count, with their thresholds, for every path and every packet, so
+ * the common case (nothing in flight, or progress within the last PTO
+ * before the last send) is decided inline.
+ */
+static inline unsigned
+xqc_send_ctl_get_effective_pto_count(xqc_send_ctl_t *send_ctl)
+{
+    xqc_usec_t last_sent =
+        send_ctl->ctl_time_of_last_sent_ack_eliciting_packet[XQC_PNS_APP_DATA];
+
+    if (send_ctl->ctl_bytes_ack_eliciting_inflight[XQC_PNS_APP_DATA] == 0
+        || last_sent < send_ctl->ctl_progress_time
+                       + xqc_send_ctl_calc_pto(send_ctl))
+    {
+        return send_ctl->ctl_pto_count;
+    }
+
+    return xqc_send_ctl_count_hidden_ptos(send_ctl);
 }
 
 
@@ -304,5 +348,12 @@ xqc_int_t xqc_send_ctl_detect_optimistic_ack_attack(xqc_send_ctl_t *send_ctl,
 
 void xqc_send_ctl_set_next_pn_for_packet(xqc_connection_t *conn, xqc_pn_ctl_t *pn_ctl,  
     xqc_packet_out_t *packet_out, xqc_usec_t current_time);
+
+void xqc_send_ctl_pmtud_bh_reset(xqc_send_ctl_t *send_ctl);
+
+void xqc_send_ctl_pmtud_bh_probe(xqc_send_ctl_t *send_ctl, xqc_usec_t now);
+
+void xqc_send_ctl_pmtud_bh_maybe_probe(xqc_send_ctl_t *send_ctl,
+    xqc_usec_t now);
 
 #endif /* _XQC_SEND_CTL_H_INCLUDED_ */

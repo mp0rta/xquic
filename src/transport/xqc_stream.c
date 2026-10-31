@@ -1697,6 +1697,11 @@ xqc_stream_recv(xqc_stream_t *stream, unsigned char *recv_buf, size_t recv_buf_s
             if (stream->stream_data_in.buffered_frame_count > 0) {
                 stream->stream_data_in.buffered_frame_count--;
             }
+            if (stream->stream_data_in.buffered_data_bytes >= stream_frame->data_length) {
+                stream->stream_data_in.buffered_data_bytes -= stream_frame->data_length;
+            } else {
+                stream->stream_data_in.buffered_data_bytes = 0;
+            }
             xqc_free(stream_frame->data);
             xqc_free(stream_frame);
             continue;
@@ -1725,6 +1730,11 @@ xqc_stream_recv(xqc_stream_t *stream, unsigned char *recv_buf, size_t recv_buf_s
             xqc_list_del_init(&stream_frame->sf_list);
             if (stream->stream_data_in.buffered_frame_count > 0) {
                 stream->stream_data_in.buffered_frame_count--;
+            }
+            if (stream->stream_data_in.buffered_data_bytes >= stream_frame->data_length) {
+                stream->stream_data_in.buffered_data_bytes -= stream_frame->data_length;
+            } else {
+                stream->stream_data_in.buffered_data_bytes = 0;
             }
             xqc_free(stream_frame->data);
             xqc_free(stream_frame);
@@ -1828,6 +1838,14 @@ xqc_stream_send(xqc_stream_t *stream, unsigned char *send_data, size_t send_data
                 ret = -XQC_EAGAIN;
                 goto do_buff;
             }
+        }
+
+        if (conn->conn_settings.max_stream_unsent_packets
+            && xqc_send_queue_get_unsent_packets_num(conn->conn_send_queue)
+                   >= conn->conn_settings.max_stream_unsent_packets)
+        {
+            ret = -XQC_EAGAIN;
+            goto do_buff;
         }
 
         if (!xqc_send_queue_can_write(conn->conn_send_queue)) {

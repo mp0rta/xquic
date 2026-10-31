@@ -114,6 +114,15 @@ xqc_send_queue_get_packet_out(xqc_send_queue_t *send_queue, unsigned need, xqc_p
 
     xqc_list_for_each_reverse(pos, &send_queue->sndq_send_packets) {
         packet_out = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+        /* With PMTUD, a packet that no longer fits after a black hole is
+         * dropped if it is a DATAGRAM, and resent in parts otherwise: a
+         * control frame must not share a packet with a DATAGRAM, or it
+         * would be dropped with it. */
+        if (send_queue->sndq_conn->enable_pmtud
+            && (packet_out->po_frame_types & XQC_FRAME_BIT_DATAGRAM))
+        {
+            continue;
+        }
         if (packet_out->po_pkt.pkt_type == pkt_type 
             && xqc_get_po_remained_size(packet_out) >= need)
         {
@@ -414,9 +423,9 @@ xqc_send_queue_drop_packets(xqc_connection_t *conn)
     xqc_send_queue_pre_destroy(send_queue);
 
     xqc_path_ctx_t *path = NULL;
-    xqc_list_head_t *pos, *next;
-    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
-        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+    for (path = xqc_conn_all_paths_first(conn); path != NULL;
+         path = xqc_conn_all_paths_next(conn, path))
+    {
         xqc_log(conn->log, XQC_LOG_DEBUG, "|path:%ui|ctl_bytes_in_flight:%ui|",
                 path->path_id, path->path_send_ctl->ctl_bytes_in_flight);
 

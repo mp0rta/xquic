@@ -1143,6 +1143,8 @@ static struct {
     size_t          leaf_len;
     xqc_int_t       ret;        /* what cert_verify_cb returns */
     xqc_int_t       first_err;  /* first error_cb value (0 = none yet) */
+    int             failed_calls;   /* cert_verify_failed_cb calls */
+    int             failed_err;     /* its last x509_err */
 } xqc_tt_av;
 
 static xqc_int_t
@@ -1165,6 +1167,13 @@ xqc_tt_av_error_cb(xqc_int_t tls_err, void *user_data)
     if (xqc_tt_av.first_err == 0) {
         xqc_tt_av.first_err = tls_err;
     }
+}
+
+static void
+xqc_tt_av_cert_verify_failed_cb(int x509_err, void *user_data)
+{
+    xqc_tt_av.failed_calls++;
+    xqc_tt_av.failed_err = x509_err;
 }
 
 /* DER of ./server.crt, the certificate ctx_svr serves. 0 on failure. */
@@ -1212,6 +1221,7 @@ xqc_tt_av_handshake(uint8_t cert_verify_flag, xqc_bool_t with_cb, xqc_bool_t *co
     xqc_tls_callbacks_t cbs = tls_test_cbs;
     cbs.cert_verify_cb = with_cb ? xqc_tt_av_cert_verify_cb : NULL;
     cbs.error_cb = xqc_tt_av_error_cb;
+    cbs.cert_verify_failed_cb = xqc_tt_av_cert_verify_failed_cb;
     def_engine_ssl_config_cli;
     xqc_tls_ctx_t *ctx = xqc_tls_ctx_create(XQC_TLS_TYPE_CLIENT, &engine_ssl_config_cli,
                                             &cbs, test_log);
@@ -1327,6 +1337,61 @@ xqc_test_tls_app_verify()
     CU_ASSERT(xqc_tt_av.calls == 1);
     CU_ASSERT(xqc_tt_av.n_certs == 1);
     CU_ASSERT(xqc_tt_av.first_err == 0);
+}
+
+/* ---- cert_verify_failed_cb: notify only, library-side rejections only ---- */
+
+void
+xqc_test_tls_cert_verify_failed_notify()
+{
+    xqc_bool_t completed = XQC_FALSE;
+
+    /* 1. NEED_VERIFY rejects the self-signed server.crt inside the library:
+     *    notified once, with the X509 error that caused it. */
+    memset(&xqc_tt_av, 0, sizeof(xqc_tt_av));
+    xqc_tt_av.ret = XQC_OK;
+    CU_ASSERT(xqc_tt_av_handshake(XQC_TLS_CERT_FLAG_NEED_VERIFY, XQC_TRUE,
+                                  &completed) != XQC_OK);
+    CU_ASSERT(completed == XQC_FALSE);
+    CU_ASSERT(xqc_tt_av.failed_calls == 1);
+    CU_ASSERT(xqc_tt_av.failed_err == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT);
+
+    /* 2. a rejection the legacy path routes through cert_verify_cb is still
+     *    the library-side path rejecting: notified once */
+    memset(&xqc_tt_av, 0, sizeof(xqc_tt_av));
+    xqc_tt_av.ret = -XQC_TLS_INTERNAL;
+    CU_ASSERT(xqc_tt_av_handshake(
+        XQC_TLS_CERT_FLAG_NEED_VERIFY | XQC_TLS_CERT_FLAG_ALLOW_SELF_SIGNED,
+        XQC_TRUE, &completed) != XQC_OK);
+    CU_ASSERT(xqc_tt_av.calls == 1);
+    CU_ASSERT(xqc_tt_av.failed_calls == 1);
+    CU_ASSERT(xqc_tt_av.failed_err == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT);
+
+    /* 3. a tolerated error (ALLOW_SELF_SIGNED, accepted) is not a rejection */
+    memset(&xqc_tt_av, 0, sizeof(xqc_tt_av));
+    xqc_tt_av.ret = XQC_OK;
+    CU_ASSERT(xqc_tt_av_handshake(
+        XQC_TLS_CERT_FLAG_NEED_VERIFY | XQC_TLS_CERT_FLAG_ALLOW_SELF_SIGNED,
+        XQC_TRUE, &completed) == XQC_OK);
+    CU_ASSERT(completed == XQC_TRUE);
+    CU_ASSERT(xqc_tt_av.failed_calls == 0);
+
+    /* 4. verification off (ALLOW_SELF_SIGNED alone, verify_mode NONE): never */
+    memset(&xqc_tt_av, 0, sizeof(xqc_tt_av));
+    xqc_tt_av.ret = -XQC_TLS_INTERNAL;
+    CU_ASSERT(xqc_tt_av_handshake(XQC_TLS_CERT_FLAG_ALLOW_SELF_SIGNED, XQC_TRUE,
+                                  &completed) == XQC_OK);
+    CU_ASSERT(completed == XQC_TRUE);
+    CU_ASSERT(xqc_tt_av.failed_calls == 0);
+
+    /* 5. APP_VERIFY: the application decided and already knows */
+    memset(&xqc_tt_av, 0, sizeof(xqc_tt_av));
+    xqc_tt_av.ret = -XQC_TLS_INTERNAL;
+    CU_ASSERT(xqc_tt_av_handshake(
+        XQC_TLS_CERT_FLAG_NEED_VERIFY | XQC_TLS_CERT_FLAG_APP_VERIFY,
+        XQC_TRUE, &completed) != XQC_OK);
+    CU_ASSERT(xqc_tt_av.calls == 1);
+    CU_ASSERT(xqc_tt_av.failed_calls == 0);
 }
 
 void xqc_test_destroy_tls_ctx()
@@ -2059,7 +2124,8 @@ xqc_test_tls(void)
     xqc_test_tls_process_truncated_crypto_handshake();
     xqc_test_tls_failure();
     xqc_test_tls_app_verify();
-    
+    xqc_test_tls_cert_verify_failed_notify();
+
     xqc_test_destroy_tls_ctx();
     xqc_free(test_log);
 }

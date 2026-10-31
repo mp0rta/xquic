@@ -95,6 +95,9 @@ allocation snapshot.
 5. Verify the result with `git branch --show-current`. The prefix must match
    the accepted task type; the four prefixes are not interchangeable, and an
    unlisted prefix such as `feat/` does not satisfy the contribution guide.
+   For work based on `mqvpn-main` or `mqvpn-dev`, the conventional prefixes
+   already in use here (`feat/`, `chore/`, `refactor/`) are accepted as a
+   fork-local exception.
    Confirm that the new branch started at the refreshed remote-tracking SHA.
 6. If the current branch contains unrelated local changes, preserve them and
    isolate the task in a separate worktree or clean checkout instead of

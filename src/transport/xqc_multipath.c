@@ -249,6 +249,12 @@ xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid, xqc_cid_t *dcid, uint64
     }
     xqc_memzero(path, sizeof(xqc_path_ctx_t));
 
+    /* xqc_path_destroy() on the error path below empties these lists */
+    for (xqc_send_type_t type = 0; type < XQC_SEND_TYPE_N; type++) {
+        xqc_init_list_head(&path->path_schedule_buf[type]);
+    }
+    xqc_init_list_head(&path->path_reinj_tmp_buf);
+
     path->path_state = XQC_PATH_STATE_INIT;
     path->parent_conn = conn;
     path->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
@@ -269,11 +275,6 @@ xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid, xqc_cid_t *dcid, uint64
     if (path->path_send_ctl == NULL) {
         goto err;
     }
-
-    for (xqc_send_type_t type = 0; type < XQC_SEND_TYPE_N; type++) {
-        xqc_init_list_head(&path->path_schedule_buf[type]);
-    }
-    xqc_init_list_head(&path->path_reinj_tmp_buf);
 
     /* cid & path_id init */
     if (scid == NULL) {
@@ -308,7 +309,12 @@ xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid, xqc_cid_t *dcid, uint64
     xqc_cid_set_update_state(&conn->scid_set, path_id, XQC_CID_SET_USED);
 
     path->path_create_time = xqc_monotonic_timestamp();
-    path->curr_pkt_out_size = conn->pkt_out_size;
+    /* PMTUD: a new path starts from the base size, which every path is
+     * expected to carry, not from what another path was found to carry */
+    path->curr_pkt_out_size = conn->enable_pmtud
+                              ? xqc_min(conn->pkt_out_size,
+                                        conn->conn_settings.max_pkt_out_size)
+                              : conn->pkt_out_size;
     path->path_max_pkt_out_size = conn->max_pkt_out_size;
 
     /* insert path to conn_paths_list */
@@ -936,6 +942,15 @@ xqc_path_closed(xqc_path_ctx_t *path)
         xqc_timer_unset(&path->path_send_ctl->path_timer_manager, i);
     }
 
+    /* Nothing is sent on a closed path (xqc_packet_out_on_specific_path):
+     * hand back anything still scheduled on it, then move it off
+     * conn_paths_list, which the per-packet code walks. */
+    for (xqc_send_type_t type = 0; type < XQC_SEND_TYPE_N; type++) {
+        xqc_path_send_buffer_clear(conn, path, NULL, type);
+    }
+    xqc_list_del_init(&path->path_list);
+    xqc_list_add_tail(&path->path_list, &conn->conn_closed_paths_list);
+
     /* remove path notify */
     if (conn->transport_cbs.path_removed_notify) {
         conn->transport_cbs.path_removed_notify(&conn->scid_set.user_scid, path->path_id,
@@ -1143,6 +1158,7 @@ xqc_int_t
 xqc_conn_init_paths_list(xqc_connection_t *conn)
 {
     xqc_init_list_head(&conn->conn_paths_list);
+    xqc_init_list_head(&conn->conn_closed_paths_list);
 
     conn->conn_initial_path = xqc_conn_create_path_inner(conn,
                                                          &conn->scid_set.user_scid,
@@ -1166,17 +1182,48 @@ xqc_conn_destroy_paths_list(xqc_connection_t *conn)
         path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
         xqc_path_destroy(path);
     }
+
+    xqc_list_for_each_safe(pos, next, &conn->conn_closed_paths_list) {
+        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+        xqc_path_destroy(path);
+    }
+}
+
+static xqc_path_ctx_t *
+xqc_conn_all_paths_at(xqc_connection_t *conn, xqc_list_head_t *node)
+{
+    if (node == &conn->conn_paths_list) {
+        node = conn->conn_closed_paths_list.next;
+    }
+
+    if (node == &conn->conn_closed_paths_list) {
+        return NULL;
+    }
+
+    return xqc_list_entry(node, xqc_path_ctx_t, path_list);
+}
+
+xqc_path_ctx_t *
+xqc_conn_all_paths_first(xqc_connection_t *conn)
+{
+    return xqc_conn_all_paths_at(conn, conn->conn_paths_list.next);
+}
+
+xqc_path_ctx_t *
+xqc_conn_all_paths_next(xqc_connection_t *conn, xqc_path_ctx_t *path)
+{
+    return xqc_conn_all_paths_at(conn, path->path_list.next);
 }
 
 xqc_path_ctx_t *
 xqc_conn_find_path_by_path_id(xqc_connection_t *conn, uint64_t path_id)
 {
-    xqc_path_ctx_t *path = NULL;
-    xqc_list_head_t *pos, *next;
+    xqc_path_ctx_t *path;
 
-    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
-        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
-
+    /* the live paths come first: the lookups made per packet are for them */
+    for (path = xqc_conn_all_paths_first(conn); path != NULL;
+         path = xqc_conn_all_paths_next(conn, path))
+    {
         if (path->path_id == path_id) {
             return path;
         }
@@ -1245,13 +1292,13 @@ xqc_conn_path_metrics_print(xqc_connection_t *conn, xqc_conn_stats_t *stats)
     /* Count eligible paths first so we can allocate exactly. Eligibility =
      * ACTIVE state plus non-NULL path_send_ctl (the metrics fill dereferences
      * it). */
-    xqc_list_head_t *pos, *next;
     xqc_path_ctx_t *path = NULL;
     size_t active_count = 0;
 
-    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
-        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
-        if (path == NULL || path->path_send_ctl == NULL) {
+    for (path = xqc_conn_all_paths_first(conn); path != NULL;
+         path = xqc_conn_all_paths_next(conn, path))
+    {
+        if (path->path_send_ctl == NULL) {
             continue;
         }
         if (path->path_state >= XQC_PATH_STATE_ACTIVE) {
@@ -1274,9 +1321,10 @@ xqc_conn_path_metrics_print(xqc_connection_t *conn, xqc_conn_stats_t *stats)
     }
 
     size_t idx = 0;
-    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
-        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
-        if (path == NULL || path->path_send_ctl == NULL) {
+    for (path = xqc_conn_all_paths_first(conn); path != NULL;
+         path = xqc_conn_all_paths_next(conn, path))
+    {
+        if (path->path_send_ctl == NULL) {
             continue;
         }
         if (path->path_state >= XQC_PATH_STATE_ACTIVE && idx < active_count) {
@@ -1332,11 +1380,10 @@ xqc_request_path_metrics_print(xqc_connection_t *conn, xqc_h3_stream_t *h3_strea
     uint64_t aggregate_send_bytes = 0, aggregate_recv_bytes = 0;
     uint64_t standby_path_send_bytes = 0, standby_path_recv_bytes = 0;
 
-    xqc_list_head_t *pos, *next;
     xqc_path_ctx_t  *path;
-    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
-        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
-
+    for (path = xqc_conn_all_paths_first(conn); path != NULL;
+         path = xqc_conn_all_paths_next(conn, path))
+    {
         /* PR3 §4.3 Rev 4: dynamic h3 stream paths_info — look up by path_id
          * instead of indexing into a fixed array. */
         xqc_path_metrics_t *hm =
@@ -1392,7 +1439,6 @@ xqc_request_path_metrics_print(xqc_connection_t *conn, xqc_h3_stream_t *h3_strea
 void
 xqc_stream_path_metrics_print(xqc_connection_t *conn, xqc_stream_t *stream, char *buff, size_t buff_size)
 {
-    xqc_list_head_t *pos, *next;
     xqc_path_ctx_t  *path;
 
     if (!conn->enable_multipath) {
@@ -1405,9 +1451,9 @@ xqc_stream_path_metrics_print(xqc_connection_t *conn, xqc_stream_t *stream, char
     xqc_send_ctl_t *send_ctl;
 
     size_t cursor = 0, ret = 0;
-    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
-        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
-
+    for (path = xqc_conn_all_paths_first(conn); path != NULL;
+         path = xqc_conn_all_paths_next(conn, path))
+    {
         if (path->path_state >= XQC_PATH_STATE_VALIDATING) {
 
             /* check buffer size */
@@ -1818,6 +1864,7 @@ xqc_path_validate(xqc_path_ctx_t *path)
 
         /* PMTUD: launch probing immediately */
         if (conn->enable_pmtud) {
+            xqc_conn_pmtud_on_new_path(conn, path);
             conn->probing_cnt = 0;
             conn->conn_flag |= XQC_CONN_FLAG_PMTUD_PROBING;
             xqc_timer_unset(&conn->conn_timer_manager, XQC_TIMER_PMTUD_PROBING);
@@ -2156,22 +2203,33 @@ xqc_path_standby_probe(xqc_path_ctx_t *path)
 xqc_path_perf_class_t 
 xqc_path_get_perf_class(xqc_path_ctx_t *path)
 {
+    /* A closing or closed path gets the lowest class without the work
+     * below, which walks conn_paths_list again (xqc_conn_get_min_srtt).
+     * The schedulers classify every path on conn_paths_list for every
+     * packet, and a closing path stays there until it is closed (a closed
+     * path moves to conn_closed_paths_list). */
+    if (path->path_state >= XQC_PATH_STATE_CLOSING) {
+        return XQC_PATH_CLASS_STANDBY_LOW;
+    }
+
     xqc_connection_t *conn = path->parent_conn;
     xqc_scheduler_params_t *param = &conn->conn_settings.scheduler_params;
     xqc_usec_t path_srtt = xqc_send_ctl_get_srtt(path->path_send_ctl);
     xqc_usec_t min_srtt = xqc_conn_get_min_srtt(path->parent_conn, 0);
     uint64_t path_bw = xqc_send_ctl_get_est_bw(path->path_send_ctl);
     double loss_rate = xqc_path_recent_loss_rate(path);
+    unsigned pto_count =
+        xqc_send_ctl_get_effective_pto_count(path->path_send_ctl);
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|conn:%p|path_id:%ui|"
             "path_srtt:%ui|min_srtt:%ui|path_bw:%ui|loss_rate:%.2f|"
             "path_pto:%ud|", 
             conn, path->path_id, path_srtt, min_srtt, path_bw, loss_rate,
-            path->path_send_ctl->ctl_pto_count);
+            pto_count);
 
     // low 
     if (path_srtt > param->rtt_us_thr_high
-        || path->path_send_ctl->ctl_pto_count >= param->pto_cnt_thr
+        || pto_count >= param->pto_cnt_thr
         || loss_rate > param->loss_percent_thr_high) 
     {
         if (path->app_path_status == XQC_APP_PATH_STATUS_AVAILABLE) {

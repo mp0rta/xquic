@@ -115,6 +115,13 @@ xqc_packet_out_can_attach_ack(xqc_packet_out_t *po,
         return XQC_FALSE;
     }
 
+    /* PMTUD: built larger than the path is known to carry (it is not
+     * validated yet), and only its content was kept to that size: an ACK
+     * would go past it */
+    if (path->parent_conn->enable_pmtud && po->po_buf_size > path->curr_pkt_out_size) {
+        return XQC_FALSE;
+    }
+
     if (po->po_flag & XQC_POF_STREAM_NO_LEN) {
         return XQC_FALSE;
     }
@@ -807,9 +814,9 @@ error:
 }
 
 
-int
-xqc_write_pmtud_ping_to_packet(xqc_path_ctx_t *path, 
-    size_t probing_size, xqc_pkt_type_t pkt_type)
+static int
+xqc_write_pmtud_ping(xqc_path_ctx_t *path, size_t probing_size, xqc_pkt_type_t pkt_type,
+    xqc_bool_t probe_list)
 {
     int ret;
     xqc_packet_out_t *packet_out;
@@ -842,7 +849,15 @@ xqc_write_pmtud_ping_to_packet(xqc_path_ctx_t *path,
     packet_out->po_flag |= XQC_POF_PMTUD_PROBING;
     packet_out->po_max_pkt_out_size = conn->max_pkt_out_size;
 
-    xqc_send_queue_move_to_high_pri(&packet_out->po_list, conn->conn_send_queue);
+    if (probe_list) {
+        /* not held back by a congestion window full of lost packets */
+        xqc_send_queue_remove_send(&packet_out->po_list);
+        xqc_send_queue_insert_probe(&packet_out->po_list,
+                                    &conn->conn_send_queue->sndq_pto_probe_packets);
+
+    } else {
+        xqc_send_queue_move_to_high_pri(&packet_out->po_list, conn->conn_send_queue);
+    }
     return XQC_OK;
 
 error:
@@ -865,6 +880,20 @@ xqc_conn_close_wire_error_code(uint64_t err_code)
     return err_code;
 }
 
+
+int
+xqc_write_pmtud_ping_to_packet(xqc_path_ctx_t *path, 
+    size_t probing_size, xqc_pkt_type_t pkt_type)
+{
+    return xqc_write_pmtud_ping(path, probing_size, pkt_type, XQC_FALSE);
+}
+
+/* a probe at the path's current size, to check a suspected black hole */
+int
+xqc_write_pmtud_bh_probe(xqc_path_ctx_t *path, size_t probing_size)
+{
+    return xqc_write_pmtud_ping(path, probing_size, XQC_PTYPE_SHORT_HEADER, XQC_TRUE);
+}
 
 int
 xqc_write_conn_close_to_packet(xqc_connection_t *conn, uint64_t err_code)
@@ -1846,7 +1875,12 @@ xqc_get_po_remained_size(xqc_packet_out_t *po)
 size_t
 xqc_get_po_remained_size_with_ack_spc(xqc_packet_out_t *po)
 {
-    return xqc_get_po_remained_size(po) + XQC_ACK_SPACE;
+    size_t limit, used;
+
+    limit = xqc_min(po->po_buf_size + XQC_ACK_SPACE, XQC_MSS);
+    used = po->po_used_size + po->po_reserved_size;
+
+    return limit > used ? limit - used : 0;
 }
 
 xqc_int_t

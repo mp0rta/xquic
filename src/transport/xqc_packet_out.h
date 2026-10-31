@@ -15,11 +15,15 @@
  * In the absence of these mechanisms, QUIC endpoints SHOULD NOT send
  * datagrams larger than the smallest allowed maximum datagram size.
  */
-/* without XQC_EXTRA_SPACE & XQC_ACK_SPACE */
-#define XQC_MAX_PACKET_OUT_SIZE  XQC_QUIC_MAX_MSS
+/*
+ * cap on max_pkt_out_size. An ACK may spill XQC_ACK_SPACE past a packet's
+ * size, but never past XQC_MSS, so a packet at this cap carries no ACK.
+ */
+#define XQC_MAX_PACKET_OUT_SIZE  XQC_MSS
 #define XQC_PACKET_OUT_SIZE      XQC_QUIC_MIN_MSS
 #define XQC_PACKET_OUT_EXT_SPACE (XQC_TLS_AEAD_OVERHEAD_MAX_LEN + XQC_ACK_SPACE)
-#define XQC_PACKET_OUT_BUF_CAP   (XQC_MAX_PACKET_OUT_SIZE + XQC_PACKET_OUT_EXT_SPACE)
+/* a packet's contents never pass XQC_MSS, so only the AEAD tag goes on top */
+#define XQC_PACKET_OUT_BUF_CAP   (XQC_MSS + XQC_TLS_AEAD_OVERHEAD_MAX_LEN)
 
 #define XQC_MAX_STREAM_FRAME_IN_PO  3
 
@@ -108,6 +112,7 @@ typedef struct xqc_packet_out_s {
 
     /* only meaningful if it contains a DATAGRAM frame */
     uint64_t                po_dgram_id;
+    uint64_t                po_dgram_payload_size;
 
     /* WLB scheduler: flow hash for datagram flow-affinity scheduling.
      * Set by application via xqc_conn_set_dgram_flow_hash() before send. */
@@ -250,6 +255,8 @@ xqc_packet_out_t *xqc_write_one_repair_packet(xqc_connection_t *conn, xqc_int_t 
     uint8_t bm_idx);
 
 int xqc_write_pmtud_ping_to_packet(xqc_path_ctx_t *path, size_t probing_size, xqc_pkt_type_t pkt_type);
+
+int xqc_write_pmtud_bh_probe(xqc_path_ctx_t *path, size_t probing_size);
 
 xqc_int_t xqc_write_mp_new_conn_id_frame_to_packet(xqc_connection_t *conn, uint64_t retire_prior_to, uint64_t path_id);
 

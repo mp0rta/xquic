@@ -305,6 +305,15 @@ Certificate verify callback function, will be invoked on receiving peer's certif
 
 This callback function is optional.
 
+#### xqc_cert_verify_failed_notify_pt
+```
+typedef void (*xqc_cert_verify_failed_notify_pt)(int x509_err, void *conn_user_data);
+```
+Notify only, client side: invoked at most once per handshake when the library-side verification (XQC_TLS_CERT_FLAG_NEED_VERIFY without XQC_TLS_CERT_FLAG_APP_VERIFY) rejects the peer's certificate, with the X509_V_ERR_* code that caused it. It cannot change the decision; the connection closes as before. Not invoked under XQC_TLS_CERT_FLAG_APP_VERIFY or when verification is off.
+
+
+This callback function is optional.
+
 ## Data types
 ### xqc_log_callbacks_t
 xqc_log_callbacks_t is the aggregation of xquic log callback functions.

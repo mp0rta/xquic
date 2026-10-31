@@ -230,6 +230,12 @@ xqc_int_t xqc_conn_init_paths_list(xqc_connection_t *conn);
 /* destroy all the paths of the connection */
 void xqc_conn_destroy_paths_list(xqc_connection_t *conn);
 
+/* Walk every path of the connection, the closed ones included: the paths on
+ * conn_paths_list, then those on conn_closed_paths_list. The loop body must
+ * not move or free the path it is on. */
+xqc_path_ctx_t *xqc_conn_all_paths_first(xqc_connection_t *conn);
+xqc_path_ctx_t *xqc_conn_all_paths_next(xqc_connection_t *conn, xqc_path_ctx_t *path);
+
 void xqc_path_schedule_buf_destroy(xqc_path_ctx_t *path);
 void xqc_path_schedule_buf_pre_destroy(xqc_send_queue_t *send_queue, xqc_path_ctx_t *path);
 
@@ -326,6 +332,11 @@ xqc_max_path_id_validation_t xqc_validate_max_path_id(xqc_connection_t *conn,
  * give peer ~8 fresh paths per grant which matches typical XQC_MAX_PATHS
  * deployments. */
 #define XQC_MAX_PATH_ID_GRANT_INCREMENT  8
+
+/* Bound on the reciprocal MAX_PATH_ID grant when
+ * max_path_id_grant_max_value is unset. Matches the grant bound mqvpn
+ * servers set, so a client mirroring a server's grant is not limited. */
+#define XQC_MAX_PATH_ID_MIRROR_DEFAULT   128
 
 /* Evaluate whether a MAX_PATH_ID credit grant should fire on receipt of
  * PATHS_BLOCKED. Side-effects: when the grant fires, advances

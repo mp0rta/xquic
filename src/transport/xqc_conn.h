@@ -453,7 +453,14 @@ struct xqc_connection_s {
     /* for multi-path */
     xqc_multipath_mode_t enable_multipath;
     xqc_path_ctx_t *conn_initial_path;
+    /* Paths short of CLOSED. A path that reaches CLOSED moves to
+     * conn_closed_paths_list and stays there until the connection is
+     * destroyed: draft-21 forbids reusing its path ID, late ACKs can still
+     * name it, and its counters still feed the connection's statistics.
+     * The per-packet code walks conn_paths_list only, so its cost does not
+     * grow with the number of paths a long-lived connection has closed. */
     xqc_list_head_t conn_paths_list;
+    xqc_list_head_t conn_closed_paths_list;
     uint64_t validating_path_id;
     uint32_t create_path_count;
     uint32_t validated_path_count;
@@ -482,6 +489,8 @@ struct xqc_connection_s {
 
     /* for qlog */
     uint32_t MTU_updated_count;
+    /* last PMTUD black hole: probes sent before it say nothing of the path now */
+    xqc_usec_t pmtud_blackhole_time;
     uint64_t packet_dropped_count; /**< RFC 9001 §6.6: decryption failure count across all keys */
 
 
@@ -837,7 +846,7 @@ void xqc_conn_encode_transport_state(xqc_connection_t *conn, char *buf, size_t b
 static inline xqc_uint_t
 xqc_conn_get_mss(xqc_connection_t *conn)
 {
-    return conn->pkt_out_size + XQC_ACK_SPACE;
+    return xqc_min(conn->pkt_out_size + XQC_ACK_SPACE, XQC_MSS);
 }
 
 xqc_int_t xqc_conn_handle_stateless_reset(xqc_connection_t *conn,
@@ -847,6 +856,40 @@ xqc_int_t xqc_conn_handle_deprecated_stateless_reset(xqc_connection_t *conn,
                                                      const xqc_cid_t *scid);
 
 void xqc_conn_try_to_update_mss(xqc_connection_t *conn);
+
+/* PMTUD black hole (RFC 8899 s4.3): losses of packets above the base size
+ * after the last large one was acked, or PTOs while sending above it. */
+#define XQC_PMTUD_BLACKHOLE_LOSSES  3
+#define XQC_PMTUD_BLACKHOLE_PROBES  3
+/* the search stops when the size is known within this many bytes */
+#define XQC_PMTUD_SEARCH_PRECISION  4
+/* RFC 8899 s5.1.1: the probe timer MUST NOT be under 1 s (us) */
+#define XQC_PMTUD_PROBE_TIMER       (1000 * 1000)
+/* how long a search below the cap stands before the next one (us) */
+#define XQC_PMTUD_RAISE_INTERVAL    (600 * 1000000ULL)
+/* a black hole at the base size goes down to this, QUIC's minimum, when
+ * smaller packets still get through: the path is smaller than the base */
+#define XQC_PMTUD_FLOOR             XQC_QUIC_MIN_MSS
+/* the frames of a packet that is only a DATAGRAM, for the PMTUD drops */
+#define XQC_PMTUD_DGRAM_ONLY        (XQC_FRAME_BIT_DATAGRAM | XQC_FRAME_BIT_ACK \
+    | XQC_FRAME_BIT_ACK_MP | XQC_FRAME_BIT_PING | XQC_FRAME_BIT_PADDING)
+
+/* Packets above this size on @path tell whether large packets get through:
+ * the base size while above it, the floor once at or below it. */
+static inline size_t
+xqc_pmtud_big_size(xqc_connection_t *conn, size_t curr_pkt_out_size)
+{
+    size_t base = conn->conn_settings.max_pkt_out_size;
+    return curr_pkt_out_size > base || base <= XQC_PMTUD_FLOOR ? base : XQC_PMTUD_FLOOR;
+}
+
+void xqc_conn_pmtud_on_blackhole(xqc_connection_t *conn, xqc_path_ctx_t *path,
+    const char *reason);
+void xqc_conn_pmtud_on_new_path(xqc_connection_t *conn, xqc_path_ctx_t *path);
+
+xqc_int_t xqc_conn_pmtud_split_lost(xqc_connection_t *conn, xqc_packet_out_t *po);
+
+xqc_bool_t xqc_conn_pmtud_drop_oversize(xqc_connection_t *conn, xqc_packet_out_t *po);
 
 void xqc_conn_get_stats_internal(xqc_connection_t *conn, xqc_conn_stats_t *stats);
 

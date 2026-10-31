@@ -5,6 +5,8 @@ exact RFC or draft section. Otherwise write `Not applicable`. When the change
 closes an issue, add the exact standalone line `Fixes: #123`. -->
 
 - RFC or draft: `<RFC/draft section, or Not applicable>`
+- Consumer baseline: mp0rta/mqvpn@main <!-- replace with the companion mqvpn pull
+  request in owner/repo#number form while that PR is open -->
 
 ### Validation Cases
 
