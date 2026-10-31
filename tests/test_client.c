@@ -576,12 +576,27 @@ static void xqc_client_ready_to_create_path(const xqc_cid_t *cid, void *conn_use
  *         delivering for the rest of the run, XQC_TEST_SILENT_RUN_US.
  *   1301: every path stops delivering for XQC_TEST_SILENT_ALL_US, then
  *         comes back for the rest of the run, XQC_TEST_SILENT_RUN_US.
+ *
+ * Cases 1311 and 1312 run the same blackhole under the WLB scheduler, with
+ * every datagram in one pinned flow, as a tunnel sends one inner TCP flow.
+ * The client counts the packets big enough to hold a datagram that it sends
+ * on the failed path; a PING probe is much smaller.
+ *   1311: the path stops delivering for XQC_TEST_WLB_OUTAGE_US, then comes
+ *         back. WLB has evicted it by then. The outage is long enough that
+ *         the path's own PTO, backed off, comes seconds after the path
+ *         heals, so only WLB's probe can bring the path back into use soon.
+ *   1312: the path stays dead for the rest of the run. Once WLB has
+ *         evicted it, no datagram may be sent on it, as it would be lost.
  */
 #define XQC_TEST_SILENT_DGRAM_SIZE      100
 #define XQC_TEST_SILENT_WARMUP          25
 #define XQC_TEST_SILENT_MARK_US         500000
 #define XQC_TEST_SILENT_ALL_US          1000000
 #define XQC_TEST_SILENT_RUN_US          4000000
+#define XQC_TEST_WLB_OUTAGE_US          4000000
+#define XQC_TEST_WLB_FLOW_HASH          0x1311
+/* WLB evicts a path after 3 PTOs, which takes well under this long on lo */
+#define XQC_TEST_WLB_EVICTED_US         1000000
 
 typedef struct xqc_test_silent_path_s {
     xqc_usec_t  mark_time;  /* 0 until the warm-up is over */
@@ -595,14 +610,47 @@ typedef struct xqc_test_silent_path_s {
     xqc_usec_t  last_echo;
     xqc_usec_t  max_gap;    /* longest time without an echo from start */
     xqc_usec_t  resumed;    /* first echo after end */
+    /* cases 1311-1312 */
+    xqc_usec_t  back;       /* first datagram sent on the path after end */
+    size_t      lost_dgrams; /* datagrams sent on it once it was evicted */
 } xqc_test_silent_path_t;
 
 static xqc_test_silent_path_t g_silent;
 
 static int
+xqc_client_wlb_case(void)
+{
+    return g_test_case == 1311 || g_test_case == 1312;
+}
+
+static int
 xqc_client_silent_case(void)
 {
-    return g_test_case == 1300 || g_test_case == 1301;
+    return g_test_case == 1300 || g_test_case == 1301
+           || xqc_client_wlb_case();
+}
+
+/* cases 1311-1312: a packet with a datagram in it, rather than a PING
+ * probe, sent on the failed path. Called before the packet is dropped. */
+static void
+xqc_client_wlb_on_send(uint64_t path_id, size_t size)
+{
+    xqc_usec_t now = xqc_now();
+
+    if (!xqc_client_wlb_case() || g_silent.start == 0
+        || path_id != g_silent.path_id || size < XQC_TEST_SILENT_DGRAM_SIZE)
+    {
+        return;
+    }
+
+    if (g_silent.end != 0 && now >= g_silent.end) {
+        if (g_silent.back == 0) {
+            g_silent.back = now;
+        }
+
+    } else if (now >= g_silent.start + XQC_TEST_WLB_EVICTED_US) {
+        g_silent.lost_dgrams++;
+    }
 }
 
 static int
@@ -727,6 +775,10 @@ xqc_client_silent_start(xqc_usec_t now)
         return;
     }
 
+    if (g_test_case == 1311) {
+        g_silent.end = now + XQC_TEST_WLB_OUTAGE_US;
+    }
+
     for (int i = 0; i < XQC_DEMO_MAX_PATH_COUNT; i++) {
         size_t bytes = g_client_path[i].send_size - g_silent.mark[i];
         if (bytes > most) {
@@ -748,6 +800,14 @@ xqc_client_silent_report(user_conn_t *user_conn, xqc_usec_t now)
            g_silent.resumed
            ? (int64_t) (g_silent.resumed - g_silent.end) / 1000
            : (int64_t) -1);
+
+    if (xqc_client_wlb_case()) {
+        printf("[dgram]|wlb_outage|lost_dgrams:%zu|back_ms:%"PRId64"|\n",
+               g_silent.lost_dgrams,
+               g_silent.back
+               ? (int64_t) (g_silent.back - g_silent.end) / 1000
+               : (int64_t) -1);
+    }
     xqc_conn_close(ctx.engine, &user_conn->cid);
 }
 
@@ -783,6 +843,10 @@ xqc_client_silent_epoch(user_conn_t *user_conn)
 
     if (user_conn->dgram_mss >= sizeof(dgram)) {
         memset(dgram, 0x31, sizeof(dgram));
+        if (xqc_client_wlb_case()) {
+            xqc_conn_set_dgram_flow_hash(user_conn->quic_conn,
+                                         XQC_TEST_WLB_FLOW_HASH);
+        }
         if (xqc_datagram_send(user_conn->quic_conn, dgram, sizeof(dgram),
                               &dgram_id, g_dgram_qos_level) == XQC_OK)
         {
@@ -1702,7 +1766,8 @@ xqc_client_write_socket_ex(uint64_t path_id,
         return XQC_SOCKET_ERROR;
     }
 
-    /* cases 1300-1301: the packet is lost without any error */
+    /* cases 1300-1301 and 1311-1312: the packet is lost without any error */
+    xqc_client_wlb_on_send(path_id, size);
     if (xqc_client_silent_dropped(path_id)) {
         return size;
     }
@@ -5454,7 +5519,7 @@ xqc_client_socket_read_handler(user_conn_t *user_conn, int fd)
 
         if (TEST_DROP) continue;
 
-        /* cases 1300-1301 */
+        /* cases 1300-1301 and 1311-1312 */
         if (xqc_client_silent_dropped(path_id)) {
             continue;
         }
@@ -7518,6 +7583,10 @@ int main(int argc, char *argv[]) {
 
     if (g_enable_fec) {
         conn_settings.scheduler_callback = xqc_backup_fec_scheduler_cb;
+    }
+
+    if (xqc_client_wlb_case()) {
+        conn_settings.scheduler_callback = xqc_wlb_scheduler_cb;
     }
 
    if (g_token_len > 0) {
