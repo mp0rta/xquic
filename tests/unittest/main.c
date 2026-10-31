@@ -67,6 +67,7 @@
 #include "xqc_conn_reapply_test.h"
 #include "xqc_send_ctl_test.h"
 #include "xqc_pmtud_test.h"
+#include "xqc_path_requeue_test.h"
 #include "xqc_vn_test.h"
 #include "xqc_frame_type_bit_test.h"
 #include "xqc_applimit_test.h"
@@ -930,6 +931,10 @@ main(int argc, char *argv[])
                         xqc_test_pmtud_no_ack_into_packet_above_path_size)
         || !CU_add_test(pSuite, "xqc_test_pmtud_pto_copy_fits_path_size",
                         xqc_test_pmtud_pto_copy_fits_path_size)
+        || !CU_add_test(pSuite, "xqc_test_path_requeue_unacked_on_pto",
+                        xqc_test_path_requeue_unacked_on_pto)
+        || !CU_add_test(pSuite, "xqc_test_path_requeue_needs_a_working_path",
+                        xqc_test_path_requeue_needs_a_working_path)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)

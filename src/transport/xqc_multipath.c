@@ -807,6 +807,57 @@ xqc_path_move_unack_packets_from_conn(xqc_path_ctx_t *path, xqc_connection_t *co
     }
 }
 
+/* A path that times out XQC_PATH_REQUEUE_PTO_THRESH times in a row while
+ * another path still works has most likely stopped delivering (an outage
+ * with the link and routes up). Nothing it sent can be declared lost by the
+ * usual thresholds, since those need an ACK of a later packet on the same
+ * path, and its PTO probes go down the same dead path. Until the path comes
+ * back, the receiver then waits for every STREAM frame that was in flight
+ * on it, and the stream stalls on the paths that work. Move the path's
+ * unacknowledged packets to the lost queue now, so that their data is sent
+ * again on the paths that work, as when a path is frozen. */
+void
+xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path)
+{
+    xqc_connection_t *conn = path->parent_conn;
+    xqc_list_head_t *pos, *next;
+    xqc_path_ctx_t *other;
+    unsigned pto_count;
+
+    if (!conn->enable_multipath || path->path_state != XQC_PATH_STATE_ACTIVE) {
+        return;
+    }
+
+    /* Called before the PTO that just expired is counted. Only PTOs that
+     * fired count here, not those hidden by sends
+     * (xqc_send_ctl_get_effective_pto_count): once nothing is in flight the
+     * schedulers fall back to ctl_pto_count, which must then be high enough
+     * to keep the path out of use, or the data would go straight back to
+     * it. */
+    pto_count = path->path_send_ctl->ctl_pto_count + 1;
+    if (pto_count < XQC_PATH_REQUEUE_PTO_THRESH) {
+        return;
+    }
+
+    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
+        other = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+        if (other != path
+            && other->path_state == XQC_PATH_STATE_ACTIVE
+            && other->app_path_status != XQC_APP_PATH_STATUS_FROZEN
+            && !(other->path_flag & XQC_PATH_FLAG_SOCKET_ERROR)
+            && xqc_send_ctl_get_effective_pto_count(other->path_send_ctl)
+               < XQC_PATH_REQUEUE_PTO_THRESH)
+        {
+            xqc_log(conn->log, XQC_LOG_INFO,
+                    "|path:%ui|pto_count:%ud|inflight:%ud|requeue unacked|",
+                    path->path_id, pto_count,
+                    path->path_send_ctl->ctl_bytes_in_flight);
+            xqc_path_move_unack_packets_from_conn(path, conn);
+            return;
+        }
+    }
+}
+
 void
 xqc_set_path_state(xqc_path_ctx_t *path, xqc_path_state_t dst_state)
 {
