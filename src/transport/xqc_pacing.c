@@ -153,9 +153,22 @@ xqc_pacing_can_write(xqc_pacing_t *pacing, uint32_t total_bytes)
     return TRUE;
 }
 
+/*
+ * Restart an app-limited sender from a small burst, but never from less than
+ * one timer granularity of data at the pacing rate. Once the credit is spent,
+ * xqc_pacing_time_until_send() waits at least XQC_PACING_DELAY_US, so a credit
+ * below what the rate sends in that time stalls the sender for the whole wait
+ * as soon as more than the credit is queued. While the pacing rate is below
+ * about 115 Mbit/s the granularity term is below XQC_MAX_BURST_NUM and
+ * nothing changes.
+ */
 void
 xqc_pacing_on_app_limit(xqc_pacing_t *pacing) {
-    pacing->bytes_budget = XQC_MAX_BURST_NUM;
+    uint64_t granularity_bytes =
+        xqc_pacing_rate_calc(pacing) * XQC_PACING_DELAY_US / 1000000;
+
+    pacing->bytes_budget = (uint32_t)xqc_min(
+        xqc_max(granularity_bytes, (uint64_t)XQC_MAX_BURST_NUM), (uint64_t)UINT32_MAX);
     pacing->last_sent_time = xqc_monotonic_timestamp();
 }
 

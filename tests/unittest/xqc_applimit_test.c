@@ -22,6 +22,8 @@
 #include "src/transport/xqc_send_ctl.h"
 #include "src/transport/xqc_send_queue.h"
 #include "src/transport/xqc_timer.h"
+#include "src/transport/xqc_pacing.h"
+#include "src/congestion_control/xqc_bbr.h"
 #include "xqc_common_test.h"
 #include "xqc_test_helpers.h"
 #include "xqc_applimit_test.h"
@@ -454,6 +456,37 @@ xqc_test_applimit_pacer_untouched(void)
     xqc_conn_check_app_limit(conn);
     CU_ASSERT_NOT_EQUAL(pacing->bytes_budget, 1234);
     CU_ASSERT_NOT_EQUAL(pacing->last_sent_time, 42);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/*
+ * T7. The write-time check restarts the pacer with at least one timer
+ * granularity of data at the pacing rate: once the credit is spent the pacer
+ * waits at least XQC_PACING_DELAY_US (1 ms), so a 10-packet credit at
+ * 10 Gbit/s stalled the sender for a millisecond every time it went idle.
+ * Below ~115 Mbit/s the 10-packet floor still applies.
+ */
+void
+xqc_test_applimit_pacer_restart_credit(void)
+{
+    xqc_connection_t *conn = applimit_conn_create(NULL);
+    xqc_send_ctl_t   *ctl = conn->conn_initial_path->path_send_ctl;
+    xqc_pacing_t     *pacing = &ctl->ctl_pacing;
+    xqc_bbr_t        *bbr = (xqc_bbr_t *)ctl->ctl_cong;
+
+    /* 10 Gbit/s: one millisecond is 1.25 MB */
+    bbr->pacing_rate = 1250000000;
+    xqc_conn_check_app_limit(conn);
+    CU_ASSERT(ctl->ctl_app_limited > 0);
+    CU_ASSERT_EQUAL(pacing->bytes_budget, 1250000);
+
+    /* 8 Mbit/s: one millisecond is 1000 bytes, below the 10-packet floor */
+    ctl->ctl_app_limited = 0;
+    bbr->pacing_rate = 1000000;
+    xqc_conn_check_app_limit(conn);
+    CU_ASSERT(ctl->ctl_app_limited > 0);
+    CU_ASSERT_EQUAL(pacing->bytes_budget, 10 * XQC_MSS);
 
     xqc_engine_destroy(conn->engine);
 }
