@@ -143,14 +143,13 @@ grep_err_log
 
 # 727 happy path: default cap, lossy echo transfer completes and the cap
 # machinery stays quiet (no buffered-count rejections logged).
-# -t is an idle limit, longer than the server PTO after a lossy first handshake.
 case_fork_core_stream_reassembly_cap_happy()
 {
 rm -rf tp_localhost test_session xqc_token
 case_test_start_server ${SERVER_BIN} -l d -e > /dev/null
 clear_log
 echo -e "stream reassembly cap happy path ...\c"
-result=`${CLIENT_BIN} -s 2048000 -l d -t 30 -E -d 300 -x 727|grep ">>>>>>>> pass:1"`
+result=`${CLIENT_BIN} -s 2048000 -l d -t 5 -E -d 300 -x 727|grep ">>>>>>>> pass:1"`
 cap_hit=`grep "stream frame buffered count exceed" slog`
 if [ -n "$result" ] && [ -z "$cap_hit" ]; then
     echo ">>>>>>>> pass:1"
