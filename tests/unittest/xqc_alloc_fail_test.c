@@ -17,6 +17,8 @@
 #include "xquic/xquic.h"
 #include "src/common/xqc_time.h"
 #include "xqc_alloc_fail_test.h"
+#include "src/http3/qpack/xqc_qpack.h"
+#include "src/transport/xqc_engine.h"
 
 #ifdef XQC_TEST_ALLOC_WRAP
 
@@ -289,3 +291,82 @@ xqc_test_conn_destroy_frees_crypto_data(void)
 }
 
 #endif
+
+
+#ifdef XQC_TEST_ALLOC_WRAP
+
+static xqc_var_buf_t *
+xqc_test_af_qpack_get_buf(xqc_qpack_ins_type_t type, void *user_data)
+{
+    return NULL;
+}
+
+static ssize_t
+xqc_test_af_qpack_write_ins(xqc_qpack_ins_type_t type, xqc_var_buf_t *buf,
+    void *user_data)
+{
+    return 0;
+}
+
+/*
+ * Make the chunks that malloc hands out next hold garbage, as reused
+ * memory does: a field the caller does not set is then not NULL.
+ */
+static void
+xqc_test_af_dirty_heap(void)
+{
+    size_t  size;
+    void   *chunk[64];
+
+    for (size = 8; size <= 512; size += 8) {
+        chunk[size / 8 - 1] = malloc(size);
+        if (chunk[size / 8 - 1] != NULL) {
+            memset(chunk[size / 8 - 1], 0xbe, size);
+        }
+    }
+
+    for (size = 8; size <= 512; size += 8) {
+        free(chunk[size / 8 - 1]);
+    }
+}
+
+#endif
+
+/*
+ * Every allocation that xqc_qpack_create() makes, failed in turn: the
+ * creation fails, and what it created so far is freed, with nothing else.
+ */
+void
+xqc_test_qpack_create_alloc_failures(void)
+{
+#ifdef XQC_TEST_ALLOC_WRAP
+    long                n;
+    xqc_qpack_t        *qpk;
+    xqc_engine_t       *engine;
+    xqc_qpack_ins_cb_t  ins_cb = {
+        .get_buf_cb = xqc_test_af_qpack_get_buf,
+        .write_ins_cb = xqc_test_af_qpack_write_ins,
+    };
+
+    engine = xqc_test_af_engine(XQC_ENGINE_CLIENT);
+    CU_ASSERT_FATAL(engine != NULL);
+
+    for (n = 1; n < 1000; n++) {
+        xqc_test_af_dirty_heap();
+        g_alloc_failed = 0;
+        g_alloc_fail_at = n;
+        g_alloc_count = 0;
+        qpk = xqc_qpack_create(16 * 1024, 16 * 1024, engine->log, &ins_cb, NULL);
+        g_alloc_count = -1;
+
+        CU_ASSERT((qpk == NULL) == (g_alloc_failed == 1));
+        xqc_qpack_destroy(qpk);
+        if (!g_alloc_failed) {
+            break;
+        }
+    }
+    CU_ASSERT(n > 1);
+
+    xqc_engine_destroy(engine);
+#endif
+}

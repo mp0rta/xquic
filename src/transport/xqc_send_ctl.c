@@ -213,6 +213,8 @@ xqc_send_ctl_reset(xqc_send_ctl_t *send_ctl)
 
     send_ctl->ctl_pto_count = 0;
     send_ctl->ctl_largest_big_acked = 0;
+    xqc_memzero(send_ctl->ctl_spill_acked, sizeof(send_ctl->ctl_spill_acked));
+    send_ctl->ctl_spill_acked_curr = 0;
     xqc_send_ctl_pmtud_bh_reset(send_ctl);
     send_ctl->ctl_minrtt = XQC_MAX_UINT32_VALUE;
     send_ctl->ctl_srtt = conn->conn_settings.initial_rtt;
@@ -571,19 +573,36 @@ xqc_send_queue_maybe_remove_unacked(xqc_packet_out_t *packet_out, xqc_send_queue
 void
 xqc_send_ctl_on_reset_stream_acked(xqc_send_ctl_t *send_ctl, xqc_packet_out_t *packet_out)
 {
-    if (packet_out->po_frame_types & XQC_FRAME_BIT_RESET_STREAM) {
-        xqc_stream_t *stream;
-        for (int i = 0; i < XQC_MAX_STREAM_FRAME_IN_PO; i++) {
-            if (packet_out->po_stream_frames[i].ps_is_used == 0) {
-                break;
+    xqc_connection_t *conn = send_ctl->ctl_conn;
+    if (!(packet_out->po_frame_types
+          & (XQC_FRAME_BIT_RESET_STREAM | XQC_FRAME_BIT_RESET_STREAM_AT)))
+    {
+        return;
+    }
+
+    for (int i = 0; i < XQC_MAX_STREAM_FRAME_IN_PO; i++) {
+        xqc_po_stream_frame_t *frame = &packet_out->po_stream_frames[i];
+        if (!frame->ps_is_used) {
+            break;
+        }
+        xqc_stream_t *stream = xqc_find_stream_by_id(frame->ps_stream_id,
+                                                     conn->streams_hash);
+        if (stream == NULL) {
+            continue;
+        }
+        if (frame->ps_is_reset_at) {
+            if (conn->conn_state < XQC_CONN_STATE_CLOSING) {
+                xqc_stream_on_reset_at_acked(stream,
+                                             frame->ps_reset_at_size);
             }
-            stream = xqc_find_stream_by_id(packet_out->po_stream_frames[i].ps_stream_id, send_ctl->ctl_conn->streams_hash);
-            if (stream != NULL && packet_out->po_stream_frames[i].ps_is_reset) {
-                if (stream->stream_state_send == XQC_SEND_STREAM_ST_RESET_SENT) {
-                    xqc_stream_send_state_update(stream, XQC_SEND_STREAM_ST_RESET_RECVD);
-                    xqc_stream_maybe_need_close(stream);
-                }
-            }
+
+        } else if (frame->ps_is_reset
+                   && stream->stream_state_send
+                       == XQC_SEND_STREAM_ST_RESET_SENT)
+        {
+            xqc_stream_send_state_update(stream,
+                                         XQC_SEND_STREAM_ST_RESET_RECVD);
+            xqc_stream_maybe_need_close(stream);
         }
     }
 }
@@ -630,6 +649,11 @@ xqc_send_ctl_decrease_inflight(xqc_connection_t *conn, xqc_packet_out_t *packet_
             send_ctl->ctl_bytes_ack_eliciting_inflight[packet_out->po_pkt.pkt_pns] = xqc_uint32_bounded_subtract(send_ctl->ctl_bytes_ack_eliciting_inflight[packet_out->po_pkt.pkt_pns], packet_out->po_used_size);
             send_ctl->ctl_bytes_in_flight = xqc_uint32_bounded_subtract(send_ctl->ctl_bytes_in_flight, packet_out->po_used_size);
             packet_out->po_flag &= ~XQC_POF_IN_FLIGHT;
+            if (packet_out->po_flag & XQC_POF_INFLIGHT_CANCELED) {
+                /* Cancelled packets can not be acked. It could lead to bw under-estimation because of no enough application data. Therefore, we should mark the path as application limited. */
+                send_ctl->ctl_app_limited = (send_ctl->ctl_delivered + send_ctl->ctl_bytes_in_flight) ? (send_ctl->ctl_delivered + send_ctl->ctl_bytes_in_flight) : 1;
+                packet_out->po_flag &= ~XQC_POF_INFLIGHT_CANCELED;
+            }
         }
     }
 }
@@ -945,6 +969,12 @@ xqc_send_ctl_on_ack_received(xqc_send_ctl_t *send_ctl, xqc_pn_ctl_t *pn_ctl, xqc
 
             path_largest_pkt_num = packet_out->po_pkt.pkt_num;
 
+            if (pns == XQC_PNS_APP_DATA) {
+                xqc_conn_on_key_phase_acked(send_ctl->ctl_path,
+                                            packet_out->po_pkt.pkt_num,
+                                            ack_recv_time);
+            }
+
             // 更新ctl_largest_acked
             // 若ack info里此路径最大pn大于path largest acked，更新 largest acked
             if (packet_out->po_pkt.pkt_num > send_ctl->ctl_largest_acked[pns] ||
@@ -1231,11 +1261,12 @@ xqc_send_ctl_update_rtt(xqc_send_ctl_t *send_ctl, xqc_usec_t *latest_rtt, xqc_us
             ack_delay = xqc_min(ack_delay, XQC_DEFAULT_MAX_ACK_DELAY * 1000);
         }
 
-        /* Adjust for ack delay if it's plausible. */
+        /*
+         * RFC 9002 Section 5.3: do not subtract ack_delay if the result
+         * would be less than min_rtt.
+         */
         xqc_usec_t adjusted_rtt = *latest_rtt;
-        if (adjusted_rtt > ack_delay
-            && (adjusted_rtt + 1000) >= (send_ctl->ctl_minrtt + ack_delay)) 
-        {
+        if (ack_delay <= adjusted_rtt - send_ctl->ctl_minrtt) {
             adjusted_rtt -= ack_delay;
         }
 
@@ -1381,6 +1412,25 @@ xqc_loss_replay_should_suppress(xqc_connection_t *conn, xqc_packet_out_t *po)
 /**
  * DetectAndRemoveLostPackets + OnPacketsLost
  */
+
+/* The largest packet number acked among large packets at least as large as
+ * size. Above the current size, the ACK room has one entry per byte; they
+ * start over when the current size changes. */
+static xqc_packet_number_t
+xqc_send_ctl_pmtud_acked_above(xqc_send_ctl_t *send_ctl, size_t size)
+{
+    size_t curr = send_ctl->ctl_path->curr_pkt_out_size;
+
+    if (send_ctl->ctl_spill_acked_curr != curr) {
+        xqc_memzero(send_ctl->ctl_spill_acked, sizeof(send_ctl->ctl_spill_acked));
+        send_ctl->ctl_spill_acked_curr = curr;
+    }
+    if (size <= curr) {
+        return send_ctl->ctl_largest_big_acked;
+    }
+    return send_ctl->ctl_spill_acked[xqc_min(size - curr, XQC_ACK_SPACE) - 1];
+}
+
 void
 xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue, xqc_pkt_num_space_t pns, xqc_usec_t now)
 {
@@ -1498,11 +1548,15 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                     && send_ctl->ctl_bh_suspect_time == 0
                     && po->po_used_size > xqc_pmtud_big_size(conn,
                                               send_ctl->ctl_path->curr_pkt_out_size)
-                    && po->po_pkt.pkt_num > send_ctl->ctl_largest_big_acked
-                    && ++send_ctl->ctl_big_lost_cnt >= XQC_PMTUD_BLACKHOLE_LOSSES)
+                    && po->po_pkt.pkt_num
+                       > xqc_send_ctl_pmtud_acked_above(send_ctl, po->po_used_size))
                 {
-                    send_ctl->ctl_bh_suspect_time = now;
-                    send_ctl->ctl_bh_probe_time = now;
+                    send_ctl->ctl_big_lost_size =
+                        xqc_max(send_ctl->ctl_big_lost_size, po->po_used_size);
+                    if (++send_ctl->ctl_big_lost_cnt >= XQC_PMTUD_BLACKHOLE_LOSSES) {
+                        send_ctl->ctl_bh_suspect_time = now;
+                        send_ctl->ctl_bh_probe_time = now;
+                    }
                 }
 
                 /* reinjection */
@@ -1528,26 +1582,6 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                     repair_dgram = xqc_datagram_notify_loss(conn, po);
                     if (conn->conn_settings.datagram_force_retrans_on) {
                         repair_dgram = XQC_DGRAM_RETX_ASKED_BY_APP;
-                    }
-                }
-
-                /* G-P3 (draft-21 §3.1 ¶10): bump validation-attempt counter
-                 * per loss-detected PATH_CHALLENGE; helper closes the path
-                 * at threshold. Cadence is PTO/RTT-scaled. See audit memo. */
-                if ((po->po_frame_types & XQC_FRAME_BIT_PATH_CHALLENGE)
-                    && !(po->po_path_flag & XQC_PATH_SPECIFIED_BY_PTO))
-                {
-                    /* PTO probe copies are counted by
-                     * xqc_path_validation_on_pto at PTO time; counting
-                     * their later loss declarations too would
-                     * double-count one unanswered challenge (RFC 9000
-                     * §8.2.4 wants >= 3 full cycles). */
-                    xqc_path_ctx_t *vpath =
-                        xqc_conn_find_path_by_path_id(conn, po->po_path_id);
-                    if (vpath != NULL
-                        && vpath->path_state == XQC_PATH_STATE_VALIDATING)
-                    {
-                        (void)xqc_path_validation_on_retx(vpath);
                     }
                 }
 
@@ -1838,6 +1872,7 @@ void
 xqc_send_ctl_pmtud_bh_reset(xqc_send_ctl_t *send_ctl)
 {
     send_ctl->ctl_big_lost_cnt = 0;
+    send_ctl->ctl_big_lost_size = 0;
     send_ctl->ctl_bh_suspect_time = 0;
     send_ctl->ctl_bh_probe_time = 0;
     send_ctl->ctl_bh_probes_sent = 0;
@@ -1945,11 +1980,18 @@ xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl,
 
     xqc_conn_decrease_unacked_stream_ref(send_ctl->ctl_conn, packet_out);
 
+    /* A lost RESET_STREAM_AT can still be acknowledged (-09 Section 5.3). */
+    if (packet_out->po_frame_types & XQC_FRAME_BIT_RESET_STREAM_AT) {
+        xqc_send_ctl_on_reset_stream_acked(send_ctl, packet_out);
+    }
+
     /* If a packet marked as STREAM_CLOSED, when it is acked, it comes here */
     if (packet_out->po_flag & XQC_POF_IN_FLIGHT) {
         xqc_send_ctl_decrease_inflight(send_ctl->ctl_conn, packet_out);
 
-        if (packet_out->po_frame_types & XQC_FRAME_BIT_RESET_STREAM) {
+        if ((packet_out->po_frame_types & XQC_FRAME_BIT_RESET_STREAM)
+            && !(packet_out->po_frame_types & XQC_FRAME_BIT_RESET_STREAM_AT))
+        {
             xqc_send_ctl_on_reset_stream_acked(send_ctl, packet_out);
         }
 
@@ -1982,17 +2024,39 @@ xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl,
         }
 
         /* a large packet got through, of any kind, a probe included (its
-         * PING is small, its size is the padded buffer): no black hole */
+         * PING is small, its size is the padded buffer): no black hole,
+         * if it was as large as the large packets lost since the last one.
+         * A full packet without an ACK frame is 16 bytes (XQC_ACK_SPACE)
+         * below one with it, and gets through a path that shrank by less:
+         * it must not hide the loss of the larger ones. */
         if (do_cc && packet_out->po_pkt.pkt_pns == XQC_PNS_APP_DATA) {
             size_t curr = send_ctl->ctl_path->curr_pkt_out_size;
             size_t big = xqc_pmtud_big_size(conn, curr);
-            if ((packet_out->po_used_size > big
-                 || ((packet_out->po_flag & XQC_POF_PMTUD_PROBING)
-                     && packet_out->po_buf_size > big))
-                && packet_out->po_pkt.pkt_num > send_ctl->ctl_largest_big_acked)
+            size_t size = packet_out->po_used_size;
+            if ((packet_out->po_flag & XQC_POF_PMTUD_PROBING)
+                && packet_out->po_buf_size > size)
             {
-                send_ctl->ctl_largest_big_acked = packet_out->po_pkt.pkt_num;
-                xqc_send_ctl_pmtud_bh_reset(send_ctl);
+                size = packet_out->po_buf_size;
+            }
+            xqc_packet_number_t pn = packet_out->po_pkt.pkt_num;
+            if (size > big) {
+                /* newer than the last ack of a packet at least as large */
+                xqc_bool_t newer =
+                    pn > xqc_send_ctl_pmtud_acked_above(send_ctl, size);
+                if (size > curr) {
+                    size_t n = xqc_min(size - curr, XQC_ACK_SPACE);
+                    for (size_t i = 0; i < n; i++) {
+                        if (pn > send_ctl->ctl_spill_acked[i]) {
+                            send_ctl->ctl_spill_acked[i] = pn;
+                        }
+                    }
+                }
+                if (pn > send_ctl->ctl_largest_big_acked) {
+                    send_ctl->ctl_largest_big_acked = pn;
+                }
+                if (newer && size >= send_ctl->ctl_big_lost_size) {
+                    xqc_send_ctl_pmtud_bh_reset(send_ctl);
+                }
             }
         }
 
@@ -2010,6 +2074,34 @@ xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl,
     packet_out->po_acked = 1;
     if (packet_out->po_origin) {
         packet_out->po_origin->po_acked = 1;
+    }
+
+    /* reliable-stream-reset-09 Sections 3 and 5.3: only peers advertising
+       reset support need prefix ACK tracking, including before reset. */
+    if (conn->remote_settings.reset_stream_at
+        && conn->conn_state < XQC_CONN_STATE_CLOSING)
+    {
+        for (int i = 0; i < packet_out->po_stream_frames_idx; i++) {
+            xqc_po_stream_frame_t *frame = &packet_out->po_stream_frames[i];
+            if (!frame->ps_is_used) {
+                continue;
+            }
+            stream = xqc_find_stream_by_id(frame->ps_stream_id,
+                                           conn->streams_hash);
+            if (stream == NULL) {
+                continue;
+            }
+            if (!frame->ps_is_reset && !frame->ps_is_reset_at
+                && frame->ps_length > 0)
+            {
+                if (xqc_stream_on_data_acked(stream, frame->ps_offset,
+                                             frame->ps_length) != XQC_OK)
+                {
+                    XQC_CONN_ERR(conn, TRA_INTERNAL_ERROR);
+                    return;
+                }
+            }
+        }
     }
 }
 
