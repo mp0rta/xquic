@@ -5098,6 +5098,7 @@ xqc_conn_handshake_confirmed(xqc_connection_t *conn)
     if (!(conn->conn_flag & XQC_CONN_FLAG_HANDSHAKE_CONFIRMED)) {
         xqc_log(conn->log, XQC_LOG_INFO, "|handshake confirmed|conn:%p|", conn);
         conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_CONFIRMED;
+        conn->handshake_confirmed_time = xqc_monotonic_timestamp();
         xqc_send_queue_drop_handshake_packets(conn);
     }
 
