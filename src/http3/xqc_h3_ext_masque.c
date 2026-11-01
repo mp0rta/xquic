@@ -150,17 +150,15 @@ xqc_h3_ext_capsule_decode(const uint8_t *buf, size_t buflen, uint64_t *type,
     }
     p += n;
 
-    *payload = p;
-    if (len64 > SIZE_MAX) {
+    /* RFC 9297 §3.3: verify declared length is self-consistent with buffer.
+     * Compare before adding, as the sum can wrap where size_t has 32 bits. */
+    if (len64 > (uint64_t)(end - p)) {
         return -XQC_EPARAM;
     }
+
+    *payload = p;
     *payload_len = (size_t)len64;
     *bytes_consumed = (size_t)(p - buf) + (size_t)len64;
-
-    /* RFC 9297 §3.3: verify declared length is self-consistent with buffer */
-    if (*bytes_consumed > buflen) {
-        return -XQC_EPARAM;
-    }
     return XQC_OK;
 }
 
