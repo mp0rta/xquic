@@ -1366,7 +1366,7 @@ xqc_test_0rtt_calc_pto_ignores_stale_max_ack_delay(void)
 
 /*
  * issue #672 computation-level: persistent congestion duration is another
- * ungated consumer of remote_settings.max_ack_delay. Elapsed time 200ms sits
+ * ungated consumer of remote_settings.max_ack_delay. A 200ms period sits
  * between duration(default 25ms)=129ms and duration(stale 100ms)=354ms, so
  * one boundary discriminates both behaviors.
  */
@@ -1378,19 +1378,15 @@ xqc_test_0rtt_persistent_congestion_default_max_ack_delay(void)
 
     send_ctl->ctl_srtt = 10000;
     send_ctl->ctl_rttvar = 2000;
-    send_ctl->ctl_pto_count = XQC_CONSECUTIVE_PTO_THRESH;
-
-    xqc_packet_out_t po;
-    memset(&po, 0, sizeof(po));
-    xqc_usec_t now = 1000000;
-    po.po_sent_time = now - 200000;
 
     /* (18000 + 25000) * 3 = 129000 < 200000: persistent congestion */
-    CU_ASSERT_EQUAL(xqc_send_ctl_in_persistent_congestion(send_ctl, &po, now), XQC_TRUE);
+    CU_ASSERT_EQUAL(xqc_send_ctl_in_persistent_congestion(send_ctl, 200000),
+                    XQC_TRUE);
 
     /* stale 100ms would give (18000 + 100000) * 3 = 354000 > 200000 */
     conn->remote_settings.max_ack_delay = 100;
-    CU_ASSERT_EQUAL(xqc_send_ctl_in_persistent_congestion(send_ctl, &po, now), XQC_FALSE);
+    CU_ASSERT_EQUAL(xqc_send_ctl_in_persistent_congestion(send_ctl, 200000),
+                    XQC_FALSE);
 
     xqc_engine_destroy(conn->engine);
 }

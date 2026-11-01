@@ -18,7 +18,6 @@
 #define XQC_kTimeThresholdShift             3
 #define XQC_kPersistentCongestionThreshold  3
 
-#define XQC_CONSECUTIVE_PTO_THRESH          2
 /* cap of xqc_send_ctl_get_effective_pto_count(), as the PTO backoff's */
 #define XQC_EFFECTIVE_PTO_COUNT_MAX         16
 /*
@@ -84,6 +83,10 @@ typedef struct xqc_send_ctl_s {
 
     /* sending time of largest packet */
     xqc_usec_t                  ctl_largest_acked_sent_time[XQC_PNS_N];
+
+    /* largest packet number acknowledged by the ACK frames, of any packet:
+     * ctl_largest_acked counts the packets of the unacked list only */
+    xqc_packet_number_t         ctl_largest_acked_any[XQC_PNS_N];
 
     /* largest packet number of the received packets in packet_in */
     xqc_packet_number_t         ctl_largest_received[XQC_PNS_N];
@@ -299,7 +302,8 @@ void xqc_send_ctl_on_spurious_loss_detected(xqc_send_ctl_t *send_ctl,
 
 void xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue, xqc_pkt_num_space_t pns, xqc_usec_t now);
 
-xqc_bool_t xqc_send_ctl_in_persistent_congestion(xqc_send_ctl_t *send_ctl, xqc_packet_out_t *largest_lost, xqc_usec_t now);
+xqc_bool_t xqc_send_ctl_in_persistent_congestion(xqc_send_ctl_t *send_ctl,
+    xqc_usec_t period);
 
 void xqc_send_ctl_congestion_event(xqc_send_ctl_t *send_ctl, xqc_usec_t sent_time);
 

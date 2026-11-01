@@ -857,6 +857,26 @@ main(int argc, char *argv[])
                         xqc_test_send_ctl_single_loss_does_not_reset_rtt)
         || !CU_add_test(pSuite, "xqc_test_send_ctl_persistent_congestion_no_rtt_sample_early_return",
                         xqc_test_send_ctl_persistent_congestion_no_rtt_sample_early_return)
+        /* RFC 9002 7.6.2: persistent congestion from the lost packets */
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_rfc9002_example",
+                        xqc_test_send_ctl_pc_rfc9002_example)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_acked_in_between",
+                        xqc_test_send_ctl_pc_acked_in_between)
+        || !CU_add_test(pSuite,
+                        "xqc_test_send_ctl_pc_needs_sample_and_confirmation",
+                        xqc_test_send_ctl_pc_needs_sample_and_confirmation)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_lost_close_together",
+                        xqc_test_send_ctl_pc_lost_close_together)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_loss_timer",
+                        xqc_test_send_ctl_pc_loss_timer)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_lost_pmtud_probe",
+                        xqc_test_send_ctl_pc_lost_pmtud_probe)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_per_path",
+                        xqc_test_send_ctl_pc_per_path)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_pto_copies",
+                        xqc_test_send_ctl_pc_pto_copies)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_pto_spurious",
+                        xqc_test_send_ctl_pc_pto_spurious)
         /* RFC 9000 14.4: no congestion reaction to a lost PMTU probe */
         || !CU_add_test(pSuite, "xqc_test_send_ctl_lost_pmtud_probe_no_cc_reaction",
                         xqc_test_send_ctl_lost_pmtud_probe_no_cc_reaction)
