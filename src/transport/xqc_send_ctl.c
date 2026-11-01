@@ -24,7 +24,6 @@
 #include "src/transport/xqc_multipath.h"
 #include "src/transport/xqc_frame_parser.h"
 #include "src/common/utils/vint/xqc_variable_len_int.h"
-#include "src/transport/xqc_transport_params.h"
 
 int 
 xqc_send_ctl_may_remove_unacked_dgram(xqc_connection_t *conn, xqc_packet_out_t *po)
@@ -1050,10 +1049,11 @@ xqc_send_ctl_on_ack_received(xqc_send_ctl_t *send_ctl, xqc_pn_ctl_t *pn_ctl, xqc
 
     if (update_largest_ack && has_ack_eliciting && ack_on_same_path) {
         if (!ignore_rtt) {
-            /* 更新 ctl_latest_rtt */
-            send_ctl->ctl_latest_rtt = ack_recv_time - send_ctl->ctl_largest_acked_sent_time[pns];
+            xqc_usec_t sent_time = send_ctl->ctl_largest_acked_sent_time[pns];
+            xqc_usec_t latest_rtt = ack_recv_time - sent_time;
             /* 更新rtt */
-            xqc_send_ctl_update_rtt(send_ctl, &send_ctl->ctl_latest_rtt, ack_info->ack_delay);
+            xqc_send_ctl_update_rtt(send_ctl, &latest_rtt, ack_info->ack_delay,
+                                    ack_recv_time);
 
         } else {
             xqc_log(conn->log, XQC_LOG_DEBUG, "|ignore_rtt:%ui|", ack_recv_time - send_ctl->ctl_largest_acked_sent_time[pns]);
@@ -1226,14 +1226,42 @@ xqc_send_ctl_latest_rtt_tracking(xqc_send_ctl_t *send_ctl, xqc_usec_t *latest_rt
  * UpdateRtt
  */
 void
-xqc_send_ctl_update_rtt(xqc_send_ctl_t *send_ctl, xqc_usec_t *latest_rtt, xqc_usec_t ack_delay)
+xqc_send_ctl_update_rtt(xqc_send_ctl_t *send_ctl, xqc_usec_t *latest_rtt,
+    xqc_usec_t ack_delay, xqc_usec_t ack_recv_time)
 {
     xqc_connection_t *conn = send_ctl->ctl_conn;
+    xqc_bool_t hsk_confirmed;
 
     xqc_log(send_ctl->ctl_conn->log, XQC_LOG_DEBUG,
             "|before update rtt|conn:%p|srtt:%ui|rttvar:%ui|minrtt:%ui|latest_rtt:%ui|ack_delay:%ui|",
             send_ctl->ctl_conn, send_ctl->ctl_srtt, send_ctl->ctl_rttvar, send_ctl->ctl_minrtt, *latest_rtt, ack_delay);
 
+    /*
+     * RFC 9002 5.3: the peer's max_ack_delay only applies once the
+     * handshake is confirmed. Until then the peer may hold packets that it
+     * cannot decrypt yet and report the wait in ack_delay (RFC 9000 13.2.1
+     * and 13.2.5), so capping ack_delay would add the wait to the RTT. The
+     * ACK's arrival decides: a server reads the 1-RTT packets that came
+     * during the handshake only after it confirmed the handshake.
+     */
+    hsk_confirmed = xqc_conn_is_handshake_confirmed(conn)
+                    && ack_recv_time > conn->handshake_confirmed_time;
+
+    /*
+     * RFC 9002 5.3: before confirmation, ignore a sample that ack_delay
+     * would take below min_rtt instead of using it whole.
+     */
+    if (!hsk_confirmed && send_ctl->ctl_first_rtt_sample_time != 0
+        && *latest_rtt >= send_ctl->ctl_minrtt
+        && *latest_rtt - send_ctl->ctl_minrtt < ack_delay)
+    {
+        xqc_log(conn->log, XQC_LOG_DEBUG,
+                "|ignore rtt sample|latest_rtt:%ui|minrtt:%ui|ack_delay:%ui|",
+                *latest_rtt, send_ctl->ctl_minrtt, ack_delay);
+        return;
+    }
+
+    send_ctl->ctl_latest_rtt = *latest_rtt;
     xqc_send_ctl_latest_rtt_tracking(send_ctl, latest_rtt);
 
     /* Based on {{RFC6298}}. */
@@ -1246,19 +1274,9 @@ xqc_send_ctl_update_rtt(xqc_send_ctl_t *send_ctl, xqc_usec_t *latest_rtt, xqc_us
     } else {
         send_ctl->ctl_minrtt = xqc_min(*latest_rtt, send_ctl->ctl_minrtt);
 
-        /*
-         * RFC 9002 5.3: ack_delay MUST be clamped by max_ack_delay before
-         * being subtracted from latest_rtt. Until the handshake is
-         * confirmed the peer is required to use the default max_ack_delay
-         * (RFC 9000 18.2), so use that constant; after confirmation the
-         * negotiated value from the peer's transport parameters applies.
-         */
-        if (xqc_conn_is_handshake_confirmed(send_ctl->ctl_conn)) {
+        if (hsk_confirmed) {
             ack_delay = xqc_min(ack_delay,
-                                send_ctl->ctl_conn->remote_settings.max_ack_delay * 1000);
-
-        } else {
-            ack_delay = xqc_min(ack_delay, XQC_DEFAULT_MAX_ACK_DELAY * 1000);
+                                conn->remote_settings.max_ack_delay * 1000);
         }
 
         /*
