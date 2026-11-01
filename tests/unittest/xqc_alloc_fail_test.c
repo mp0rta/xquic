@@ -14,6 +14,8 @@
 #include <arpa/inet.h>
 #include "xquic/xquic.h"
 #include "src/common/xqc_time.h"
+#include "src/common/xqc_priority_q.h"
+#include "src/transport/xqc_engine.h"
 #include "xqc_alloc_fail_test.h"
 #include "src/http3/qpack/xqc_qpack.h"
 #include "src/transport/xqc_engine.h"
@@ -90,6 +92,8 @@ xqc_test_af_accept(xqc_engine_t *engine, xqc_connection_t *conn, const xqc_cid_t
     return 0;
 }
 
+static xqc_config_t *g_af_config;   /* NULL: the default engine config */
+
 static xqc_engine_t *
 xqc_test_af_engine(xqc_engine_type_t type)
 {
@@ -109,7 +113,8 @@ xqc_test_af_engine(xqc_engine_type_t type)
         .server_accept = xqc_test_af_accept,
     };
 
-    xqc_engine_t *engine = xqc_engine_create(type, NULL, &ssl, &cb, &tcbs, NULL);
+    xqc_engine_t *engine = xqc_engine_create(type, g_af_config, &ssl, &cb,
+                                             &tcbs, NULL);
     if (engine != NULL) {
         xqc_app_proto_callbacks_t ap = {{NULL}, {NULL}};
         xqc_engine_register_alpn(engine, "transport", 9, &ap, NULL);
@@ -132,6 +137,88 @@ xqc_test_af_connect(xqc_engine_t *engine)
     peer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     return xqc_connect(engine, &cs, NULL, 0, "", 0, &ssl, (struct sockaddr *)&peer,
                        sizeof(peer), "transport", NULL);
+}
+
+static int       g_af_created, g_af_closed;
+static xqc_cid_t g_af_created_cid;
+
+static int
+xqc_test_af_count_create(xqc_connection_t *conn, const xqc_cid_t *cid,
+    void *conn_user_data, void *conn_proto_data)
+{
+    g_af_created++;
+    g_af_created_cid = *cid;
+    return 0;
+}
+
+static int
+xqc_test_af_count_close(xqc_connection_t *conn, const xqc_cid_t *cid,
+    void *conn_user_data, void *conn_proto_data)
+{
+    g_af_closed++;
+    return 0;
+}
+
+static void *
+xqc_test_af_no_growth(void *opaque, size_t size)
+{
+    return NULL;
+}
+
+/*
+ * An xqc_connect() that fails after conn_create_notify must not leave its
+ * connection behind: the connection must be gone from the engine, and
+ * conn_close_notify must have run. Called from one of the engine's callbacks
+ * (the engine is running), xqc_connect() leaves its connection in the active
+ * queue: with a capacity of one, the second connection finds the queue full,
+ * and here the queue cannot grow.
+ */
+void
+xqc_test_client_connect_active_queue_full(void)
+{
+    xqc_config_t config;
+    CU_ASSERT_FATAL(xqc_engine_get_default_config(&config, XQC_ENGINE_CLIENT)
+                    == XQC_OK);
+    config.conns_active_pq_capacity = 1;
+
+    xqc_app_proto_callbacks_t ap = {{NULL}, {NULL}};
+    ap.conn_cbs.conn_create_notify = xqc_test_af_count_create;
+    ap.conn_cbs.conn_close_notify = xqc_test_af_count_close;
+
+    for (int grows = 1; grows >= 0; grows--) {
+        g_af_config = &config;
+        xqc_engine_t *engine = xqc_test_af_engine(XQC_ENGINE_CLIENT);
+        g_af_config = NULL;
+        CU_ASSERT_FATAL(engine != NULL);
+        xqc_engine_register_alpn(engine, "transport", 9, &ap, NULL);
+
+        engine->eng_flag |= XQC_ENG_FLAG_RUNNING;
+        CU_ASSERT_FATAL(xqc_test_af_connect(engine) != NULL);
+
+        xqc_malloc_wrap_t pq_malloc = engine->conns_active_pq->a.malloc;
+        if (!grows) {
+            engine->conns_active_pq->a.malloc = xqc_test_af_no_growth;
+        }
+        g_af_created = 0;
+        g_af_closed = 0;
+        const xqc_cid_t *cid = xqc_test_af_connect(engine);
+        engine->conns_active_pq->a.malloc = pq_malloc;
+
+        CU_ASSERT(g_af_created == 1);
+        if (grows) {
+            CU_ASSERT(cid != NULL);
+            CU_ASSERT(g_af_closed == 0);
+
+        } else {
+            CU_ASSERT(cid == NULL);
+            CU_ASSERT(g_af_closed == 1);
+            CU_ASSERT(xqc_engine_get_conn_by_scid(engine, &g_af_created_cid)
+                      == NULL);
+        }
+
+        engine->eng_flag &= ~XQC_ENG_FLAG_RUNNING;
+        xqc_engine_destroy(engine);
+    }
 }
 
 void
@@ -196,6 +283,12 @@ xqc_test_conn_create_alloc_failures(void)
 }
 
 #else
+
+void
+xqc_test_client_connect_active_queue_full(void)
+{
+    /* shares the helpers above, built where --wrap is (Linux) */
+}
 
 void
 xqc_test_conn_create_alloc_failures(void)
