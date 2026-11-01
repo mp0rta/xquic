@@ -679,6 +679,7 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_tls_default_cert_without_sni",
                         xqc_test_tls_default_cert_without_sni)
         || !CU_add_test(pSuite, "xqc_test_tls", xqc_test_tls)
+        || !CU_add_test(pSuite, "xqc_test_tls_session_ticket_time", xqc_test_tls_session_ticket_time)
         || !CU_add_test(pSuite, "xqc_test_h3_stream", xqc_test_stream)
         || !CU_add_test(pSuite, "xqc_test_h3_critical_stream_close", xqc_test_h3_critical_stream_close)
         || !CU_add_test(pSuite, "xqc_test_h3_second_control_stream_rejected", xqc_test_h3_second_control_stream_rejected)

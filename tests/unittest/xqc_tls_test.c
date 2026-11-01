@@ -15,6 +15,9 @@ xqc_path_ctx_t *xqc_path_create(xqc_connection_t *conn, xqc_cid_t *scid,
 #include "src/tls/xqc_tls.h"
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/time.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 #include "src/tls/xqc_ssl_cbs.h"
@@ -2128,4 +2131,74 @@ xqc_test_tls(void)
 
     xqc_test_destroy_tls_ctx();
     xqc_free(test_log);
+}
+
+xqc_bool_t xqc_tls_check_session_ticket_timeout(SSL_SESSION *session);
+
+/*
+ * Sleep until shortly before gettimeofday() reaches the next second, then
+ * return it there, as early as can be read.
+ */
+static time_t
+xqc_test_tls_next_second(void)
+{
+    struct timeval  tv;
+    time_t          sec;
+
+    gettimeofday(&tv, NULL);
+    if (tv.tv_usec < 995000) {
+        usleep(995000 - tv.tv_usec);
+    }
+
+    gettimeofday(&tv, NULL);
+    sec = tv.tv_sec;
+    do {
+        gettimeofday(&tv, NULL);
+    } while (tv.tv_sec == sec);
+
+    return tv.tv_sec;
+}
+
+/*
+ * A session stays valid from the second that gettimeofday() timed it
+ * with, as BoringSSL does, to the end of its timeout. That holds right
+ * after gettimeofday() reaches a new second too, while time() can still
+ * return the previous one: three second boundaries are checked.
+ */
+void
+xqc_test_tls_session_ticket_time(void)
+{
+    int             i;
+    time_t          sec;
+    struct timeval  tv;
+    SSL_SESSION    *session;
+
+#ifdef OPENSSL_IS_BORINGSSL
+    SSL_CTX *ssl_ctx = SSL_CTX_new(TLS_method());
+    CU_ASSERT_FATAL(ssl_ctx != NULL);
+    session = SSL_SESSION_new(ssl_ctx);
+#else
+    session = SSL_SESSION_new();
+#endif
+    CU_ASSERT_FATAL(session != NULL);
+    SSL_SESSION_set_timeout(session, 7200);
+
+    gettimeofday(&tv, NULL);
+    SSL_SESSION_set_time(session, tv.tv_sec - 7000);
+    CU_ASSERT(xqc_tls_check_session_ticket_timeout(session) == XQC_TRUE);
+    SSL_SESSION_set_time(session, tv.tv_sec - 7300);
+    CU_ASSERT(xqc_tls_check_session_ticket_timeout(session) == XQC_FALSE);
+    SSL_SESSION_set_time(session, tv.tv_sec + 10);
+    CU_ASSERT(xqc_tls_check_session_ticket_timeout(session) == XQC_FALSE);
+
+    for (i = 0; i < 3; i++) {
+        sec = xqc_test_tls_next_second();
+        SSL_SESSION_set_time(session, sec);
+        CU_ASSERT(xqc_tls_check_session_ticket_timeout(session) == XQC_TRUE);
+    }
+
+    SSL_SESSION_free(session);
+#ifdef OPENSSL_IS_BORINGSSL
+    SSL_CTX_free(ssl_ctx);
+#endif
 }
