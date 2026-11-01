@@ -6,12 +6,18 @@
 #include "src/transport/scheduler/xqc_scheduler_minrtt.h"
 #include "src/transport/scheduler/xqc_scheduler_common.h"
 #include "src/transport/xqc_send_ctl.h"
+#include "src/transport/xqc_multipath.h"
 
+
+typedef struct {
+    /* when dead paths were last probed (xqc_minrtt_scheduler_handle_conn_event) */
+    xqc_usec_t  last_dead_probe;
+} xqc_minrtt_scheduler_t;
 
 static size_t
 xqc_minrtt_scheduler_size()
 {
-    return 0;
+    return sizeof(xqc_minrtt_scheduler_t);
 }
 
 static void
@@ -59,6 +65,15 @@ xqc_minrtt_scheduler_get_path(void *scheduler,
             || path->app_path_status == XQC_APP_PATH_STATUS_FROZEN
             || (reinject && (packet_out->po_path_id == path->path_id)))
         {
+            goto skip_path;
+        }
+
+        /* Skip a path that stopped delivering while another one works,
+         * even when the other one is blocked by its cwnd for now: the data
+         * would only be lost, and the stream would wait for it. */
+        if (xqc_path_is_dead_with_alternative(path)) {
+            xqc_log(conn->log, XQC_LOG_DEBUG,
+                    "|path:%ui|dead path skipped|", path->path_id);
             goto skip_path;
         }
 
@@ -123,8 +138,22 @@ skip_path:
     return NULL;
 }
 
+static void
+xqc_minrtt_scheduler_handle_conn_event(void *scheduler,
+    xqc_connection_t *conn, xqc_scheduler_conn_event_t event, void *event_arg)
+{
+    xqc_minrtt_scheduler_t *s = scheduler;
+
+    if (s == NULL || event != XQC_SCHED_EVENT_CONN_ROUND_START) {
+        return;
+    }
+
+    xqc_scheduler_probe_dead_paths(conn, &s->last_dead_probe);
+}
+
 const xqc_scheduler_callback_t xqc_minrtt_scheduler_cb = {
     .xqc_scheduler_size             = xqc_minrtt_scheduler_size,
     .xqc_scheduler_init             = xqc_minrtt_scheduler_init,
     .xqc_scheduler_get_path         = xqc_minrtt_scheduler_get_path,
+    .xqc_scheduler_handle_conn_event = xqc_minrtt_scheduler_handle_conn_event,
 };
