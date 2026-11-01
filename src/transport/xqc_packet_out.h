@@ -54,6 +54,7 @@ typedef enum {
     XQC_POF_INFLIGHT_CANCELED   = 1 << 23,  /* an inflight packet is dropped because of application cancelling. */
     XQC_POF_NO_PATH_PADDING     = 1 << 24,  /* skip path validation padding when limited by anti-amplification budget */
     XQC_POF_PATH_MIN_PADDING    = 1 << 25,  /* pad path validation packet only to RFC 9000 minimum datagram size */
+    XQC_POF_DGRAM_UNSENT        = 1 << 27, /* counted in sndq_dgram_unsent until sent or freed; FIXED: reset when copy */
 } xqc_packet_out_flag_t;
 
 typedef struct xqc_po_stream_frame_s {

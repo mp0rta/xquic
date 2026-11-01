@@ -72,6 +72,7 @@ xqc_send_queue_destroy(xqc_send_queue_t *send_queue)
     send_queue->sndq_packets_used_bytes = 0;
     send_queue->sndq_packets_free = 0;   
     send_queue->sndq_packets_in_unacked_list = 0;
+    send_queue->sndq_dgram_unsent = 0;
 }
 
 
@@ -104,6 +105,7 @@ xqc_send_queue_pre_destroy(xqc_send_queue_t *send_queue)
     send_queue->sndq_packets_used_bytes = 0;
     send_queue->sndq_packets_free = 0;
     send_queue->sndq_packets_in_unacked_list = 0;
+    send_queue->sndq_dgram_unsent = 0;
 }
 
 xqc_packet_out_t *
@@ -253,6 +255,7 @@ xqc_send_queue_insert_free(xqc_packet_out_t *po, xqc_list_head_t *head, xqc_send
             po->po_pr = NULL;
         }
     }
+    xqc_send_queue_dgram_unsent_done(send_queue, po);
     xqc_list_add_tail(&po->po_list, head);
     send_queue->sndq_packets_free++;
     send_queue->sndq_packets_used--;
@@ -337,6 +340,27 @@ xqc_send_queue_get_unsent_packets_num(xqc_send_queue_t *send_queue)
         return 0;
     }
     return send_queue->sndq_packets_used - send_queue->sndq_packets_in_unacked_list;
+}
+
+uint64_t
+xqc_send_queue_get_dgram_unsent_num(xqc_send_queue_t *send_queue)
+{
+    /* bounded by all unsent packets, so a packet freed on a path that
+     * missed xqc_send_queue_dgram_unsent_done() cannot hold the cap */
+    return xqc_min(send_queue->sndq_dgram_unsent,
+                   xqc_send_queue_get_unsent_packets_num(send_queue));
+}
+
+void
+xqc_send_queue_dgram_unsent_done(xqc_send_queue_t *send_queue, xqc_packet_out_t *po)
+{
+    if (!(po->po_flag & XQC_POF_DGRAM_UNSENT)) {
+        return;
+    }
+    po->po_flag &= ~XQC_POF_DGRAM_UNSENT;
+    if (send_queue->sndq_dgram_unsent > 0) {
+        send_queue->sndq_dgram_unsent--;
+    }
 }
 
 

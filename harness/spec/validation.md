@@ -119,7 +119,7 @@ its case is retired so later changes cannot reuse it.
 | `[1000, 1099]` | HTTP/3 framing, streams, and settings | `1000-1021`, `1026-1027`, `1032-1035`, `1098-1099` |
 | `[1100, 1149]` | QPACK | None |
 | `[1150, 1199]` | HTTP priority | None |
-| `[1200, 1299]` | QUIC DATAGRAM | `1201-1202` |
+| `[1200, 1299]` | QUIC DATAGRAM | `1201-1202`, `1200`, `1203` |
 | `[1300, 1399]` | Multipath QUIC | `1300-1302` |
 | `[1400, 1499]` | MoQT | None |
 | `[1500, 1599]` | LOC and MSF application protocols | None |

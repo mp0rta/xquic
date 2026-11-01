@@ -30,6 +30,10 @@ typedef struct xqc_send_queue_s {
     uint64_t                    sndq_packets_used_max;
 
     xqc_bool_t                  sndq_full;
+    /* a DATAGRAM write was refused at max_dgram_unsent_packets */
+    xqc_bool_t                  sndq_dgram_backlog_full;
+    /* DATAGRAM packets written and not sent yet (XQC_POF_DGRAM_UNSENT) */
+    uint64_t                    sndq_dgram_unsent;
 
 } xqc_send_queue_t;
 
@@ -50,6 +54,13 @@ xqc_send_queue_release_enough_space(xqc_send_queue_t *send_queue)
             >= (send_queue->sndq_packets_used_max / XQC_SNDQ_RELEASE_ENOUGH_SPACE_TH);
 }
 uint64_t xqc_send_queue_get_unsent_packets_num(xqc_send_queue_t *send_queue);
+
+/* DATAGRAM packets written and not sent yet, never more than all unsent
+ * packets */
+uint64_t xqc_send_queue_get_dgram_unsent_num(xqc_send_queue_t *send_queue);
+
+/* a DATAGRAM packet was sent or freed: stop counting it as unsent */
+void xqc_send_queue_dgram_unsent_done(xqc_send_queue_t *send_queue, xqc_packet_out_t *po);
 
 
 xqc_send_queue_t *xqc_send_queue_create(xqc_connection_t *conn);

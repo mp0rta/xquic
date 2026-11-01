@@ -184,6 +184,7 @@ xqc_packet_out_copy(xqc_packet_out_t *dst, xqc_packet_out_t *src)
 
     dst->po_flag &= ~XQC_POF_IN_UNACK_LIST;
     dst->po_flag &= ~XQC_POF_IN_PATH_BUF_LIST;
+    dst->po_flag &= ~XQC_POF_DGRAM_UNSENT;
 
     dst->po_pr = src->po_pr;
 
@@ -1462,6 +1463,9 @@ xqc_write_datagram_frame_to_packet(xqc_connection_t *conn, xqc_pkt_type_t pkt_ty
     if (pkt_type == XQC_PTYPE_0RTT) {
         conn->zero_rtt_count++;
     }
+
+    packet_out->po_flag |= XQC_POF_DGRAM_UNSENT;
+    conn->conn_send_queue->sndq_dgram_unsent++;
 
     if (qos_level > XQC_DATA_QOS_HIGH) {
         if (qos_level == XQC_DATA_QOS_PROBING) {
