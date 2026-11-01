@@ -698,6 +698,9 @@ xqc_send_ctl_on_packet_sent(xqc_send_ctl_t *send_ctl, xqc_pn_ctl_t *pn_ctl, xqc_
 {
     xqc_pkt_num_space_t pns = packet_out->po_pkt.pkt_pns;
 
+    /* a retransmission copied its original's */
+    packet_out->po_acked_below = 0;
+
     xqc_sample_on_sent(packet_out, send_ctl, now);
 
     xqc_packet_number_t orig_pktnum = packet_out->po_origin ? packet_out->po_origin->po_pkt.pkt_num : 0;
@@ -924,6 +927,11 @@ xqc_send_ctl_on_ack_received(xqc_send_ctl_t *send_ctl, xqc_pn_ctl_t *pn_ctl, xqc
         need_del_record = 1;
     }
 
+    /* the largest packet number acknowledged before, ACK-only ones included */
+    xqc_packet_number_t acked_before = send_ctl->ctl_largest_acked_any[pns];
+    send_ctl->ctl_largest_acked_any[pns] = xqc_max(acked_before,
+                                                   frame_largest_ack);
+
     /* 记录ack info里这条路径发出的最大pn的包 */
     xqc_packet_number_t path_largest_pkt_num = 0;
 
@@ -1036,6 +1044,18 @@ xqc_send_ctl_on_ack_received(xqc_send_ctl_t *send_ctl, xqc_pn_ctl_t *pn_ctl, xqc
 
             if (XQC_IS_ACK_ELICITING(packet_out->po_frame_types)) {
                 has_ack_eliciting = 1;
+            }
+
+        } else {
+            /* RFC 9002 7.6.2: the largest packet number acknowledged below
+             * it, before this ACK or in a range that this walk passed */
+            if (acked_before < packet_out->po_pkt.pkt_num) {
+                packet_out->po_acked_below =
+                    xqc_max(packet_out->po_acked_below, acked_before);
+            }
+            if (range != &ack_info->ranges[ack_info->n_ranges - 1]) {
+                packet_out->po_acked_below =
+                    xqc_max(packet_out->po_acked_below, range[1].high);
             }
         }
     }
@@ -1487,6 +1507,26 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
     int bh_outage = 0;
     int search_probe_lost = 0;
 
+    /*
+     * RFC 9002 7.6.2: persistent congestion takes two lost ack-eliciting
+     * packets sent after an RTT sample, with no packet acknowledged in
+     * between, over longer than the duration of 7.6.1. That duration
+     * counts on the peer's max_ack_delay, which bounds its ACK delays only
+     * once the handshake is confirmed (RFC 9002 5.3): packets sent before
+     * do not count.
+     */
+    xqc_usec_t pc_after = XQC_MAX_UINT64_VALUE;
+    xqc_usec_t pc_first_sent = 0;
+    xqc_usec_t pc_period = 0;
+    xqc_packet_number_t pc_last_pn = 0;
+
+    if (send_ctl->ctl_first_rtt_sample_time != 0
+        && xqc_conn_is_handshake_confirmed(conn))
+    {
+        pc_after = xqc_max(send_ctl->ctl_first_rtt_sample_time,
+                           conn->handshake_confirmed_time);
+    }
+
     xqc_list_for_each_safe(pos, next, &send_queue->sndq_unacked_packets[pns]) {
         po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
 
@@ -1554,6 +1594,18 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                     xqc_send_queue_remove_unacked(po, send_queue);
                     xqc_send_queue_insert_free(po, &send_queue->sndq_free_packets, send_queue);
                     continue;
+                }
+
+                /* a packet acknowledged between the previous lost one and
+                 * this one starts a new period */
+                if (po->po_sent_time > pc_after) {
+                    if (pc_first_sent == 0 || po->po_acked_below > pc_last_pn) {
+                        pc_first_sent = po->po_sent_time;
+                    }
+                    if (po->po_sent_time > pc_first_sent + pc_period) {
+                        pc_period = po->po_sent_time - pc_first_sent;
+                    }
+                    pc_last_pn = po->po_pkt.pkt_num;
                 }
 
                 /* RFC 8899 s4.3: large packets keep getting lost (the
@@ -1699,7 +1751,7 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
 
         /* Collapse congestion window if persistent congestion */
         if (send_ctl->ctl_cong_callback->xqc_cong_ctl_reset_cwnd
-            && xqc_send_ctl_in_persistent_congestion(send_ctl, largest_lost, now))
+            && xqc_send_ctl_in_persistent_congestion(send_ctl, pc_period))
         {
             /* For loss-based CCs, it means we are gonna slow start again. */
             send_ctl->ctl_max_bytes_in_flight = 0;
@@ -1717,8 +1769,8 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
              */
             xqc_log(conn->log, XQC_LOG_DEBUG,
                     "|OnLostDetection|persistent_congestion|reset_rtt"
-                    "|old_srtt:%ui|old_rttvar:%ui|old_minrtt:%ui|",
-                    send_ctl->ctl_srtt, send_ctl->ctl_rttvar,
+                    "|period:%ui|old_srtt:%ui|old_rttvar:%ui|old_minrtt:%ui|",
+                    pc_period, send_ctl->ctl_srtt, send_ctl->ctl_rttvar,
                     send_ctl->ctl_minrtt);
             send_ctl->ctl_minrtt = XQC_MAX_UINT32_VALUE;
             send_ctl->ctl_srtt = send_ctl->ctl_conn->conn_settings.initial_rtt;
@@ -1773,20 +1825,18 @@ pmtud:
 }
 
 /**
- * InPersistentCongestion
+ * InPersistentCongestion: period is the longest time between the send times
+ * of two lost ack-eliciting packets with no packet acknowledged in between
+ * (RFC 9002 7.6.2). Unlike the PTO, the duration includes max_ack_delay in
+ * every packet number space (RFC 9002 7.6.1). PTO expirations are not
+ * needed (RFC 9002 7.6.1, 7.6.3).
  */
 xqc_bool_t
-xqc_send_ctl_in_persistent_congestion(xqc_send_ctl_t *send_ctl, xqc_packet_out_t *largest_lost, xqc_usec_t now)
+xqc_send_ctl_in_persistent_congestion(xqc_send_ctl_t *send_ctl,
+    xqc_usec_t period)
 {
-    if (send_ctl->ctl_pto_count >= XQC_CONSECUTIVE_PTO_THRESH) {
-        xqc_usec_t duration = (send_ctl->ctl_srtt + xqc_max(send_ctl->ctl_rttvar << 2, XQC_kGranularity * 1000)
-            + send_ctl->ctl_conn->remote_settings.max_ack_delay * 1000) * XQC_kPersistentCongestionThreshold;
-        if (now - largest_lost->po_sent_time > duration) {
-            return XQC_TRUE;
-        }
-    }
-
-    return XQC_FALSE;
+    return period > xqc_send_ctl_calc_pto(send_ctl)
+                    * XQC_kPersistentCongestionThreshold;
 }
 
 /**

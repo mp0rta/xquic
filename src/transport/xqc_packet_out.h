@@ -90,6 +90,9 @@ typedef struct xqc_packet_out_s {
     /* Largest Acknowledged in ACK frame, initiated to be 0 */
     xqc_packet_number_t     po_largest_ack;
     xqc_usec_t              po_sent_time;
+    /* the largest acknowledged packet number below this one's, as far as
+     * the ACK frames that reached it in the unacked list tell, 0 if none */
+    xqc_packet_number_t     po_acked_below;
     xqc_frame_type_bit_t    po_frame_types;
 
     /* the stream related to stream frame */
