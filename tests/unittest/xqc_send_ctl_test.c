@@ -1223,6 +1223,137 @@ xqc_test_send_ctl_pc_loss_timer(void)
 }
 
 
+/* the packet leaves the path at t0 + ms with that number */
+static void
+xqc_test_pc_sent(xqc_path_ctx_t *path, xqc_packet_out_t *po,
+    xqc_packet_number_t pkt_num, xqc_usec_t ms)
+{
+    xqc_send_queue_t *sq = path->parent_conn->conn_send_queue;
+
+    po->po_pkt.pkt_num = pkt_num;
+    po->po_sent_time = xqc_test_pc_ms(ms);
+    xqc_send_ctl_on_packet_sent(path->path_send_ctl, path->path_pn_ctl, po,
+                                po->po_sent_time);
+    xqc_send_queue_insert_unacked(po,
+        &sq->sndq_unacked_packets[XQC_PNS_APP_DATA], sq);
+}
+
+
+/* a packet of STREAM data, which a PTO copies */
+static void
+xqc_test_pc_send_stream(xqc_path_ctx_t *path, xqc_packet_number_t pkt_num,
+    xqc_usec_t ms)
+{
+    xqc_packet_out_t *po = xqc_packet_out_get(
+                               path->parent_conn->conn_send_queue);
+
+    CU_ASSERT_FATAL(po != NULL);
+    po->po_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+    po->po_pkt.pkt_pns  = XQC_PNS_APP_DATA;
+    po->po_path_id      = path->path_id;
+    po->po_frame_types  = XQC_FRAME_BIT_STREAM;
+    po->po_used_size    = 100;
+    xqc_test_pc_sent(path, po, pkt_num, ms);
+}
+
+
+/*
+ * The PTO expires at t0 + ms: xqc_path_send_one_or_two_ack_elicit_pkts
+ * copies two packets and the copies leave at once, numbered from pkt_num.
+ * Returns the next packet number.
+ */
+static xqc_packet_number_t
+xqc_test_pc_pto(xqc_path_ctx_t *path, xqc_usec_t ms,
+    xqc_packet_number_t pkt_num)
+{
+    xqc_send_queue_t *sq = path->parent_conn->conn_send_queue;
+    xqc_list_head_t *pos, *next;
+    xqc_packet_out_t *po;
+
+    xqc_timer_loss_detection_timeout(XQC_TIMER_LOSS_DETECTION,
+                                     xqc_test_pc_ms(ms), path->path_send_ctl);
+    xqc_list_for_each_safe(pos, next, &sq->sndq_pto_probe_packets) {
+        po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+        CU_ASSERT_FATAL(po->po_origin != NULL);
+        xqc_send_queue_remove_probe(pos);
+        xqc_test_pc_sent(path, po, pkt_num++, ms);
+    }
+
+    return pkt_num;
+}
+
+
+/*
+ * A blackout on STREAM data: packets 1 to n leave 1 ms apart, then each
+ * PTO copies the first two of them again, as xqc_conn_send_probe_pkt takes
+ * the originals out of flight. The ACK of the copies sent on the third PTO
+ * makes the other copies and the originals copies of acknowledged data,
+ * which xquic drops without marking them lost, but none of them was
+ * acknowledged itself: all are lost (RFC 9002 7.6.2), from 0 to n - 1 + 60
+ * ms, more than the duration. With only two packets, the originals carry
+ * the period over it.
+ */
+void
+xqc_test_send_ctl_pc_pto_copies(void)
+{
+    for (xqc_packet_number_t n = 4; n >= 2; n -= 2) {
+        xqc_connection_t *conn = test_engine_connect();
+        CU_ASSERT_FATAL(conn != NULL);
+        xqc_path_ctx_t *path = conn->conn_initial_path;
+        xqc_usec_t last = n - 1;
+        xqc_packet_number_t pn;
+
+        xqc_test_pc_setup(path);
+        for (pn = 1; pn <= n; pn++) {
+            xqc_test_pc_send_stream(path, pn, pn - 1);
+        }
+        pn = xqc_test_pc_pto(path, last + 20, n + 1);
+        pn = xqc_test_pc_pto(path, last + 60, pn);
+        pn = xqc_test_pc_pto(path, last + 140, pn);
+        CU_ASSERT_EQUAL(path->path_send_ctl->ctl_pto_count, 3);
+
+        xqc_pktno_range_t ack[] = {{.low = pn - 2, .high = pn - 1}};
+        xqc_test_pc_ack(path, last + 142, ack, 1);
+        CU_ASSERT(xqc_test_pc_declared(path));
+
+        xqc_engine_destroy(conn->engine);
+    }
+}
+
+
+/*
+ * Abnormal path: a PTO copy is no loss of an original that is
+ * acknowledged itself, late, which makes the PTO a spurious loss. Packet 1,
+ * sent at 0, is copied by PTOs at 20, 62 and 145 ms, and acknowledged with
+ * the last copy at 147 ms. The copies sent at 20 and 62 ms are lost: 42 ms
+ * apart, less than the duration, and packet 1 must not stretch that to
+ * 62 ms.
+ */
+void
+xqc_test_send_ctl_pc_pto_spurious(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_path_ctx_t *path = conn->conn_initial_path;
+    xqc_packet_number_t pn;
+
+    xqc_test_pc_setup(path);
+    xqc_test_pc_send_stream(path, 1, 0);
+    pn = xqc_test_pc_pto(path, 20, 2);
+    pn = xqc_test_pc_pto(path, 62, pn);
+    pn = xqc_test_pc_pto(path, 145, pn);
+
+    xqc_pktno_range_t ack[] = {{.low = pn - 1, .high = pn - 1},
+                               {.low = 1, .high = 1}};
+    xqc_test_pc_ack(path, 147, ack, 2);
+    CU_ASSERT_EQUAL(path->path_send_ctl->ctl_spurious_loss_count, 1);
+    CU_ASSERT(!xqc_test_pc_declared(path));
+    CU_ASSERT_EQUAL(path->path_send_ctl->ctl_srtt, 10000);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
 /*
  * RFC 9000 14.4: the loss of a PMTU probe is no sign of congestion, nor of
  * persistent congestion: with the probe of Test A's second packet, a

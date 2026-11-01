@@ -873,6 +873,10 @@ main(int argc, char *argv[])
                         xqc_test_send_ctl_pc_lost_pmtud_probe)
         || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_per_path",
                         xqc_test_send_ctl_pc_per_path)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_pto_copies",
+                        xqc_test_send_ctl_pc_pto_copies)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_pto_spurious",
+                        xqc_test_send_ctl_pc_pto_spurious)
         /* RFC 9000 14.4: no congestion reaction to a lost PMTU probe */
         || !CU_add_test(pSuite, "xqc_test_send_ctl_lost_pmtud_probe_no_cc_reaction",
                         xqc_test_send_ctl_lost_pmtud_probe_no_cc_reaction)

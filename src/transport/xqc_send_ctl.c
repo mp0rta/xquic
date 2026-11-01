@@ -1469,6 +1469,29 @@ xqc_send_ctl_pmtud_acked_above(xqc_send_ctl_t *send_ctl, size_t size)
     return send_ctl->ctl_spill_acked[xqc_min(size - curr, XQC_ACK_SPACE) - 1];
 }
 
+/*
+ * Whether a packet that meets the loss thresholds is lost for persistent
+ * congestion (RFC 9002 7.6.2): one in flight, even if dropped below as a
+ * copy of acknowledged data, or one that a PTO took out of flight to send
+ * copies of it (xqc_conn_send_probe_pkt) and that was not acknowledged
+ * itself, which would have made the PTO a spurious loss. Not a PMTU probe:
+ * its loss is no sign of congestion (RFC 9000 14.4).
+ */
+static xqc_bool_t
+xqc_send_ctl_pc_lost(xqc_packet_out_t *po)
+{
+    if (po->po_flag & XQC_POF_PMTUD_PROBING) {
+        return XQC_FALSE;
+    }
+
+    if (po->po_flag & XQC_POF_IN_FLIGHT) {
+        return XQC_TRUE;
+    }
+
+    return (po->po_flag & XQC_POF_TLP)
+           && !(po->po_flag & XQC_POF_SPURIOUS_LOSS);
+}
+
 void
 xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue, xqc_pkt_num_space_t pns, xqc_usec_t now)
 {
@@ -1532,6 +1555,26 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
 
         repair_dgram = 0;
 
+        /* the period of the packets lost, taken before the copies of
+         * acknowledged data are dropped: a packet acknowledged between the
+         * previous lost one and this one starts a new period */
+        if (po->po_path_id == send_ctl->ctl_path->path_id
+            && po->po_pkt.pkt_num <= send_ctl->ctl_largest_acked[pns]
+            && (po->po_sent_time <= lost_send_time
+                || (lost_pn != XQC_MAX_UINT64_VALUE
+                    && po->po_pkt.pkt_num <= lost_pn))
+            && po->po_sent_time > pc_after
+            && xqc_send_ctl_pc_lost(po))
+        {
+            if (pc_first_sent == 0 || po->po_acked_below > pc_last_pn) {
+                pc_first_sent = po->po_sent_time;
+            }
+            if (po->po_sent_time > pc_first_sent + pc_period) {
+                pc_period = po->po_sent_time - pc_first_sent;
+            }
+            pc_last_pn = po->po_pkt.pkt_num;
+        }
+
         if (xqc_send_ctl_indirectly_ack_or_drop_po(conn, po)) {
             continue;
         }
@@ -1594,18 +1637,6 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                     xqc_send_queue_remove_unacked(po, send_queue);
                     xqc_send_queue_insert_free(po, &send_queue->sndq_free_packets, send_queue);
                     continue;
-                }
-
-                /* a packet acknowledged between the previous lost one and
-                 * this one starts a new period */
-                if (po->po_sent_time > pc_after) {
-                    if (pc_first_sent == 0 || po->po_acked_below > pc_last_pn) {
-                        pc_first_sent = po->po_sent_time;
-                    }
-                    if (po->po_sent_time > pc_first_sent + pc_period) {
-                        pc_period = po->po_sent_time - pc_first_sent;
-                    }
-                    pc_last_pn = po->po_pkt.pkt_num;
                 }
 
                 /* RFC 8899 s4.3: large packets keep getting lost (the
@@ -1736,20 +1767,25 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
     /**
      * OnPacketsLost
      */
-    if (largest_lost) {
-        /*
-         * Start a new congestion epoch if the last lost packet
-         * has passed the end of the previous recovery epoch.
-         * enter loss recovery here
-         */
-        xqc_log(conn->log, XQC_LOG_DEBUG, "|OnLostDetection|largest_lost sent time: %lu|", largest_lost->po_sent_time);
-        xqc_send_ctl_congestion_event(send_ctl, largest_lost->po_sent_time);
+    if (largest_lost || pc_period > 0) {
+        if (largest_lost) {
+            /*
+             * Start a new congestion epoch if the last lost packet
+             * has passed the end of the previous recovery epoch.
+             * enter loss recovery here
+             */
+            xqc_log(conn->log, XQC_LOG_DEBUG,
+                    "|OnLostDetection|largest_lost sent time: %lu|",
+                    largest_lost->po_sent_time);
+            xqc_send_ctl_congestion_event(send_ctl, largest_lost->po_sent_time);
+        }
 
         if (send_ctl->ctl_first_rtt_sample_time == 0) {
             goto pmtud;
         }
 
-        /* Collapse congestion window if persistent congestion */
+        /* Collapse congestion window if persistent congestion, even when
+         * all its packets are copies dropped above */
         if (send_ctl->ctl_cong_callback->xqc_cong_ctl_reset_cwnd
             && xqc_send_ctl_in_persistent_congestion(send_ctl, pc_period))
         {
@@ -1781,7 +1817,10 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
             send_ctl->ctl_cong_callback->xqc_cong_ctl_reset_cwnd(send_ctl->ctl_cong);
         }
 
-        if (send_ctl->ctl_info.last_lost_time + send_ctl->ctl_info.record_interval <= now) {
+        if (largest_lost
+            && send_ctl->ctl_info.last_lost_time
+               + send_ctl->ctl_info.record_interval <= now)
+        {
             xqc_usec_t lost_interval = now - send_ctl->ctl_info.last_lost_time;
             send_ctl->ctl_info.last_lost_time = now;
             uint64_t lost_count = send_ctl->ctl_lost_count + lost_n - send_ctl->ctl_info.last_lost_count;

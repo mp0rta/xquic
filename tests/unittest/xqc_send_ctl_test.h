@@ -77,6 +77,8 @@ void xqc_test_send_ctl_pc_lost_close_together(void);
 void xqc_test_send_ctl_pc_loss_timer(void);
 void xqc_test_send_ctl_pc_lost_pmtud_probe(void);
 void xqc_test_send_ctl_pc_per_path(void);
+void xqc_test_send_ctl_pc_pto_copies(void);
+void xqc_test_send_ctl_pc_pto_spurious(void);
 
 /*
  * RFC 9000 14.4: a lost PMTU probe is dropped without a congestion
