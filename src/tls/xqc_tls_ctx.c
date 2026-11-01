@@ -153,6 +153,14 @@ xqc_create_server_ssl_ctx(xqc_tls_ctx_t *ctx)
         SSL_CTX_set_tlsext_ticket_key_cb(ssl_ctx, xqc_ssl_session_ticket_key_cb);
     }
 
+#ifndef OPENSSL_IS_BORINGSSL
+    if (SSL_CTX_set_session_ticket_cb(ssl_ctx, xqc_ssl_tp_ticket_generate_cb,
+            xqc_ssl_tp_ticket_decrypt_cb, NULL) != XQC_SSL_SUCCESS)
+    {
+        goto fail;
+    }
+#endif
+
     SSL_CTX_set_cert_cb(ssl_ctx, xqc_ssl_cert_cb, ctx);
 
     SSL_CTX_set_default_verify_paths(ssl_ctx);
@@ -355,7 +363,9 @@ xqc_tls_ctx_create(xqc_tls_type_t type, const xqc_engine_ssl_config_t *cfg,
         SSL_CTX_set_keylog_callback(ctx->ssl_ctx, xqc_ssl_keylog_cb);
     }
 
-    if (cbs->msg_cb) {
+    if (cbs->msg_cb
+        || (type == XQC_TLS_TYPE_CLIENT && cbs->transport_error_cb))
+    {
         SSL_CTX_set_msg_callback(ctx->ssl_ctx, xqc_ssl_msg_cb);
     }
 

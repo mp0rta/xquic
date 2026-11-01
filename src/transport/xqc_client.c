@@ -301,7 +301,8 @@ xqc_client_create_connection(xqc_engine_t *engine, xqc_cid_t dcid, xqc_cid_t sci
                                         conn_ssl_config->transport_parameter_data_len, &tp);
         if (ret == XQC_OK) {
             xqc_conn_set_early_remote_transport_params(xc, &tp);
-            xqc_log(xc->log, XQC_LOG_DEBUG, "|0RTT_transport_params|max_datagram_frame_size:%ud|",
+            xqc_log(xc->log, XQC_LOG_DEBUG,
+                    "|0RTT_transport_params|max_datagram_frame_size:%ui|",
                     xc->remote_settings.max_datagram_frame_size);
         }
     }
@@ -320,4 +321,3 @@ fail:
     xqc_conn_destroy(xc);
     return NULL;
 }
-
