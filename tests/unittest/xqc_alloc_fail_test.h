@@ -7,4 +7,6 @@
 
 void xqc_test_conn_create_alloc_failures(void);
 
+void xqc_test_qpack_create_alloc_failures(void);
+
 #endif

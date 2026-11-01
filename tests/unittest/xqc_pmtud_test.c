@@ -348,7 +348,8 @@ xqc_test_pmtud_search_stops_within_precision(void)
     conn->max_pkt_out_size = 1300 + XQC_PMTUD_SEARCH_PRECISION - 1;
     conn->probing_pkt_out_size = 1301;
     conn->conn_flag |= XQC_CONN_FLAG_PMTUD_PROBING
-                       | XQC_CONN_FLAG_CAN_SEND_1RTT;
+                       | XQC_CONN_FLAG_CAN_SEND_1RTT
+                       | XQC_CONN_FLAG_HANDSHAKE_COMPLETED;
 
     xqc_conn_ptmud_probing(conn);
 
@@ -371,7 +372,8 @@ xqc_test_pmtud_search_probes_wide_range(void)
     conn->probing_pkt_out_size = 1350;
     conn->probing_cnt = 0;
     conn->conn_flag |= XQC_CONN_FLAG_PMTUD_PROBING
-                       | XQC_CONN_FLAG_CAN_SEND_1RTT;
+                       | XQC_CONN_FLAG_CAN_SEND_1RTT
+                       | XQC_CONN_FLAG_HANDSHAKE_COMPLETED;
     conn->conn_initial_path->path_state = XQC_PATH_STATE_ACTIVE;
 
     xqc_conn_ptmud_probing(conn);
@@ -1086,6 +1088,106 @@ xqc_test_pmtud_pto_copy_fits_path_size(void)
     }
     CU_ASSERT(probes > 0);
     CU_ASSERT_EQUAL(too_big, 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* a full packet that carried an ACK frame, @spill bytes over its buffer */
+static xqc_packet_out_t *
+xqc_test_pmtud_ack_spill(xqc_connection_t *conn, xqc_packet_number_t pn,
+    size_t buf, size_t spill)
+{
+    xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, pn, buf, 10, XQC_FALSE);
+    if (po != NULL) {
+        po->po_frame_types = XQC_FRAME_BIT_DATAGRAM | XQC_FRAME_BIT_ACK;
+        po->po_used_size = buf + spill;
+    }
+    return po;
+}
+
+/* The path shrank by less than XQC_ACK_SPACE: full packets with an ACK
+ * frame are lost, full ones without get through. Their ACKs must not erase
+ * the losses; one as large as the lost packets does. */
+void
+xqc_test_pmtud_smaller_ack_keeps_larger_loss(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+
+    CU_ASSERT_FATAL(xqc_test_pmtud_ack_spill(conn, 1, 1400, XQC_ACK_SPACE) != NULL);
+    xqc_test_pmtud_detect(conn);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_cnt, 1);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_size, 1400 + XQC_ACK_SPACE);
+
+    xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, 60, 1400, 10, XQC_FALSE);
+    CU_ASSERT_FATAL(po != NULL);
+    xqc_send_ctl_on_packet_acked(send_ctl, po, 1000000, 1);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_cnt, 1);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_size, 1400 + XQC_ACK_SPACE);
+    CU_ASSERT_EQUAL(send_ctl->ctl_spill_acked[XQC_ACK_SPACE - 1], 0);
+
+    po = xqc_test_pmtud_ack_spill(conn, 61, 1400, XQC_ACK_SPACE);
+    CU_ASSERT_FATAL(po != NULL);
+    xqc_send_ctl_on_packet_acked(send_ctl, po, 1000000, 1);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_cnt, 0);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_size, 0);
+    CU_ASSERT_EQUAL(send_ctl->ctl_spill_acked[XQC_ACK_SPACE - 1], 61);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* losses of full packets with an ACK frame, while full ones without are
+ * acked between them, still make the path suspect */
+void
+xqc_test_pmtud_ack_spill_losses_make_path_suspect(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+
+    for (int i = 1; i <= XQC_PMTUD_BLACKHOLE_LOSSES; i++) {
+        CU_ASSERT_FATAL(xqc_test_pmtud_ack_spill(conn, 2 * i, 1400, XQC_ACK_SPACE) != NULL);
+        xqc_packet_out_t *po = xqc_test_pmtud_unacked(conn, 2 * i + 1, 1400,
+                                                      10, XQC_FALSE);
+        CU_ASSERT_FATAL(po != NULL);
+        xqc_send_ctl_on_packet_acked(send_ctl, po, 1000000, 1);
+    }
+    xqc_test_pmtud_detect(conn);
+
+    CU_ASSERT(send_ctl->ctl_bh_suspect_time != 0);
+    CU_ASSERT_EQUAL(CURR(conn), 1400);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* An ack of a packet that took less of the ACK room does not cover the
+ * loss of one that took more, sent before it; it does cover the loss of a
+ * smaller one. */
+void
+xqc_test_pmtud_smaller_spill_ack_keeps_larger_loss(void)
+{
+    xqc_connection_t *conn = xqc_test_pmtud_conn(PMTUD_BASE, 1400);
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_send_ctl_t *send_ctl = conn->conn_initial_path->path_send_ctl;
+
+    xqc_packet_out_t *po = xqc_test_pmtud_ack_spill(conn, 60, 1400, 8);
+    CU_ASSERT_FATAL(po != NULL);
+    xqc_send_ctl_on_packet_acked(send_ctl, po, 1000000, 1);
+    CU_ASSERT_EQUAL(send_ctl->ctl_spill_acked[7], 60);
+    CU_ASSERT_EQUAL(send_ctl->ctl_spill_acked[8], 0);
+
+    CU_ASSERT_FATAL(xqc_test_pmtud_ack_spill(conn, 50, 1400, 16) != NULL);
+    CU_ASSERT_FATAL(xqc_test_pmtud_ack_spill(conn, 51, 1400, 4) != NULL);
+    xqc_test_pmtud_detect(conn);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_cnt, 1);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_size, 1416);
+
+    po = xqc_test_pmtud_ack_spill(conn, 70, 1400, 16);
+    CU_ASSERT_FATAL(po != NULL);
+    xqc_send_ctl_on_packet_acked(send_ctl, po, 1000000, 1);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_cnt, 0);
+    CU_ASSERT_EQUAL(send_ctl->ctl_big_lost_size, 0);
 
     xqc_engine_destroy(conn->engine);
 }
