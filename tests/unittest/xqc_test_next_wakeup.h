@@ -9,6 +9,6 @@
 #define XQC_TEST_NEXT_WAKEUP_H
 
 void test_next_wakeup_includes_validating_path_timer(void);
-void test_validation_pto_counts_attempts_and_abandons(void);
+void test_validation_deadline_abandons_path(void);
 
 #endif /* XQC_TEST_NEXT_WAKEUP_H */

@@ -43,6 +43,7 @@ void xqc_test_mp21_init_max_path_id_tp_codepoint(void);
 void xqc_test_mp21_fixture_smoke(void);
 void xqc_test_mp21_validate_recv_path_id(void);
 void xqc_test_mp21_max_path_id_validation(void);
+void xqc_test_mp21_max_path_id_mirror_bounded(void);
 void xqc_test_mp21_init_max_path_id_upper_bound(void);
 void xqc_test_mp21_aead_nonce_min_length(void);
 void xqc_test_mp21_mp_frame_1rtt_only(void);
@@ -76,7 +77,7 @@ void xqc_test_mp21_max_path_id_grant_rate_limited(void);
 
 /* PR5 L5b validation hardening — draft-21 §3.1 path-validation MUSTs. */
 void xqc_test_mp21_path_challenge_1200b_validation(void);
-void xqc_test_mp21_path_validation_timeout(void);
+void xqc_test_mp21_path_challenge_small_on_active_path(void);
 
 /* PR6 L5c loss-replay correctness — draft-21 §4.3 ¶12 / §4.6 ¶8 SHOULDs. */
 void xqc_test_mp21_loss_replay_should_suppress_stale(void);

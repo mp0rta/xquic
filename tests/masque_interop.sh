@@ -253,10 +253,10 @@ run_local_e2e_tests() {
         return
     fi
 
-    # Test: MASQUE CONNECT-IP single path (test case 800)
+    # Test: MASQUE CONNECT-IP single path (test case 1098)
     # test_server expects server.crt/server.key in cwd
     cd "$BUILD_DIR"
-    "$TEST_SERVER" -x 800 -p 18443 -l e > /dev/null 2>&1 &
+    "$TEST_SERVER" -x 1098 -p 18443 -l e > /dev/null 2>&1 &
     local server_pid=$!
     cleanup_pids+=("$server_pid")
     sleep 1
@@ -268,7 +268,7 @@ run_local_e2e_tests() {
     fi
 
     local output exit_code
-    output=$(timeout 15 "$TEST_CLIENT" -x 800 -a 127.0.0.1 -p 18443 -1 2>&1) && exit_code=0 || exit_code=$?
+    output=$(timeout 15 "$TEST_CLIENT" -x 1098 -a 127.0.0.1 -p 18443 -1 2>&1) && exit_code=0 || exit_code=$?
 
     kill "$server_pid" 2>/dev/null; wait "$server_pid" 2>/dev/null || true
     cd "$ROOT_DIR"

@@ -294,6 +294,11 @@ xqc_int_t
 xqc_h3_stream_write_setting_to_buffer(xqc_h3_stream_t *h3s,
                                       xqc_h3_conn_settings_t *settings, uint8_t fin)
 {
+    if (h3s->h3c->flags & XQC_H3_CONN_FLAG_SETTINGS_QUEUED) {
+        xqc_log(h3s->log, XQC_LOG_WARN, "|SETTINGS already queued|");
+        return -XQC_ESTATE;
+    }
+
     xqc_int_t ret = xqc_h3_frm_write_settings(&h3s->send_buf, settings, fin);
     if (ret != XQC_OK) {
         xqc_log(h3s->log, XQC_LOG_ERROR,
@@ -301,6 +306,7 @@ xqc_h3_stream_write_setting_to_buffer(xqc_h3_stream_t *h3s,
                 h3s->stream_id, (unsigned int)fin);
         return ret;
     }
+    h3s->h3c->flags |= XQC_H3_CONN_FLAG_SETTINGS_QUEUED;
     xqc_log_event(h3s->log, HTTP_FRAME_CREATED, h3s, XQC_H3_FRM_SETTINGS, settings);
 
     ret = xqc_h3_stream_send_buffer(h3s);
@@ -759,6 +765,24 @@ xqc_h3_stream_write_notify(xqc_stream_t *stream, void *user_data)
 }
 
 
+static inline ssize_t
+xqc_h3_stream_process_frame_parse_error(xqc_h3_stream_t *h3s,
+    xqc_h3_frame_pctx_t *pctx, ssize_t err)
+{
+    if (err == -XQC_H3_RESERVED_FRAME_UNEXPECTED) {
+        xqc_log(h3s->log, XQC_LOG_ERROR,
+                "|HTTP/2 reserved frame received|type:%xL|", pctx->frame.type);
+        XQC_H3_CONN_ERR(h3s->h3c, H3_FRAME_UNEXPECTED, err);
+
+    } else if (err == -XQC_H3_INVALID_FRAME_TYPE) {
+        XQC_H3_CONN_ERR(h3s->h3c, H3_FRAME_ERROR, err);
+    }
+
+    xqc_h3_frm_reset_pctx(pctx);
+    return err;
+}
+
+
 ssize_t
 xqc_h3_stream_process_control(xqc_h3_stream_t *h3s, unsigned char *data, size_t data_len)
 {
@@ -768,10 +792,10 @@ xqc_h3_stream_process_control(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
 
     ssize_t processed = 0;
     while (processed < data_len) {
-        ssize_t read = xqc_h3_frm_parse(data + processed, data_len - processed, pctx);
+        ssize_t read = xqc_h3_frm_parse(
+            data + processed, data_len - processed, pctx, h3s->h3c);
         if (read < 0) {
-            xqc_h3_frm_reset_pctx(pctx);
-            return read;
+            return xqc_h3_stream_process_frame_parse_error(h3s, pctx, read);
         }
 
         processed += read;
@@ -820,42 +844,64 @@ xqc_h3_stream_process_control(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
         if (pctx->state == XQC_H3_FRM_STATE_END) {
             switch (pctx->frame.type) {
             case XQC_H3_FRM_CANCEL_PUSH:
-                /* TODO: not implemented */
-                break;
+                /*
+                 * RFC 9114 Sections 4.6 and 7.2.3 require H3_ID_ERROR
+                 * when the push ID exceeds the allowed maximum or, at a
+                 * server, has not been mentioned in PUSH_PROMISE. XQUIC
+                 * neither sends MAX_PUSH_ID nor PUSH_PROMISE in production,
+                 * so no received CANCEL_PUSH ID is valid in either role.
+                 */
+                xqc_log(h3c->log, XQC_LOG_ERROR,
+                        "|invalid CANCEL_PUSH|push_id:%ui|",
+                        pl->cancel_push.push_id.vi);
+                xqc_h3_frm_reset_pctx(pctx);
+                XQC_H3_CONN_ERR(h3c, H3_ID_ERROR,
+                                -XQC_H3_INVALID_CANCEL_PUSH_ID);
+                return -XQC_H3_INVALID_CANCEL_PUSH_ID;
 
             case XQC_H3_FRM_SETTINGS:
                 if (h3s->h3c->flags & XQC_H3_CONN_FLAG_SETTINGS_RECVED) {
                     xqc_h3_frm_reset_pctx(pctx);
+                    XQC_H3_CONN_ERR(h3c, H3_FRAME_UNEXPECTED,
+                                    -XQC_H3_CONTROL_FRAME_UNEXPECTED);
                     return -H3_FRAME_UNEXPECTED;
                 }
 
-                h3s->h3c->flags |= XQC_H3_CONN_FLAG_SETTINGS_RECVED;
-
-                if (xqc_h3_frm_parse_setting(pl->settings.setting, (void *)h3c) < 0) {
+                xqc_int_t settings_ret = xqc_h3_frm_parse_setting(
+                    pl->settings.setting, (void *)h3c);
+                if (settings_ret < 0) {
                     xqc_h3_frm_reset_pctx(pctx);
-                    return -H3_SETTINGS_ERROR;
+                    return settings_ret;
                 }
+                h3s->h3c->flags |= XQC_H3_CONN_FLAG_SETTINGS_RECVED;
                 break;
 
             case XQC_H3_FRM_GOAWAY:
+                /*
+                 * RFC 9114 Section 5.2: a later GOAWAY identifier cannot
+                 * exceed any previously received identifier.
+                 */
+                if (h3c->flags & XQC_H3_CONN_FLAG_GOAWAY_RECVD) {
+                    if (pl->goaway.stream_id.vi > h3c->goaway_stream_id) {
+                        xqc_log(h3c->log, XQC_LOG_ERROR,
+                                "|GOAWAY ID increased|old:%ui|new:%ui|",
+                                h3c->goaway_stream_id,
+                                pl->goaway.stream_id.vi);
+                        xqc_h3_frm_reset_pctx(pctx);
+                        XQC_H3_CONN_ERR(h3c, H3_ID_ERROR,
+                                        -XQC_H3_INVALID_GOAWAY_ID);
+                        return -XQC_H3_INVALID_GOAWAY_ID;
+                    }
 
-                if (!(h3s->h3c->flags & XQC_H3_CONN_FLAG_GOAWAY_RECVD)) {
-                    h3c->goaway_stream_id = pl->goaway.stream_id.vi;
-                    h3s->h3c->flags |= XQC_H3_CONN_FLAG_GOAWAY_RECVD;
-                }
-
-                if (h3c->goaway_stream_id > pl->goaway.stream_id.vi) {
                     h3c->goaway_stream_id = pl->goaway.stream_id.vi;
 
                 } else {
-                    xqc_log(h3c->log, XQC_LOG_WARN,
-                            "|xqc_h3_stream_process_control goaway_frame"
-                            " receive bigger push id|push_id:%ui|",
-                            pl->goaway.stream_id.vi);
+                    h3c->goaway_stream_id = pl->goaway.stream_id.vi;
+                    h3c->flags |= XQC_H3_CONN_FLAG_GOAWAY_RECVD;
                 }
+
                 xqc_log(h3c->log, XQC_LOG_DEBUG, "|H3_GOAWAY|stream_id:%ui|",
                         pl->goaway.stream_id.vi);
-
                 break;
 
 
@@ -922,10 +968,10 @@ xqc_h3_stream_process_push(xqc_h3_stream_t *h3s, unsigned char *data, size_t dat
     size_t processed = 0;
 
     while (processed < data_len) {
-        ssize_t read = xqc_h3_frm_parse(data + processed, data_len - processed, pctx);
+        ssize_t read = xqc_h3_frm_parse(
+            data + processed, data_len - processed, pctx, h3s->h3c);
         if (read < 0) {
-            xqc_h3_frm_reset_pctx(pctx);
-            return read;
+            return xqc_h3_stream_process_frame_parse_error(h3s, pctx, read);
         }
 
         processed += read;
@@ -1004,13 +1050,13 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                 pctx->state, data_len, processed);
 
         /* parse frame, mainly the type, length field */
-        ssize_t read = xqc_h3_frm_parse(data + processed, data_len - processed, pctx);
+        ssize_t read = xqc_h3_frm_parse(
+            data + processed, data_len - processed, pctx, h3s->h3c);
         if (read < 0) {
             xqc_log(h3s->log, XQC_LOG_ERROR,
                     "|parse frame error|ret:%z|state:%d|frame_type:%xL|", read,
                     pctx->state, pctx->frame.type);
-            xqc_h3_frm_reset_pctx(pctx);
-            return read;
+            return xqc_h3_stream_process_frame_parse_error(h3s, pctx, read);
         }
 
         xqc_log(h3s->log, XQC_LOG_DEBUG,
@@ -1028,7 +1074,7 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                 hdrs = xqc_h3_request_get_writing_headers(h3s->h3r);
                 if (NULL == hdrs) {
                     xqc_log(h3s->log, XQC_LOG_ERROR, "|get writing header error|");
-                    /* NULL here means current_header has reached
+                    /* NULL here means completed_header_count has reached
                      * XQC_H3_REQUEST_MAX_HEADERS_CNT (=2): our internal
                      * capacity for stored header blocks is exhausted.
                      * This is an implementation-side limit, not malformed
@@ -1042,13 +1088,18 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                 len = xqc_min(pctx->frame.len - pctx->frame.consumed_len,
                               data_len - processed);
                 read = xqc_qpack_dec_headers(h3s->qpack, h3s->ctx, data + processed, len,
-                                             hdrs, fin, &blocked);
+                                             hdrs,
+                                             h3s->h3c->local_h3_conn_settings.max_field_section_size,
+                                             fin, &blocked);
                 if (read < 0) {
                     xqc_log(h3s->log, XQC_LOG_ERROR,
                             "|xqc_h3_stream_process_request error"
                             "|error frame type:%xL|",
                             pctx->frame.type);
                     xqc_h3_frm_reset_pctx(pctx);
+                    if (read == -XQC_H3_INVALID_HEADER) {
+                        return read;
+                    }
                     return -XQC_QPACK_SAVE_HEADERS_ERROR;
                 }
                 processed += read;
@@ -1121,27 +1172,49 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                 break;
 
             case XQC_H3_FRM_DATA:
-                len = xqc_min(pctx->frame.len - pctx->frame.consumed_len,
-                              data_len - processed);
-                buf = xqc_var_buf_create(len);
-                if (buf == NULL) {
-                    return -XQC_EMALLOC;
+                /*
+                 * RFC 9114 Section 4.1: DATA before the initial HEADERS
+                 * frame is an invalid frame sequence.
+                 */
+                if (h3s->h3r->completed_header_count == 0) {
+                    xqc_log(h3s->log, XQC_LOG_ERROR,
+                            "|DATA before initial HEADERS|stream_id:%ui|",
+                            h3s->stream_id);
+                    xqc_h3_frm_reset_pctx(pctx);
+                    XQC_H3_CONN_ERR(h3s->h3c, H3_FRAME_UNEXPECTED,
+                                    -XQC_H3_REQUEST_FRAME_UNEXPECTED);
+                    return -XQC_H3_REQUEST_FRAME_UNEXPECTED;
                 }
 
-                ret = xqc_var_buf_save_data(buf, data + processed, len);
-                if (ret != XQC_OK) {
-                    xqc_var_buf_free(buf);
-                    xqc_h3_frm_reset_pctx(pctx);
-                    return ret;
-                }
+                len = xqc_min(pctx->frame.len - pctx->frame.consumed_len, data_len - processed);
+                /*
+                 * Keep a final empty DATA node to notify message completion
+                 * through recv_body (RFC 9114 Section 4.1).
+                 */
+                if (len > 0
+                    || (fin_flag && processed == data_len
+                        && pctx->frame.len == 0))
+                {
+                    buf = xqc_var_buf_create(len);
+                    if (buf == NULL) {
+                        return -XQC_EMALLOC;
+                    }
 
-                /* add data to buffer list */
-                ret = xqc_list_buf_to_tail(&h3s->h3r->body_buf, buf);
-                if (ret < 0) {
-                    xqc_h3_frm_reset_pctx(pctx);
-                    return ret;
+                    ret = xqc_var_buf_save_data(buf, data + processed, len);
+                    if (ret != XQC_OK) {
+                        xqc_var_buf_free(buf);
+                        xqc_h3_frm_reset_pctx(pctx);
+                        return ret;
+                    }
+
+                    /* add data to buffer list */
+                    ret = xqc_list_buf_to_tail(&h3s->h3r->body_buf, buf);
+                    if (ret < 0) {
+                        xqc_h3_frm_reset_pctx(pctx);
+                        return ret;
+                    }
+                    h3s->h3r->body_buf_count++;
                 }
-                h3s->h3r->body_buf_count++;
 
                 processed += len;
                 pctx->frame.consumed_len += len;
@@ -1220,13 +1293,13 @@ xqc_h3_stream_process_bytestream(xqc_h3_stream_t *h3s, unsigned char *data,
                 pctx->state, data_len, processed);
 
         /* parse frame, mainly the type, length field */
-        ssize_t read = xqc_h3_frm_parse(data + processed, data_len - processed, pctx);
+        ssize_t read = xqc_h3_frm_parse(
+            data + processed, data_len - processed, pctx, h3s->h3c);
         if (read < 0) {
             xqc_log(h3s->log, XQC_LOG_ERROR,
                     "|parse frame error|ret:%z|state:%d|frame_type:%xL|", read,
                     pctx->state, pctx->frame.type);
-            xqc_h3_frm_reset_pctx(pctx);
-            return read;
+            return xqc_h3_stream_process_frame_parse_error(h3s, pctx, read);
         }
 
         xqc_log(h3s->log, XQC_LOG_DEBUG,
@@ -1386,6 +1459,9 @@ xqc_h3_stream_process_uni(xqc_h3_stream_t *h3s, unsigned char *data, size_t data
         /* deliver data to modules which is concerned */
         ssize_t read = xqc_h3_stream_process_uni_payload(h3s, data + processed,
                                                          data_len - processed);
+        if (read == -XQC_QPACK_DYNAMIC_TABLE_EXCESSIVE_LOAD) {
+            return read;
+        }
         if (read < 0 || read + processed != data_len) {
             xqc_log(h3s->log, XQC_LOG_ERROR,
                     "|error processing uni-stream payload|type:%d|"
@@ -1495,13 +1571,13 @@ xqc_h3_stream_process_bidi_type_unknown(xqc_h3_stream_t *h3s, unsigned char *dat
             pctx->state, data_len, processed);
 
     /* parse frame, mainly the type, length field */
-    ssize_t read = xqc_h3_frm_parse(data + processed, data_len - processed, pctx);
+    ssize_t read = xqc_h3_frm_parse(
+        data + processed, data_len - processed, pctx, h3s->h3c);
     if (read < 0) {
         xqc_log(h3s->log, XQC_LOG_ERROR,
                 "|parse frame error|ret:%z|state:%d|frame_type:%xL|", read, pctx->state,
                 pctx->frame.type);
-        xqc_h3_frm_reset_pctx(pctx);
-        return read;
+        return xqc_h3_stream_process_frame_parse_error(h3s, pctx, read);
     }
 
     processed += read;
@@ -1524,6 +1600,20 @@ xqc_h3_stream_process_bidi_type_unknown(xqc_h3_stream_t *h3s, unsigned char *dat
         {
             xqc_log(h3s->log, XQC_LOG_ERROR,
                     "|client PUSH_PROMISE on unknown bidi stream|");
+            xqc_h3_frm_reset_pctx(pctx);
+            XQC_H3_CONN_ERR(h3s->h3c, H3_FRAME_UNEXPECTED,
+                            -XQC_H3_REQUEST_FRAME_UNEXPECTED);
+            return -XQC_H3_REQUEST_FRAME_UNEXPECTED;
+        }
+
+        /*
+         * RFC 9114 Section 4.1: the unknown-type dispatcher consumes a
+         * complete zero-length first frame before request-stream processing.
+         * Reject DATA here so that form cannot bypass the sequence check.
+         */
+        if (pctx->frame.type == XQC_H3_FRM_DATA) {
+            xqc_log(h3s->log, XQC_LOG_ERROR,
+                    "|DATA before initial HEADERS on unknown bidi stream|");
             xqc_h3_frm_reset_pctx(pctx);
             XQC_H3_CONN_ERR(h3s->h3c, H3_FRAME_UNEXPECTED,
                             -XQC_H3_REQUEST_FRAME_UNEXPECTED);
@@ -1661,6 +1751,14 @@ xqc_h3_stream_process_in(xqc_h3_stream_t *h3s, unsigned char *data, size_t data_
                     "|size:%uz|stream_id:%ui|",
                     processed, data_len, h3s->stream_id);
 
+            /* Duplicate work budget only applies to peer QPACK encoder streams. */
+            if (h3s->type == XQC_H3_STREAM_TYPE_QPACK_ENCODER
+                && processed == -XQC_QPACK_DYNAMIC_TABLE_EXCESSIVE_LOAD)
+            {
+                XQC_H3_CONN_ERR(h3c, H3_EXCESSIVE_LOAD, processed);
+                return processed;
+            }
+
             XQC_H3_CONN_ERR(h3c, H3_FRAME_ERROR, -XQC_H3_EPROC_CONTROL);
             return -XQC_H3_EPROC_CONTROL;
         }
@@ -1681,7 +1779,8 @@ xqc_h3_stream_process_in(xqc_h3_stream_t *h3s, unsigned char *data, size_t data_
                 errcode = -XQC_H3_EPROC_BYTESTREAM;
             }
 
-            if (processed == -XQC_H3_INVALID_HEADER
+            if ((processed == -XQC_H3_INVALID_HEADER
+                 || processed == -XQC_H3_EMALFORMED_HEADER)
                 && h3c->conn->conn_err == 0)
             {
                 /*
@@ -1911,7 +2010,9 @@ xqc_h3_stream_process_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s, xqc_bool_
         ret = xqc_h3_stream_process_in(h3s, buff, read, *fin);
         if (ret != XQC_OK) {
             xqc_log(h3c->log, XQC_LOG_ERROR, "|xqc_h3_stream_process_in error|%d|", ret);
-            XQC_H3_CONN_ERR(h3s->h3c, H3_INTERNAL_ERROR, ret);
+            if (h3s->stream_err == 0) {
+                XQC_H3_CONN_ERR(h3s->h3c, H3_INTERNAL_ERROR, ret);
+            }
             return ret;
         }
 
@@ -1972,6 +2073,45 @@ xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s)
             h3s, buf->data + buf->consumed_len, buf->data_len - buf->consumed_len,
             buf->fin_flag);
         if (processed < 0) {
+            if (processed == -XQC_H3_INVALID_HEADER
+                || processed == -XQC_H3_EMALFORMED_HEADER)
+            {
+                if (h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED) {
+                    h3s->flags &= ~XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED;
+                }
+
+                if (h3s->blocked_stream) {
+                    xqc_h3_conn_remove_blocked_stream(h3s->h3c, h3s->blocked_stream);
+                    h3s->blocked_stream = NULL;
+                    if (h3s->type == XQC_H3_STREAM_TYPE_REQUEST && h3s->h3r) {
+                        xqc_h3_request_unblocked(h3s->h3r);
+                    }
+                }
+
+                if (h3s->blocked_buf_size > 0 && h3s->h3c != NULL) {
+                    h3s->h3c->total_blocked_buf_size -= h3s->blocked_buf_size;
+                    h3s->blocked_buf_size = 0;
+                }
+                xqc_list_buf_list_free(&h3s->blocked_buf);
+
+                if (h3s->stream != NULL) {
+                    xqc_stream_close_with_error(h3s->stream,
+                                                H3_MESSAGE_ERROR);
+                    h3s->ref_cnt--;
+                    return XQC_OK;
+                }
+
+                /*
+                 * the transport stream was already closed while this h3 stream
+                 * was blocked; nothing remains to reset at the transport layer.
+                 * destroy the h3 stream to finish the deferred cleanup.
+                 */
+                xqc_log(h3s->log, XQC_LOG_DEBUG, "|reject blocked h3 stream after "
+                        "transport stream closed|stream_id:%ui|", h3s->stream_id);
+                h3s->ref_cnt--;
+                xqc_h3_stream_destroy(h3s);
+                return XQC_OK;
+            }
             h3s->ref_cnt--;
             return processed;
         }

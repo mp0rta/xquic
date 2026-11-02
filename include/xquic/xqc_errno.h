@@ -37,8 +37,9 @@ typedef enum {
     TRA_INVALID_TOKEN               =  0xB,
     TRA_APPLICATION_ERROR           =  0xC,
     TRA_CRYPTO_BUFFER_EXCEEDED      =  0xD,
-    TRA_0RTT_TRANS_PARAMS_ERROR     =  0xE,   /**< MUST delete the current saved 0RTT transport parameters */
-    TRA_AEAD_LIMIT_REACHED          =  0x1e,  /**< RFC 9001 §6.6: AEAD integrity limit reached */
+    TRA_KEY_UPDATE_ERROR            =  0xE,   /**< RFC 9001 Section 6.7 */
+    TRA_AEAD_LIMIT_REACHED          =  0xF,   /**< RFC 9000 Section 20.1 */
+    TRA_NO_VIABLE_PATH              =  0x10,  /**< RFC 9000 Section 8.2.4 */
     /*
      * RFC 9000 Section 6.2 does not assign a CONNECTION_CLOSE code for
      * the Version Negotiation abort path, because the client cannot
@@ -48,6 +49,14 @@ typedef enum {
      * close reasons, but it is never serialised onto the wire.
      */
     TRA_VERSION_NEGOTIATION_ERROR   =  0x53,
+    /*
+     * Library-internal close reasons. They remain visible through
+     * xqc_conn_get_errno() so callers can discard incompatible 0-RTT state,
+     * but CONNECTION_CLOSE serialization maps them to the errors required by
+     * RFC 9000 Section 7.4.1 and RFC 9221 Section 3.
+     */
+    TRA_0RTT_TRANS_PARAMS_ERROR     =  0x54,
+    TRA_0RTT_DGRAM_PARAMS_ERROR     =  0x55,
     /* RFC 9001 Section 4.8: TLS alert 120 maps to 0x100 + 120 = 0x178 */
     TRA_NO_APPLICATION_PROTOCOL     =  0x178,
 } xqc_trans_err_code_t;
@@ -142,7 +151,6 @@ typedef enum {
     XQC_ESTREAM_BLOCKED                 = 620,      /**< stream-level flow control */
     XQC_EENCRYPT                        = 621,      /**< encryption error */
     XQC_EDECRYPT                        = 622,      /**< decryption error */
-    XQC_EAEAD_LIMIT                     = 623,      /**< AEAD integrity limit reached per RFC 9001 §6.6 */
     XQC_ESTREAM_NFOUND                  = 623,      /**< fail to find the corresponding stream */
     XQC_EWRITE_PKT                      = 624,      /**< fail to create a package or write a package header */
     XQC_ECREATE_STREAM                  = 625,      /**< fail to create stream */
@@ -164,6 +172,8 @@ typedef enum {
     XQC_ESTATELESS_RESET                = 641,      /**< connection is reset by peer */
     XQC_EPACKET_FILETER_CALLBACK        = 642,      /**< error with packet filter callback function */
     XQC_EVERSION_NEGOTIATION            = 643,      /**< client received a Version Negotiation packet, RFC 9000 §6.2 mandates abandoning the connection attempt */
+    /** RFC 9001 Section 6.6: AEAD confidentiality or integrity limit */
+    XQC_EAEAD_LIMIT                     = 644,
 
     XQC_EMP_NOT_SUPPORT_MP = 650,   /**< Multipath - don't support multipath */
     XQC_EMP_NO_AVAIL_PATH_ID = 651, /**< Multipath - no available path id */
@@ -298,6 +308,10 @@ typedef enum {
     XQC_H3_MISSING_SETTINGS             = 834,  /**< first frame on control stream is not SETTINGS, RFC 9114 §6.2.1 */
     XQC_H3_REQUEST_FRAME_UNEXPECTED     = 835,  /**< control-only frame received on request stream (RFC 9114 §7.2) */
     XQC_H3_INVALID_MAX_PUSH_ID          = 836,  /**< RFC 9114 §7.2.7 */
+    XQC_H3_EMALFORMED_HEADER            = 837,  /**< malformed HTTP/3 header field (RFC 9114 4.1.2 / 4.2) */
+    XQC_H3_INVALID_CANCEL_PUSH_ID       = 838,  /**< RFC 9114 §7.2.3 */
+    XQC_H3_RESERVED_FRAME_UNEXPECTED    = 839,  /**< HTTP/2 reserved frame received, RFC 9114 §7.2.8 */
+    XQC_H3_INVALID_GOAWAY_ID            = 840,  /**< RFC 9114 §5.2 */
 
     XQC_H3_ERR_MAX,
 } xqc_h3_error_t;
@@ -309,24 +323,23 @@ static const int H3_ERR_CNT = XQC_H3_ERR_MAX - H3_ERR_START;
  * @brief xquic QPACK application error codes: 9xx
  */
 typedef enum {
-    XQC_QPACK_DECODER_VARINT_ERROR =
-        900,                       /**< qpack decode variable-length integer error */
-    XQC_QPACK_ENCODER_ERROR = 901, /**< qpack encode error */
-    XQC_QPACK_DECODER_ERROR = 902, /**< qpack decode error */
-    XQC_QPACK_DYNAMIC_TABLE_ERROR = 903,  /**< qpack dynamic table error */
-    XQC_QPACK_STATIC_TABLE_ERROR = 904,   /**< qpack static table error */
-    XQC_QPACK_SET_DTABLE_CAP_ERROR = 905, /**< set dynamic table capacity error */
-    XQC_QPACK_SEND_ERROR = 906,           /**< send data error or control message error */
-    XQC_QPACK_SAVE_HEADERS_ERROR =
-        907, /**< failed to save name-value to header structure */
-    XQC_QPACK_UNKNOWN_INSTRUCTION = 908,    /**< unknown encoder/decoder instruction */
-    XQC_QPACK_INSTRUCTION_ERROR = 909,      /**< error instruction */
-    XQC_QPACK_DYNAMIC_TABLE_REFERRED = 910, /**< dynamic table entry is still referred */
-    XQC_QPACK_DYNAMIC_TABLE_VOID_ENTRY = 911, /**< entry inexists in dynamic table */
-    XQC_QPACK_STATE_ERROR = 912,              /**< state is error */
-    XQC_QPACK_DYNAMIC_TABLE_NOT_ENOUGH = 913, /**< dynamic table not enough */
-    XQC_QPACK_HUFFMAN_DEC_ERROR = 914,        /**< huffman decode error */
-    XQC_QPACK_HUFFMAN_DEC_STATE_ERROR = 915,  /**< huffman decode state error */
+    XQC_QPACK_DECODER_VARINT_ERROR      = 900,  /**< qpack decode variable-length integer error */
+    XQC_QPACK_ENCODER_ERROR             = 901,  /**< qpack encode error */
+    XQC_QPACK_DECODER_ERROR             = 902,  /**< qpack decode error */
+    XQC_QPACK_DYNAMIC_TABLE_ERROR       = 903,  /**< qpack dynamic table error */
+    XQC_QPACK_STATIC_TABLE_ERROR        = 904,  /**< qpack static table error */
+    XQC_QPACK_SET_DTABLE_CAP_ERROR      = 905,  /**< set dynamic table capacity error */
+    XQC_QPACK_SEND_ERROR                = 906,  /**< send data error or control message error */
+    XQC_QPACK_SAVE_HEADERS_ERROR        = 907,  /**< failed to save name-value to header structure */
+    XQC_QPACK_UNKNOWN_INSTRUCTION       = 908,  /**< unknown encoder/decoder instruction */
+    XQC_QPACK_INSTRUCTION_ERROR         = 909,  /**< error instruction */
+    XQC_QPACK_DYNAMIC_TABLE_REFERRED    = 910,  /**< dynamic table entry is still referred */
+    XQC_QPACK_DYNAMIC_TABLE_VOID_ENTRY  = 911,  /**< entry inexists in dynamic table */
+    XQC_QPACK_STATE_ERROR               = 912,  /**< state is error */
+    XQC_QPACK_DYNAMIC_TABLE_NOT_ENOUGH  = 913,  /**< dynamic table not enough */
+    XQC_QPACK_HUFFMAN_DEC_ERROR         = 914,  /**< huffman decode error */
+    XQC_QPACK_HUFFMAN_DEC_STATE_ERROR   = 915,  /**< huffman decode state error */
+    XQC_QPACK_DYNAMIC_TABLE_EXCESSIVE_LOAD = 916, /**< peer Duplicate work limit exceeded */
 
     XQC_QPACK_ERR_MAX,
 } xqc_qpack_error_t;

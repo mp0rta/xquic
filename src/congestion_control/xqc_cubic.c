@@ -177,10 +177,11 @@ xqc_cubic_on_lost(void *cong_ctl, xqc_usec_t lost_sent_time)
     }
 
     /* Multiplicative Decrease */
-    cubic->cwnd = cubic->cwnd * XQC_CUBIC_BETA / XQC_CUBIC_BETA_SCALE;
-    cubic->cwnd = xqc_max(cubic->cwnd, cubic->min_cwnd);
+    /* RFC 8312 Section 4.5 calculates ssthresh before the cwnd floor. */
+    cubic->ssthresh =
+        cubic->cwnd * XQC_CUBIC_BETA / XQC_CUBIC_BETA_SCALE;
+    cubic->cwnd = xqc_max(cubic->ssthresh, cubic->min_cwnd);
     cubic->tcp_cwnd = cubic->cwnd;
-    cubic->ssthresh = cubic->cwnd;
 }
 
 
@@ -233,6 +234,8 @@ xqc_cubic_reset_cwnd(void *cong_ctl)
     cubic->cwnd = cubic->min_cwnd;
     cubic->tcp_cwnd = cubic->min_cwnd;
     cubic->last_max_cwnd = cubic->min_cwnd;
+    /* RFC 9002 Appendix B.8 resets recovery after persistent congestion. */
+    cubic->congestion_recovery_start_time = 0;
 }
 
 int32_t

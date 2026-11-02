@@ -14,6 +14,12 @@
 #include "src/transport/xqc_multipath.h"
 #include "src/transport/xqc_send_ctl.h"
 #include "src/transport/xqc_conn.h"
+#include "src/transport/xqc_cid.h"
+#include "src/transport/xqc_packet_out.h"
+#include "src/transport/xqc_send_queue.h"
+#include "src/transport/xqc_frame.h"
+#include "xqc_common_test.h"
+#include <string.h>
 
 void
 test_next_wakeup_includes_validating_path_timer(void)
@@ -63,43 +69,75 @@ test_next_wakeup_includes_validating_path_timer(void)
     xqc_test_helper_conn_destroy(conn);
 }
 
-void
-test_validation_pto_counts_attempts_and_abandons(void)
+static xqc_bool_t
+xqc_test_queued_frame(xqc_list_head_t *queue, xqc_frame_type_bit_t frame)
 {
-    xqc_connection_t *conn = xqc_test_helper_conn_create(NULL);
+    xqc_list_head_t *pos;
+    xqc_list_for_each(pos, queue) {
+        xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+        if (po->po_frame_types & frame) {
+            return XQC_TRUE;
+        }
+    }
+    return XQC_FALSE;
+}
+
+/*
+ * draft-21 Section 3.1: when the validation deadline (PATH_IDLE, armed for
+ * RFC 9000 Section 8.2.4 when validation starts) expires, the path is closed
+ * with PATH_ABANDON, stops using its connection IDs, and is kept until the
+ * draining timer (Section 3.4), which a re-armed PATH_IDLE does not cut
+ * short.
+ */
+void
+test_validation_deadline_abandons_path(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    conn->enable_multipath = 1;
+    conn->local_max_path_id = 1;
 
-    xqc_path_ctx_t *path = calloc(1, sizeof(*path));
-    path->path_send_ctl = calloc(1, sizeof(*path->path_send_ctl));
-    path->parent_conn = conn;
-    /* xqc_path_request_abandon's draining backstop calls xqc_timer_set,
-     * which unconditionally dereferences path_timer_manager.log via the
-     * xqc_log() macro — a calloc()-zeroed (NULL) log would segfault. */
-    path->path_send_ctl->path_timer_manager.log = conn->log;
+    xqc_cid_t scid = {0}, dcid = {0};
+    scid.cid_len = dcid.cid_len = 8;
+    memset(scid.cid_buf, 0x5a, 8);
+    memset(dcid.cid_buf, 0xa5, 8);
+    CU_ASSERT_FATAL(xqc_cid_set_add_path(&conn->scid_set, 1) == XQC_OK);
+    CU_ASSERT_FATAL(xqc_cid_set_insert_cid(&conn->scid_set, &scid,
+                                           XQC_CID_UNUSED, 8, 1) == XQC_OK);
+    CU_ASSERT_FATAL(xqc_cid_set_add_path(&conn->dcid_set, 1) == XQC_OK);
+    CU_ASSERT_FATAL(xqc_cid_set_insert_cid(&conn->dcid_set, &dcid,
+                                           XQC_CID_UNUSED, 8, 1) == XQC_OK);
 
-    /* Non-VALIDATING paths are ignored. */
-    path->path_state = XQC_PATH_STATE_ACTIVE;
-    xqc_path_validation_on_pto(path);
-    CU_ASSERT_EQUAL(path->path_challenge_attempts, 0);
+    xqc_path_ctx_t *path = xqc_conn_create_path_inner(conn, &scid, &dcid,
+        XQC_APP_PATH_STATUS_AVAILABLE, 1);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_VALIDATING);
+    xqc_timer_manager_t *tm = &path->path_send_ctl->path_timer_manager;
+    CU_ASSERT_FATAL(xqc_timer_is_set(tm, XQC_TIMER_PATH_IDLE));
 
-    /* VALIDATING: one attempt per PTO; abandon at the cap. */
-    path->path_state = XQC_PATH_STATE_VALIDATING;
-    xqc_path_validation_on_pto(path);
-    CU_ASSERT_EQUAL(path->path_challenge_attempts, 1);
-    xqc_path_validation_on_pto(path);
-    CU_ASSERT_EQUAL(path->path_challenge_attempts, 2);
-    xqc_path_validation_on_pto(path);
-    CU_ASSERT_EQUAL(path->path_challenge_attempts, XQC_PATH_VALIDATION_MAX_ATTEMPTS);
+    /* the deadline passes with no PATH_RESPONSE */
+    xqc_usec_t now = tm->timer[XQC_TIMER_PATH_IDLE].expire_time;
+    xqc_timer_expire(tm, now);
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_CLOSING);
+    CU_ASSERT(xqc_test_queued_frame(&conn->conn_send_queue->sndq_send_packets,
+                                    XQC_FRAME_BIT_PATH_ABANDON)
+              || xqc_test_queued_frame(
+                     &conn->conn_send_queue->sndq_send_packets_high_pri,
+                     XQC_FRAME_BIT_PATH_ABANDON));
+    CU_ASSERT_EQUAL(xqc_get_path_cid_set(&conn->scid_set, 1)->set_state,
+                    XQC_CID_SET_ABANDONED);
+    CU_ASSERT_EQUAL(xqc_get_path_cid_set(&conn->dcid_set, 1)->set_state,
+                    XQC_CID_SET_ABANDONED);
+    CU_ASSERT_FATAL(xqc_timer_is_set(tm, XQC_TIMER_PATH_DRAINING));
+    xqc_usec_t drain = tm->timer[XQC_TIMER_PATH_DRAINING].expire_time;
+
+    /* a packet received on the path re-arms PATH_IDLE, which expires first */
+    xqc_timer_set(tm, XQC_TIMER_PATH_IDLE, now, 1);
+    xqc_timer_expire(tm, now + 1);
     CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_CLOSING);
 
-    /* Draining backstop: without it, CLOSING is terminal whenever the peer
-     * never echoes the PATH_ABANDON (the norm for a black-holed path, since
-     * the peer typically never learned the path existed). The timer must
-     * be armed so CLOSING -> CLOSED -> path_removed_notify still fires. */
-    CU_ASSERT_TRUE(xqc_timer_is_set(&path->path_send_ctl->path_timer_manager,
-                                    XQC_TIMER_PATH_DRAINING));
+    xqc_timer_expire(tm, drain);
+    CU_ASSERT_EQUAL(path->path_state, XQC_PATH_STATE_CLOSED);
 
-    free(path->path_send_ctl);
-    free(path);
-    xqc_test_helper_conn_destroy(conn);
+    xqc_engine_destroy(conn->engine);
 }
