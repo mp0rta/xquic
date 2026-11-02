@@ -33,6 +33,12 @@ void xqc_test_retire_prior_to_still_over_limit(void);
 
 void xqc_test_mp_retire_prior_to_full_set(void);
 
+void xqc_test_retire_prior_to_rotation_bounded(void);
+
+void xqc_test_mp_retire_prior_to_rotation_bounded(void);
+
+void xqc_test_retire_prior_to_unacked_limit(void);
+
 /* an abandoned path ID's CIDs leave cid_set_list but stay findable */
 void xqc_test_cid_abandoned_set_off_list(void);
 

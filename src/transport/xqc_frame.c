@@ -1404,19 +1404,30 @@ xqc_process_ping_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
  * neither count toward active_connection_id_limit nor get picked to replace
  * a path's connection ID any more. Their RETIRE_CONNECTION_ID frames go out
  * with xqc_send_retired_dcids() once the new connection ID is stored, which
- * the paths still using one of them can then switch to.
+ * the paths still using one of them can then switch to, and each is
+ * forgotten once its frame is acknowledged: see
+ * xqc_conn_on_retire_conn_id_acked().
+ *
+ * RFC 9000 Section 5.1.2: "An endpoint SHOULD limit the number of connection
+ * IDs it has retired locally for which RETIRE_CONNECTION_ID frames have not
+ * yet been acknowledged. An endpoint SHOULD allow for sending and tracking a
+ * number of RETIRE_CONNECTION_ID frames of at least twice the value of the
+ * active_connection_id_limit transport parameter." Past that, it "MAY choose
+ * to treat having connection IDs in need of retirement that exceed this limit
+ * as a connection error of type CONNECTION_ID_LIMIT_ERROR".
  */
-static void
+static xqc_int_t
 xqc_retire_dcids_prior_to(xqc_connection_t *conn, uint64_t path_id,
     uint64_t from, uint64_t retire_prior_to)
 {
+    uint64_t                limit;
     xqc_cid_inner_t        *inner_cid;
     xqc_list_head_t        *pos, *next;
     xqc_cid_set_inner_t    *inner_set;
 
     inner_set = xqc_get_path_cid_set(&conn->dcid_set, path_id);
     if (inner_set == NULL) {
-        return;
+        return XQC_OK;
     }
 
     xqc_list_for_each_safe(pos, next, &inner_set->cid_list) {
@@ -1429,6 +1440,18 @@ xqc_retire_dcids_prior_to(xqc_connection_t *conn, uint64_t path_id,
                                          path_id);
         }
     }
+
+    /* the retired ones whose frames are not acknowledged yet included */
+    limit = conn->local_settings.active_connection_id_limit;
+    if (inner_set->retired_cnt > 2 * limit) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|too many retired dcids|path:%ui|retired:%ui|limit:%ui|",
+                path_id, inner_set->retired_cnt, limit);
+        XQC_CONN_ERR(conn, TRA_CONNECTION_ID_LIMIT_ERROR);
+        return -XQC_EPROTO;
+    }
+
+    return XQC_OK;
 }
 
 /* send the frames retiring what xqc_retire_dcids_prior_to() marked */
@@ -1482,9 +1505,6 @@ xqc_process_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
     xqc_cid_t new_conn_cid;
     uint64_t retire_prior_to, curr_rpi;
 
-    xqc_cid_inner_t *inner_cid;
-    xqc_list_head_t *pos, *next;
-    xqc_cid_set_inner_t *inner_set;
     xqc_bool_t sr_token_inserted = XQC_FALSE;
 
     ret = xqc_parse_new_conn_id_frame(packet_in, &new_conn_cid, &retire_prior_to, conn);
@@ -1546,7 +1566,11 @@ xqc_process_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in
          * frames before adding the newly provided connection ID to the set of active
          * connection IDs.
          */
-        xqc_retire_dcids_prior_to(conn, XQC_INITIAL_PATH_ID, curr_rpi, retire_prior_to);
+        ret = xqc_retire_dcids_prior_to(conn, XQC_INITIAL_PATH_ID, curr_rpi,
+                                        retire_prior_to);
+        if (ret != XQC_OK) {
+            return ret;
+        }
 
         xqc_log(conn->log, XQC_LOG_DEBUG, "|retire_prior_to|%ui|increase to|%ui|",
                 curr_rpi, retire_prior_to);
@@ -2808,9 +2832,6 @@ xqc_process_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
     xqc_cid_t new_conn_cid;
     uint64_t retire_prior_to, curr_rpi;
 
-    xqc_cid_inner_t *inner_cid;
-    xqc_list_head_t *pos, *next;
-    xqc_cid_set_inner_t *inner_set;
     xqc_bool_t sr_token_inserted = XQC_FALSE;
     uint64_t path_id;
 
@@ -2887,7 +2908,11 @@ xqc_process_mp_new_conn_id_frame(xqc_connection_t *conn, xqc_packet_in_t *packet
          * frames before adding the newly provided connection ID to the set of active
          * connection IDs.
          */
-        xqc_retire_dcids_prior_to(conn, path_id, curr_rpi, retire_prior_to);
+        ret = xqc_retire_dcids_prior_to(conn, path_id, curr_rpi,
+                                        retire_prior_to);
+        if (ret != XQC_OK) {
+            return ret;
+        }
 
         xqc_log(conn->log, XQC_LOG_DEBUG,
                 "|path:%ui|retire_prior_to|%ui|increase to|%ui|", path_id, curr_rpi,

@@ -238,8 +238,9 @@ fi
 
 # 747: once the handshake is done, the server issues a connection ID whose
 # Retire Prior To retires all the others, the one in use included (RFC 9000
-# Section 19.15). The client retires them, sends with the new one, and the
-# request completes.
+# Section 19.15). The client retires them, sends with the new one, forgets
+# them once the server acknowledges their RETIRE_CONNECTION_ID frames, and
+# the request completes.
 case_fork_core_retire_prior_to_all_cids()
 {
 rm -rf tp_localhost test_session xqc_token
@@ -251,14 +252,17 @@ rotated=`grep "\[retire-prior-to-test\]|retire_prior_to:[1-9][0-9]*|ret:0|" svr_
 retired=`grep "|retire_prior_to|0|increase to|" clog`
 result=`grep ">>>>>>>> pass:1" stdlog`
 conn_err_zero=`grep -E "conn_err:0[^0-9]" stdlog`
+removed=`grep "|retired dcid removed|" clog`
 errlog=`grep_err_log`
 if [ -z "$errlog" ] && [ -n "$rotated" ] && [ -n "$retired" ] \
-    && [ "$result" == ">>>>>>>> pass:1" ] && [ -n "$conn_err_zero" ]; then
+    && [ -n "$removed" ] && [ "$result" == ">>>>>>>> pass:1" ] \
+    && [ -n "$conn_err_zero" ]; then
     echo ">>>>>>>> pass:1"
     case_print_result "retire_prior_to_all_cids" "pass"
 else
     echo ">>>>>>>> pass:0 (rotated:${rotated:+y} retired:${retired:+y}" \
-        "result:${result:+y} conn_err_zero:${conn_err_zero:+y} errlog:${errlog:+y})"
+        "removed:${removed:+y} result:${result:+y}" \
+        "conn_err_zero:${conn_err_zero:+y} errlog:${errlog:+y})"
     case_print_result "retire_prior_to_all_cids" "fail"
 fi
 }

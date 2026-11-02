@@ -142,6 +142,11 @@ typedef struct xqc_packet_out_s {
     uint64_t                po_new_cid_seq;
     uint32_t                po_new_cid_path;
 
+    /* the peer's connection ID that the (PATH_)RETIRE_CONNECTION_ID frame
+     * of this packet retires */
+    uint64_t                po_retire_cid_seq;
+    uint64_t                po_retire_cid_path;
+
     /* G-F9 (draft-21 §4.3 ¶12): PATH_STATUS sequence carried by this
      * packet. Only meaningful when XQC_FRAME_BIT_PATH_STATUS is set on
      * po_frame_types. Compared against path->app_path_status_send_seq_num
