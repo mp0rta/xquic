@@ -2047,6 +2047,10 @@ xqc_conn_send_ping_internal(xqc_connection_t *conn, void *ping_user_data,
         xqc_list_for_each_safe(pos, next, &conn->conn_paths_list)
         {
             path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+            /* the keep-alive leaves a quiet backup path alone */
+            if (!notify && xqc_path_is_quiet_standby(path)) {
+                continue;
+            }
             if (path->path_state == XQC_PATH_STATE_ACTIVE) {
                 ret = xqc_write_ping_to_packet(conn, path, ping_user_data, notify, pr);
                 if (ret < 0) {

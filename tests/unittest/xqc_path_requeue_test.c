@@ -389,3 +389,101 @@ xqc_test_backup_skips_dead_primary(void)
 
     requeue_test_teardown(&t);
 }
+
+/* the path idle timer callback (xqc_timer.c) */
+void xqc_timer_path_idle_timeout(xqc_timer_type_t type, xqc_usec_t now,
+                                 void *user_data);
+
+/* keep-alive PINGs queued for @path */
+static int
+requeue_test_keepalive_pings(requeue_test_t *t, xqc_path_ctx_t *path)
+{
+    int n = 0;
+    xqc_list_head_t *pos, *next;
+    xqc_list_for_each_safe(pos, next,
+                           &t->conn->conn_send_queue->sndq_send_packets_high_pri)
+    {
+        xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+        if (po->po_path_id == path->path_id
+            && (po->po_frame_types & XQC_FRAME_BIT_PING))
+        {
+            n++;
+        }
+    }
+    return n;
+}
+
+/* A STANDBY path is quiet only with standby probing off and another path
+ * working: once the primary is dead, the backup carries the traffic. */
+void
+xqc_test_quiet_standby_rule(void)
+{
+    requeue_test_t t;
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    xqc_path_ctx_t *primary = t.dead;
+    xqc_path_ctx_t *backup = requeue_test_add_path(&t, 0);
+    CU_ASSERT_FATAL(backup != NULL);
+    backup->app_path_status = XQC_APP_PATH_STATUS_STANDBY;
+    t.conn->conn_settings.standby_path_probe_timeout = 0;
+
+    CU_ASSERT_TRUE(xqc_path_is_quiet_standby(backup));
+    CU_ASSERT_FALSE(xqc_path_is_quiet_standby(primary));
+
+    t.conn->conn_settings.standby_path_probe_timeout = 1000;
+    CU_ASSERT_FALSE(xqc_path_is_quiet_standby(backup));
+    t.conn->conn_settings.standby_path_probe_timeout = 0;
+
+    primary->path_send_ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    CU_ASSERT_FALSE(xqc_path_is_quiet_standby(backup));
+
+    requeue_test_teardown(&t);
+}
+
+/* The keep-alive PINGs every path but a quiet backup. A PING the
+ * application asked for (notify) still goes on every path. */
+void
+xqc_test_keepalive_skips_quiet_standby(void)
+{
+    requeue_test_t t;
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    t.conn->conn_settings.mp_ping_on = 1;
+    t.conn->conn_settings.standby_path_probe_timeout = 0;
+    xqc_path_ctx_t *primary = t.dead;
+    xqc_path_ctx_t *backup = requeue_test_add_path(&t, 0);
+    CU_ASSERT_FATAL(backup != NULL);
+    backup->app_path_status = XQC_APP_PATH_STATUS_STANDBY;
+
+    CU_ASSERT_EQUAL(xqc_conn_send_ping_internal(t.conn, NULL, XQC_FALSE), XQC_OK);
+    CU_ASSERT_EQUAL(requeue_test_keepalive_pings(&t, primary), 1);
+    CU_ASSERT_EQUAL(requeue_test_keepalive_pings(&t, backup), 0);
+
+    /* the primary is dead: the backup is pinged again */
+    primary->path_send_ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    CU_ASSERT_EQUAL(xqc_conn_send_ping_internal(t.conn, NULL, XQC_FALSE), XQC_OK);
+    CU_ASSERT_EQUAL(requeue_test_keepalive_pings(&t, backup), 1);
+
+    requeue_test_teardown(&t);
+}
+
+/* The path idle timer keeps a quiet backup: it re-arms instead of closing
+ * the path. (A probed STANDBY path is closed as before; closing needs a full
+ * path, which this fixture does not build.) */
+void
+xqc_test_idle_timer_keeps_quiet_standby(void)
+{
+    requeue_test_t t;
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    t.conn->conn_settings.standby_path_probe_timeout = 0;
+    xqc_path_ctx_t *backup = requeue_test_add_path(&t, 0);
+    CU_ASSERT_FATAL(backup != NULL);
+    backup->app_path_status = XQC_APP_PATH_STATUS_STANDBY;
+    t.conn->active_path_count = 2;
+
+    xqc_timer_path_idle_timeout(XQC_TIMER_PATH_IDLE, xqc_monotonic_timestamp(),
+                                backup->path_send_ctl);
+    CU_ASSERT_EQUAL(backup->path_state, XQC_PATH_STATE_ACTIVE);
+    CU_ASSERT_TRUE(xqc_timer_is_set(&backup->path_send_ctl->path_timer_manager,
+                                    XQC_TIMER_PATH_IDLE));
+
+    requeue_test_teardown(&t);
+}

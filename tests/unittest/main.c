@@ -961,6 +961,12 @@ main(int argc, char *argv[])
                         xqc_test_pmtud_ack_spill_losses_make_path_suspect)
         || !CU_add_test(pSuite, "xqc_test_pmtud_smaller_spill_ack_keeps_larger_loss",
                         xqc_test_pmtud_smaller_spill_ack_keeps_larger_loss)
+        || !CU_add_test(pSuite, "xqc_test_quiet_standby_rule",
+                        xqc_test_quiet_standby_rule)
+        || !CU_add_test(pSuite, "xqc_test_keepalive_skips_quiet_standby",
+                        xqc_test_keepalive_skips_quiet_standby)
+        || !CU_add_test(pSuite, "xqc_test_idle_timer_keeps_quiet_standby",
+                        xqc_test_idle_timer_keeps_quiet_standby)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)

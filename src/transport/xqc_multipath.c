@@ -884,6 +884,22 @@ xqc_path_is_dead_with_alternative(xqc_path_ctx_t *path)
         && xqc_path_has_working_alternative(path);
 }
 
+/* A STANDBY path left silent on purpose: standby probing is off
+ * (standby_path_probe_timeout == 0) and another path works. Neither the
+ * keep-alive PING nor the path idle timer touches it, so a backup on a
+ * metered or battery-bound link (cellular) can stay idle until it is needed. */
+xqc_bool_t
+xqc_path_is_quiet_standby(xqc_path_ctx_t *path)
+{
+    xqc_connection_t *conn = path->parent_conn;
+
+    return conn->enable_multipath
+        && path->path_state == XQC_PATH_STATE_ACTIVE
+        && path->app_path_status == XQC_APP_PATH_STATUS_STANDBY
+        && conn->conn_settings.standby_path_probe_timeout == 0
+        && xqc_path_has_working_alternative(path);
+}
+
 void
 xqc_set_path_state(xqc_path_ctx_t *path, xqc_path_state_t dst_state)
 {

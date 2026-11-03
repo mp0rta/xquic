@@ -380,6 +380,8 @@ xqc_bool_t xqc_path_has_working_alternative(xqc_path_ctx_t *path);
 
 xqc_bool_t xqc_path_is_dead_with_alternative(xqc_path_ctx_t *path);
 
+xqc_bool_t xqc_path_is_quiet_standby(xqc_path_ctx_t *path);
+
 xqc_path_perf_class_t xqc_path_get_perf_class(xqc_path_ctx_t *path);
 
 double xqc_path_recent_loss_rate(xqc_path_ctx_t *path);

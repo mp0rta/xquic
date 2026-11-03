@@ -13,5 +13,8 @@ void xqc_test_minrtt_probes_dead_path(void);
 void xqc_test_backup_failover(void);
 void xqc_test_backup_probes_dead_path(void);
 void xqc_test_backup_skips_dead_primary(void);
+void xqc_test_quiet_standby_rule(void);
+void xqc_test_keepalive_skips_quiet_standby(void);
+void xqc_test_idle_timer_keeps_quiet_standby(void);
 
 #endif /* XQC_PATH_REQUEUE_TEST_H_INCLUDED */

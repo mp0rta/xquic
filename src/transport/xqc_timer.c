@@ -169,6 +169,15 @@ xqc_timer_path_idle_timeout(xqc_timer_type_t type, xqc_usec_t now, void *user_da
         return;
     }
 
+    /* A quiet STANDBY path is silent on purpose while another path works:
+     * keep it, it is the backup. */
+    if (xqc_path_is_quiet_standby(path)) {
+        xqc_log(conn->log, XQC_LOG_DEBUG, "|quiet standby path kept:%ui|", path->path_id);
+        xqc_timer_set(&send_ctl->path_timer_manager, XQC_TIMER_PATH_IDLE,
+                      now, xqc_path_get_idle_timeout(path) * 1000);
+        return;
+    }
+
     /* the draining timer closes a CLOSING path; a PATH_IDLE re-armed by a
        packet received on it must not close it earlier (draft-21 Section 3.4) */
     if (path->path_state == XQC_PATH_STATE_CLOSING
