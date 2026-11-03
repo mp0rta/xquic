@@ -251,7 +251,10 @@ xqc_test_path_validation_timer_not_extended_by_packet(void)
 typedef struct xqc_rtt_case_s {
     const char     *name;
     xqc_bool_t      hsk_confirmed;
+    /* the ACK arrived before the confirmation, processed after it */
+    xqc_bool_t      ack_before_confirmation;
     xqc_bool_t      first_sample;
+    xqc_bool_t      sample_ignored;
     uint64_t        remote_max_ack_delay_ms;
     xqc_usec_t      input_ack_delay;
     xqc_usec_t      latest_rtt;
@@ -274,18 +277,26 @@ xqc_test_send_ctl_run_rtt_case(xqc_connection_t *conn, xqc_path_ctx_t *path,
     send_ctl->ctl_srtt  = tc->pre_srtt;
     send_ctl->ctl_rttvar = tc->pre_rttvar;
     send_ctl->ctl_minrtt = tc->pre_minrtt;
+    send_ctl->ctl_latest_rtt = 1;
     send_ctl->ctl_first_rtt_sample_time = tc->first_sample ? 0 : 1;
+
+    xqc_usec_t ack_recv_time = 2000000;
 
     if (tc->hsk_confirmed) {
         conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_CONFIRMED;
+        conn->handshake_confirmed_time = tc->ack_before_confirmation
+                                         ? ack_recv_time + 1
+                                         : ack_recv_time - 1;
 
     } else {
         conn->conn_flag &= ~XQC_CONN_FLAG_HANDSHAKE_CONFIRMED;
+        conn->handshake_confirmed_time = 0;
     }
     conn->remote_settings.max_ack_delay = tc->remote_max_ack_delay_ms;
 
     xqc_usec_t latest = tc->latest_rtt;
-    xqc_send_ctl_update_rtt(send_ctl, &latest, tc->input_ack_delay);
+    xqc_send_ctl_update_rtt(send_ctl, &latest, tc->input_ack_delay,
+                            ack_recv_time);
 
     if (send_ctl->ctl_srtt != tc->expected_srtt
         || send_ctl->ctl_rttvar != tc->expected_rttvar
@@ -306,6 +317,8 @@ xqc_test_send_ctl_run_rtt_case(xqc_connection_t *conn, xqc_path_ctx_t *path,
     CU_ASSERT(send_ctl->ctl_srtt == tc->expected_srtt);
     CU_ASSERT(send_ctl->ctl_rttvar == tc->expected_rttvar);
     CU_ASSERT(send_ctl->ctl_minrtt == tc->expected_minrtt);
+    CU_ASSERT(send_ctl->ctl_latest_rtt
+              == (tc->sample_ignored ? 1 : tc->latest_rtt));
 }
 
 
@@ -345,7 +358,7 @@ xqc_test_send_ctl_update_rtt_rejects_below_min_rtt(void)
 
     xqc_rtt_case_t tc = {
         .name = "rejects_below_min_rtt",
-        .hsk_confirmed = XQC_FALSE,
+        .hsk_confirmed = XQC_TRUE,
         .first_sample  = XQC_FALSE,
         .remote_max_ack_delay_ms = 100,
         .input_ack_delay = 10000,
@@ -378,9 +391,9 @@ xqc_test_send_ctl_update_rtt_ack_delay_cap(void)
 
     /*
      * Pre-condition: srtt=200ms, rttvar=50ms, minrtt=10ms, second-or-later
-     * sample. The handshake-not-confirmed cap is 25ms regardless of the
-     * negotiated max_ack_delay; after confirmation it is the negotiated
-     * value clamped per RFC 9000 18.2.
+     * sample. RFC 9002 5.3: until the handshake is confirmed, ack_delay is
+     * not capped, and a sample that it would take below min_rtt is ignored;
+     * after confirmation it is capped by the negotiated max_ack_delay.
      */
     xqc_rtt_case_t cases[] = {
         {
@@ -393,9 +406,9 @@ xqc_test_send_ctl_update_rtt_ack_delay_cap(void)
             .pre_minrtt      = 10000,
             .pre_srtt        = 200000,
             .pre_rttvar      = 50000,
-            /* ack_delay capped to 25ms; adjusted = 225ms */
-            .expected_srtt   = 203125,
-            .expected_rttvar = 43750,
+            /* not capped; adjusted = 50ms */
+            .expected_srtt   = 181250,
+            .expected_rttvar = 75000,
             .expected_minrtt = 10000,
         },
         {
@@ -423,7 +436,7 @@ xqc_test_send_ctl_update_rtt_ack_delay_cap(void)
             .pre_minrtt      = 10000,
             .pre_srtt        = 200000,
             .pre_rttvar      = 50000,
-            /* 10ms < 25ms cap, unchanged; adjusted = 40ms */
+            /* adjusted = 40ms */
             .expected_srtt   = 180000,
             .expected_rttvar = 77500,
             .expected_minrtt = 10000,
@@ -475,7 +488,7 @@ xqc_test_send_ctl_update_rtt_ack_delay_cap(void)
         },
         {
             .name = "plausibility_blocks_subtraction",
-            .hsk_confirmed = XQC_FALSE,
+            .hsk_confirmed = XQC_TRUE,
             .first_sample  = XQC_FALSE,
             .remote_max_ack_delay_ms = 100,
             .input_ack_delay = 10000,
@@ -505,6 +518,59 @@ xqc_test_send_ctl_update_rtt_ack_delay_cap(void)
             .expected_srtt   = 181250,
             .expected_rttvar = 75000,
             .expected_minrtt = 10000,
+        },
+        {
+            .name = "hsk_not_confirmed_ignores_below_min_rtt",
+            .hsk_confirmed = XQC_FALSE,
+            .first_sample  = XQC_FALSE,
+            .sample_ignored = XQC_TRUE,
+            .remote_max_ack_delay_ms = 100,
+            .input_ack_delay = 10000,
+            .latest_rtt      = 12000,
+            .pre_minrtt      = 11000,
+            .pre_srtt        = 12000,
+            .pre_rttvar      = 1000,
+            /* 12000us - 10000us < minrtt: the sample is ignored */
+            .expected_srtt   = 12000,
+            .expected_rttvar = 1000,
+            .expected_minrtt = 11000,
+        },
+        {
+            /*
+             * A server reads the 1-RTT packet carrying the ACK of its
+             * 0.5-RTT data only once the client's Finished confirms the
+             * handshake. The client could not decrypt that data for 7.5 s
+             * of handshake retransmissions and said so in ack_delay.
+             */
+            .name = "ack_arrived_before_confirmation",
+            .hsk_confirmed = XQC_TRUE,
+            .ack_before_confirmation = XQC_TRUE,
+            .first_sample  = XQC_FALSE,
+            .remote_max_ack_delay_ms = 25,
+            .input_ack_delay = 7517152,
+            .latest_rtt      = 7531191,
+            .pre_minrtt      = 8385,
+            .pre_srtt        = 8385,
+            .pre_rttvar      = 4192,
+            /* not capped; adjusted = 14039us */
+            .expected_srtt   = 9091,
+            .expected_rttvar = 4557,
+            .expected_minrtt = 8385,
+        },
+        {
+            .name = "ack_arrived_after_confirmation",
+            .hsk_confirmed = XQC_TRUE,
+            .first_sample  = XQC_FALSE,
+            .remote_max_ack_delay_ms = 25,
+            .input_ack_delay = 7517152,
+            .latest_rtt      = 7531191,
+            .pre_minrtt      = 8385,
+            .pre_srtt        = 8385,
+            .pre_rttvar      = 4192,
+            /* capped to 25ms; adjusted = 7506191us */
+            .expected_srtt   = 945610,
+            .expected_rttvar = 1877595,
+            .expected_minrtt = 8385,
         },
     };
 
@@ -745,7 +811,7 @@ xqc_test_send_ctl_persistent_congestion_rtt_reseeds_from_new_sample(void)
      * exact bug. With the clear, the first-sample branch takes the
      * value directly. */
     xqc_usec_t latest = 300000;
-    xqc_send_ctl_update_rtt(send_ctl, &latest, 0);
+    xqc_send_ctl_update_rtt(send_ctl, &latest, 0, 1000000);
 
     CU_ASSERT_EQUAL(send_ctl->ctl_minrtt, 300000);
     CU_ASSERT_EQUAL(send_ctl->ctl_srtt,   300000);

@@ -109,6 +109,7 @@ main(int argc, char *argv[])
 
     if (!CU_add_test(pSuite, "xqc_cid_test", xqc_test_cid)
         || !CU_add_test(pSuite, "xqc_test_conn_create_alloc_failures", xqc_test_conn_create_alloc_failures)
+        || !CU_add_test(pSuite, "xqc_test_conn_destroy_frees_crypto_data", xqc_test_conn_destroy_frees_crypto_data)
         || !CU_add_test(pSuite, "xqc_test_reset_stream_frame_notify_last",
                         xqc_test_reset_stream_frame_notify_last)
         || !CU_add_test(pSuite, "xqc_test_reset_stream_frame_closing_destroys_stream",
@@ -359,6 +360,7 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_rebinding_response_mismatch_preserves_state", xqc_test_rebinding_response_mismatch_preserves_state)
         || !CU_add_test(pSuite, "xqc_test_rebinding_sender_error_clears_candidate", xqc_test_rebinding_sender_error_clears_candidate)
         || !CU_add_test(pSuite, "xqc_test_conn_create", xqc_test_conn_create)
+        || !CU_add_test(pSuite, "xqc_test_client_connect_active_queue_full", xqc_test_client_connect_active_queue_full)
         || !CU_add_test(pSuite, "xqc_test_datagram_transport_param_65536",
                         xqc_test_datagram_transport_param_65536)
         || !CU_add_test(pSuite,
@@ -542,6 +544,8 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_active_cid_limit_minimum", xqc_test_active_cid_limit_minimum)
         || !CU_add_test(pSuite, "xqc_test_check_transport_params_cids", xqc_test_check_transport_params_cids)
         || !CU_add_test(pSuite, "xqc_test_engine_packet_process", xqc_test_engine_packet_process)
+        || !CU_add_test(pSuite, "xqc_test_engine_active_queue_full", xqc_test_engine_active_queue_full)
+        || !CU_add_test(pSuite, "xqc_test_engine_main_logic_active_queue_full", xqc_test_engine_main_logic_active_queue_full)
         || !CU_add_test(pSuite, "xqc_test_stream_frame", xqc_test_stream_frame)
                 || !CU_add_test(pSuite, "xqc_test_stream_frame_buffered_limit", xqc_test_stream_frame_buffered_limit)
                 || !CU_add_test(pSuite, "xqc_test_stream_frame_cap_liveness", xqc_test_stream_frame_cap_liveness)
@@ -676,7 +680,10 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_tls_default_cert_without_sni",
                         xqc_test_tls_default_cert_without_sni)
         || !CU_add_test(pSuite, "xqc_test_tls", xqc_test_tls)
+        || !CU_add_test(pSuite, "xqc_test_tls_session_ticket_time", xqc_test_tls_session_ticket_time)
         || !CU_add_test(pSuite, "xqc_test_h3_stream", xqc_test_stream)
+        || !CU_add_test(pSuite, "xqc_test_h3_conn_create_three_uni_streams", xqc_test_h3_conn_create_three_uni_streams)
+        || !CU_add_test(pSuite, "xqc_test_h3_conn_create_fails_without_uni_streams", xqc_test_h3_conn_create_fails_without_uni_streams)
         || !CU_add_test(pSuite, "xqc_test_h3_critical_stream_close", xqc_test_h3_critical_stream_close)
         || !CU_add_test(pSuite, "xqc_test_h3_second_control_stream_rejected", xqc_test_h3_second_control_stream_rejected)
         || !CU_add_test(pSuite, "xqc_test_h3_reserved_uni_stream_accepted",
@@ -781,6 +788,7 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_h3_ins", xqc_test_ins)
         || !CU_add_test(pSuite, "xqc_test_h3_rep", xqc_test_rep)
         || !CU_add_test(pSuite, "xqc_qpack_test", xqc_qpack_test)
+        || !CU_add_test(pSuite, "xqc_test_qpack_create_alloc_failures", xqc_test_qpack_create_alloc_failures)
         || !CU_add_test(pSuite, "xqc_test_prefixed_str", xqc_test_prefixed_str)
         || !CU_add_test(pSuite, "xqc_test_id_hash", xqc_test_id_hash)
         || !CU_add_test(pSuite, "xqc_test_retry", xqc_test_retry)
@@ -941,6 +949,12 @@ main(int argc, char *argv[])
                         xqc_test_minrtt_keeps_path_without_alternative)
         || !CU_add_test(pSuite, "xqc_test_minrtt_probes_dead_path",
                         xqc_test_minrtt_probes_dead_path)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_smaller_ack_keeps_larger_loss",
+                        xqc_test_pmtud_smaller_ack_keeps_larger_loss)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_ack_spill_losses_make_path_suspect",
+                        xqc_test_pmtud_ack_spill_losses_make_path_suspect)
+        || !CU_add_test(pSuite, "xqc_test_pmtud_smaller_spill_ack_keeps_larger_loss",
+                        xqc_test_pmtud_smaller_spill_ack_keeps_larger_loss)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)
