@@ -644,6 +644,27 @@ fi
 grep_err_log
 }
 
+# 811: size-specific black-hole recovery with bidirectional datagrams.
+case_fork_core_pmtud_path_shrinks_by_8_bytes()
+{
+case_test_start_server ${SERVER_BIN} -l d -e -Q 65535 -U 1 --pmtud 1 > /dev/null
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "PMTUD path shrinks by 8 bytes ...\c"
+case_test_sudo ${CLIENT_BIN} -s 51200000 -l d -t 15 -E -Q 65535 -U 1 -T 1 --pmtud 1 -x 811 > stdlog
+blackhole=`grep "|PMTUD black hole|" clog`
+dropped=`grep -c "\[case 811\] dropped" stdlog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$blackhole" ] && [ "$dropped" -lt 100 ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "pmtud_path_shrinks_by_8_bytes" "pass"
+else
+    echo ">>>>>>>> pass:0 (blackhole:${blackhole:+y} dropped:${dropped} errlog:${errlog:+y})"
+    case_print_result "pmtud_path_shrinks_by_8_bytes" "fail"
+fi
+grep_err_log
+}
+
 case_test_case "cert_verify_failed_notify_reject" --id 900 --mode self-reporting --run case_fork_core_cert_verify_failed_notify_reject
 case_test_case "cert_verify_failed_notify_accept" --id 901 --mode self-reporting --run case_fork_core_cert_verify_failed_notify_accept
 case_test_case "NAT_rebinding_IP_change_cwnd_reset" --id native --mode self-reporting --run case_fork_core_NAT_rebinding_IP_change_cwnd_reset
@@ -669,6 +690,8 @@ case_test_case "MP_minrtt_skips_dead_path" --id 1315 --mode self-reporting --run
 case_test_case "MP_minrtt_keeps_only_path_through_outage" --id 1316 --mode self-reporting --run case_fork_core_MP_minrtt_keeps_only_path_through_outage
 case_test_case "MP_backup_skips_dead_primary" --id 1317 --mode self-reporting --run case_fork_core_MP_backup_skips_dead_primary
 case_test_case "MP_backup_returns_to_primary_after_outage" --id 1318 --mode self-reporting --run case_fork_core_MP_backup_returns_to_primary_after_outage
+
+case_test_case "pmtud_path_shrinks_by_8_bytes" --id 811 --mode self-reporting --run case_fork_core_pmtud_path_shrinks_by_8_bytes
 
 if case_test_is_discovery; then
     case_test_run

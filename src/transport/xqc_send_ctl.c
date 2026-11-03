@@ -24,7 +24,6 @@
 #include "src/transport/xqc_multipath.h"
 #include "src/transport/xqc_frame_parser.h"
 #include "src/common/utils/vint/xqc_variable_len_int.h"
-#include "src/transport/xqc_transport_params.h"
 
 int 
 xqc_send_ctl_may_remove_unacked_dgram(xqc_connection_t *conn, xqc_packet_out_t *po)
@@ -213,6 +212,8 @@ xqc_send_ctl_reset(xqc_send_ctl_t *send_ctl)
 
     send_ctl->ctl_pto_count = 0;
     send_ctl->ctl_largest_big_acked = 0;
+    xqc_memzero(send_ctl->ctl_spill_acked, sizeof(send_ctl->ctl_spill_acked));
+    send_ctl->ctl_spill_acked_curr = 0;
     xqc_send_ctl_pmtud_bh_reset(send_ctl);
     send_ctl->ctl_minrtt = XQC_MAX_UINT32_VALUE;
     send_ctl->ctl_srtt = conn->conn_settings.initial_rtt;
@@ -1048,10 +1049,11 @@ xqc_send_ctl_on_ack_received(xqc_send_ctl_t *send_ctl, xqc_pn_ctl_t *pn_ctl, xqc
 
     if (update_largest_ack && has_ack_eliciting && ack_on_same_path) {
         if (!ignore_rtt) {
-            /* 更新 ctl_latest_rtt */
-            send_ctl->ctl_latest_rtt = ack_recv_time - send_ctl->ctl_largest_acked_sent_time[pns];
+            xqc_usec_t sent_time = send_ctl->ctl_largest_acked_sent_time[pns];
+            xqc_usec_t latest_rtt = ack_recv_time - sent_time;
             /* 更新rtt */
-            xqc_send_ctl_update_rtt(send_ctl, &send_ctl->ctl_latest_rtt, ack_info->ack_delay);
+            xqc_send_ctl_update_rtt(send_ctl, &latest_rtt, ack_info->ack_delay,
+                                    ack_recv_time);
 
         } else {
             xqc_log(conn->log, XQC_LOG_DEBUG, "|ignore_rtt:%ui|", ack_recv_time - send_ctl->ctl_largest_acked_sent_time[pns]);
@@ -1224,14 +1226,42 @@ xqc_send_ctl_latest_rtt_tracking(xqc_send_ctl_t *send_ctl, xqc_usec_t *latest_rt
  * UpdateRtt
  */
 void
-xqc_send_ctl_update_rtt(xqc_send_ctl_t *send_ctl, xqc_usec_t *latest_rtt, xqc_usec_t ack_delay)
+xqc_send_ctl_update_rtt(xqc_send_ctl_t *send_ctl, xqc_usec_t *latest_rtt,
+    xqc_usec_t ack_delay, xqc_usec_t ack_recv_time)
 {
     xqc_connection_t *conn = send_ctl->ctl_conn;
+    xqc_bool_t hsk_confirmed;
 
     xqc_log(send_ctl->ctl_conn->log, XQC_LOG_DEBUG,
             "|before update rtt|conn:%p|srtt:%ui|rttvar:%ui|minrtt:%ui|latest_rtt:%ui|ack_delay:%ui|",
             send_ctl->ctl_conn, send_ctl->ctl_srtt, send_ctl->ctl_rttvar, send_ctl->ctl_minrtt, *latest_rtt, ack_delay);
 
+    /*
+     * RFC 9002 5.3: the peer's max_ack_delay only applies once the
+     * handshake is confirmed. Until then the peer may hold packets that it
+     * cannot decrypt yet and report the wait in ack_delay (RFC 9000 13.2.1
+     * and 13.2.5), so capping ack_delay would add the wait to the RTT. The
+     * ACK's arrival decides: a server reads the 1-RTT packets that came
+     * during the handshake only after it confirmed the handshake.
+     */
+    hsk_confirmed = xqc_conn_is_handshake_confirmed(conn)
+                    && ack_recv_time > conn->handshake_confirmed_time;
+
+    /*
+     * RFC 9002 5.3: before confirmation, ignore a sample that ack_delay
+     * would take below min_rtt instead of using it whole.
+     */
+    if (!hsk_confirmed && send_ctl->ctl_first_rtt_sample_time != 0
+        && *latest_rtt >= send_ctl->ctl_minrtt
+        && *latest_rtt - send_ctl->ctl_minrtt < ack_delay)
+    {
+        xqc_log(conn->log, XQC_LOG_DEBUG,
+                "|ignore rtt sample|latest_rtt:%ui|minrtt:%ui|ack_delay:%ui|",
+                *latest_rtt, send_ctl->ctl_minrtt, ack_delay);
+        return;
+    }
+
+    send_ctl->ctl_latest_rtt = *latest_rtt;
     xqc_send_ctl_latest_rtt_tracking(send_ctl, latest_rtt);
 
     /* Based on {{RFC6298}}. */
@@ -1244,19 +1274,9 @@ xqc_send_ctl_update_rtt(xqc_send_ctl_t *send_ctl, xqc_usec_t *latest_rtt, xqc_us
     } else {
         send_ctl->ctl_minrtt = xqc_min(*latest_rtt, send_ctl->ctl_minrtt);
 
-        /*
-         * RFC 9002 5.3: ack_delay MUST be clamped by max_ack_delay before
-         * being subtracted from latest_rtt. Until the handshake is
-         * confirmed the peer is required to use the default max_ack_delay
-         * (RFC 9000 18.2), so use that constant; after confirmation the
-         * negotiated value from the peer's transport parameters applies.
-         */
-        if (xqc_conn_is_handshake_confirmed(send_ctl->ctl_conn)) {
+        if (hsk_confirmed) {
             ack_delay = xqc_min(ack_delay,
-                                send_ctl->ctl_conn->remote_settings.max_ack_delay * 1000);
-
-        } else {
-            ack_delay = xqc_min(ack_delay, XQC_DEFAULT_MAX_ACK_DELAY * 1000);
+                                conn->remote_settings.max_ack_delay * 1000);
         }
 
         /*
@@ -1410,6 +1430,25 @@ xqc_loss_replay_should_suppress(xqc_connection_t *conn, xqc_packet_out_t *po)
 /**
  * DetectAndRemoveLostPackets + OnPacketsLost
  */
+
+/* The largest packet number acked among large packets at least as large as
+ * size. Above the current size, the ACK room has one entry per byte; they
+ * start over when the current size changes. */
+static xqc_packet_number_t
+xqc_send_ctl_pmtud_acked_above(xqc_send_ctl_t *send_ctl, size_t size)
+{
+    size_t curr = send_ctl->ctl_path->curr_pkt_out_size;
+
+    if (send_ctl->ctl_spill_acked_curr != curr) {
+        xqc_memzero(send_ctl->ctl_spill_acked, sizeof(send_ctl->ctl_spill_acked));
+        send_ctl->ctl_spill_acked_curr = curr;
+    }
+    if (size <= curr) {
+        return send_ctl->ctl_largest_big_acked;
+    }
+    return send_ctl->ctl_spill_acked[xqc_min(size - curr, XQC_ACK_SPACE) - 1];
+}
+
 void
 xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue, xqc_pkt_num_space_t pns, xqc_usec_t now)
 {
@@ -1527,11 +1566,15 @@ xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue,
                     && send_ctl->ctl_bh_suspect_time == 0
                     && po->po_used_size > xqc_pmtud_big_size(conn,
                                               send_ctl->ctl_path->curr_pkt_out_size)
-                    && po->po_pkt.pkt_num > send_ctl->ctl_largest_big_acked
-                    && ++send_ctl->ctl_big_lost_cnt >= XQC_PMTUD_BLACKHOLE_LOSSES)
+                    && po->po_pkt.pkt_num
+                       > xqc_send_ctl_pmtud_acked_above(send_ctl, po->po_used_size))
                 {
-                    send_ctl->ctl_bh_suspect_time = now;
-                    send_ctl->ctl_bh_probe_time = now;
+                    send_ctl->ctl_big_lost_size =
+                        xqc_max(send_ctl->ctl_big_lost_size, po->po_used_size);
+                    if (++send_ctl->ctl_big_lost_cnt >= XQC_PMTUD_BLACKHOLE_LOSSES) {
+                        send_ctl->ctl_bh_suspect_time = now;
+                        send_ctl->ctl_bh_probe_time = now;
+                    }
                 }
 
                 /* reinjection */
@@ -1847,6 +1890,7 @@ void
 xqc_send_ctl_pmtud_bh_reset(xqc_send_ctl_t *send_ctl)
 {
     send_ctl->ctl_big_lost_cnt = 0;
+    send_ctl->ctl_big_lost_size = 0;
     send_ctl->ctl_bh_suspect_time = 0;
     send_ctl->ctl_bh_probe_time = 0;
     send_ctl->ctl_bh_probes_sent = 0;
@@ -1998,17 +2042,39 @@ xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl,
         }
 
         /* a large packet got through, of any kind, a probe included (its
-         * PING is small, its size is the padded buffer): no black hole */
+         * PING is small, its size is the padded buffer): no black hole,
+         * if it was as large as the large packets lost since the last one.
+         * A full packet without an ACK frame is 16 bytes (XQC_ACK_SPACE)
+         * below one with it, and gets through a path that shrank by less:
+         * it must not hide the loss of the larger ones. */
         if (do_cc && packet_out->po_pkt.pkt_pns == XQC_PNS_APP_DATA) {
             size_t curr = send_ctl->ctl_path->curr_pkt_out_size;
             size_t big = xqc_pmtud_big_size(conn, curr);
-            if ((packet_out->po_used_size > big
-                 || ((packet_out->po_flag & XQC_POF_PMTUD_PROBING)
-                     && packet_out->po_buf_size > big))
-                && packet_out->po_pkt.pkt_num > send_ctl->ctl_largest_big_acked)
+            size_t size = packet_out->po_used_size;
+            if ((packet_out->po_flag & XQC_POF_PMTUD_PROBING)
+                && packet_out->po_buf_size > size)
             {
-                send_ctl->ctl_largest_big_acked = packet_out->po_pkt.pkt_num;
-                xqc_send_ctl_pmtud_bh_reset(send_ctl);
+                size = packet_out->po_buf_size;
+            }
+            xqc_packet_number_t pn = packet_out->po_pkt.pkt_num;
+            if (size > big) {
+                /* newer than the last ack of a packet at least as large */
+                xqc_bool_t newer =
+                    pn > xqc_send_ctl_pmtud_acked_above(send_ctl, size);
+                if (size > curr) {
+                    size_t n = xqc_min(size - curr, XQC_ACK_SPACE);
+                    for (size_t i = 0; i < n; i++) {
+                        if (pn > send_ctl->ctl_spill_acked[i]) {
+                            send_ctl->ctl_spill_acked[i] = pn;
+                        }
+                    }
+                }
+                if (pn > send_ctl->ctl_largest_big_acked) {
+                    send_ctl->ctl_largest_big_acked = pn;
+                }
+                if (newer && size >= send_ctl->ctl_big_lost_size) {
+                    xqc_send_ctl_pmtud_bh_reset(send_ctl);
+                }
             }
         }
 
