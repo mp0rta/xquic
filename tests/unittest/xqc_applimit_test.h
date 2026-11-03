@@ -20,5 +20,7 @@ void xqc_test_applimit_lingering_ack_only(void);
 void xqc_test_applimit_marker_value(void);
 void xqc_test_applimit_pacer_untouched(void);
 void xqc_test_applimit_pacer_restart_credit(void);
+void xqc_test_applimit_pacer_restart_back_to_back(void);
+void xqc_test_applimit_pacer_restart_write_patterns(void);
 
 #endif /* XQC_APPLIMIT_TEST_H_INCLUDED */
