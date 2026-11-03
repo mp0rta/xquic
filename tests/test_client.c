@@ -5816,6 +5816,29 @@ xqc_client_timeout_callback(int fd, short what, void *arg)
         return;
     }
 
+    /* cases 1319/1320: a small stream each time the connection has been
+     * quiet for g_conn_timeout, a few times over, so the initial path keeps
+     * the connection up at a light load while the STANDBY path idles past
+     * the path idle timeout. */
+    static int quiet_standby_rounds = 6;
+    if ((g_test_case == 1319 || g_test_case == 1320) && quiet_standby_rounds > 0) {
+        quiet_standby_rounds--;
+        user_stream_t *user_stream = calloc(1, sizeof(user_stream_t));
+        user_stream->user_conn = user_conn;
+        user_stream->stream = xqc_stream_create(ctx.engine, &(user_conn->cid), NULL, user_stream);
+        if (user_stream->stream == NULL) {
+            printf("xqc_stream_create error\n");
+            free(user_stream);
+            goto conn_close;
+        }
+        xqc_client_stream_send(user_stream->stream, user_stream);
+        struct timeval tv;
+        tv.tv_sec = g_conn_timeout;
+        tv.tv_usec = 0;
+        event_add(user_conn->ev_timeout, &tv);
+        return;
+    }
+
     //Test case 15: testing restart from idle
     if (restart_after_a_while && g_test_case == 15) {
         restart_after_a_while--;
@@ -7626,6 +7649,16 @@ int main(int argc, char *argv[]) {
 
     if (g_mp_backup_mode) {
         conn_settings.scheduler_callback  = xqc_backup_scheduler_cb;
+    }
+
+    /* cases 1319/1320: a 3 s idle timeout, so the path idle timer runs out
+     * on the STANDBY path while the connection is up. 1319 leaves standby
+     * probing off (a quiet backup), 1320 turns it on. */
+    if (g_test_case == 1319 || g_test_case == 1320) {
+        conn_settings.idle_time_out = 3000;
+    }
+    if (g_test_case == 1320) {
+        conn_settings.standby_path_probe_timeout = 500;
     }
 
     if (g_close_red_redundancy) {

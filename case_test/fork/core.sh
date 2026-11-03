@@ -644,6 +644,67 @@ fi
 grep_err_log
 }
 
+case_fork_core_MP_backup_keeps_quiet_standby_path()
+{
+# ── Multipath: a quiet STANDBY path (case IDs 1319/1320). Both ends run the
+# backup scheduler, the second path is STANDBY, and the client sets a 3 s
+# idle timeout. The client sends a small stream each time the connection has
+# been quiet for 1 s, so the initial path keeps the connection up while the
+# STANDBY path carries nothing.
+# 1319 happy path: standby probing is off. The STANDBY path is a quiet
+# backup: when its path idle timer runs out it is kept, not closed.
+case_test_start_server ${SERVER_BIN} -l d -e -M -y > /dev/null
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP backup scheduler keeps a quiet standby path past its idle timeout ...\c"
+case_test_sudo ${CLIENT_BIN} -s 102400 -l d -t 1 -E -T 1 -M -y -i lo -i lo -x 1319 > stdlog
+passed=`grep -c ">>>>>>>> pass:1" stdlog`
+failed=`grep -c ">>>>>>>> pass:0" stdlog`
+validated=`grep "|path validated|path_id:1|" clog`
+kept=`grep "xqc_timer_path_idle_timeout|quiet standby path kept:1|" clog`
+closed=`grep "xqc_timer_path_idle_timeout|closed path:1|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ "$passed" -gt 1 ] && [ "$failed" = "0" ] && [ -n "$validated" ] \
+    && [ -n "$kept" ] && [ -z "$closed" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_backup_keeps_quiet_standby_path" "pass"
+else
+    echo ">>>>>>>> pass:0 (streams:${passed}/${failed} validated:${validated:+y}" \
+        "kept:${kept:+y} closed:${closed:+y} errlog:${errlog:+y})"
+    case_print_result "MP_backup_keeps_quiet_standby_path" "fail"
+fi
+grep_err_log
+}
+
+case_fork_core_MP_backup_probes_standby_path_when_probing_on()
+{
+# 1320 abnormal path: the same with standby probing on (500 ms). The STANDBY
+# path is probed, so it is not a quiet backup: the idle timer never takes
+# the quiet-path branch, and the probes keep the path open.
+case_test_start_server ${SERVER_BIN} -l d -e -M -y > /dev/null
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP backup scheduler probes a standby path when probing is on ...\c"
+case_test_sudo ${CLIENT_BIN} -s 102400 -l d -t 1 -E -T 1 -M -y -i lo -i lo -x 1320 > stdlog
+passed=`grep -c ">>>>>>>> pass:1" stdlog`
+failed=`grep -c ">>>>>>>> pass:0" stdlog`
+validated=`grep "|path validated|path_id:1|" clog`
+probed=`grep "|standby_probe|path:1|.*|now>=deadline:1|" clog`
+kept=`grep "quiet standby path kept" clog`
+closed=`grep "xqc_timer_path_idle_timeout|closed path:1|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ "$passed" -gt 1 ] && [ "$failed" = "0" ] && [ -n "$validated" ] \
+    && [ -n "$probed" ] && [ -z "$kept" ] && [ -z "$closed" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_backup_probes_standby_path_when_probing_on" "pass"
+else
+    echo ">>>>>>>> pass:0 (streams:${passed}/${failed} validated:${validated:+y}" \
+        "probed:${probed:+y} kept:${kept:+y} closed:${closed:+y} errlog:${errlog:+y})"
+    case_print_result "MP_backup_probes_standby_path_when_probing_on" "fail"
+fi
+grep_err_log
+}
+
 # 811: size-specific black-hole recovery with bidirectional datagrams.
 case_fork_core_pmtud_path_shrinks_by_8_bytes()
 {
@@ -690,6 +751,8 @@ case_test_case "MP_minrtt_skips_dead_path" --id 1315 --mode self-reporting --run
 case_test_case "MP_minrtt_keeps_only_path_through_outage" --id 1316 --mode self-reporting --run case_fork_core_MP_minrtt_keeps_only_path_through_outage
 case_test_case "MP_backup_skips_dead_primary" --id 1317 --mode self-reporting --run case_fork_core_MP_backup_skips_dead_primary
 case_test_case "MP_backup_returns_to_primary_after_outage" --id 1318 --mode self-reporting --run case_fork_core_MP_backup_returns_to_primary_after_outage
+case_test_case "MP_backup_keeps_quiet_standby_path" --id 1319 --mode self-reporting --run case_fork_core_MP_backup_keeps_quiet_standby_path
+case_test_case "MP_backup_probes_standby_path_when_probing_on" --id 1320 --mode self-reporting --run case_fork_core_MP_backup_probes_standby_path_when_probing_on
 
 case_test_case "pmtud_path_shrinks_by_8_bytes" --id 811 --mode self-reporting --run case_fork_core_pmtud_path_shrinks_by_8_bytes
 
