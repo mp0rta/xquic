@@ -3,10 +3,12 @@
  *
  * An allocation that fails while a connection is being created must fail
  * the creation, not crash the process. On Linux the test binary is linked
- * with --wrap for malloc, calloc and realloc (tests/CMakeLists.txt): the
- * wrappers below make the Nth allocation after arming return NULL, and the
- * tests sweep N over every allocation that xqc_connect() makes on a client
- * engine and that the first Initial packet makes on a server engine.
+ * with --wrap for malloc, calloc, realloc and free (tests/CMakeLists.txt):
+ * the wrappers below make the Nth allocation after arming return NULL, and
+ * the tests sweep N over every allocation that xqc_connect() makes on a
+ * client engine and that the first Initial packet makes on a server engine.
+ * The wrappers can also count the allocations not freed yet, so that a test
+ * can check what it leaves behind.
  */
 
 #include <CUnit/CUnit.h>
@@ -14,17 +16,24 @@
 #include <arpa/inet.h>
 #include "xquic/xquic.h"
 #include "src/common/xqc_time.h"
+#include "src/common/xqc_priority_q.h"
+#include "src/transport/xqc_engine.h"
 #include "xqc_alloc_fail_test.h"
+#include "src/http3/qpack/xqc_qpack.h"
+#include "src/transport/xqc_engine.h"
 
 #ifdef XQC_TEST_ALLOC_WRAP
 
 static long g_alloc_count = -1;     /* -1: disarmed */
 static long g_alloc_fail_at;
 static int  g_alloc_failed;
+static int  g_alloc_counting;       /* count live allocations in g_alloc_live */
+static long g_alloc_live;
 
 void *__real_malloc(size_t size);
 void *__real_calloc(size_t nmemb, size_t size);
 void *__real_realloc(void *ptr, size_t size);
+void __real_free(void *ptr);
 
 static int
 xqc_test_alloc_should_fail(void)
@@ -39,22 +48,52 @@ xqc_test_alloc_should_fail(void)
     return 0;
 }
 
+static void *
+xqc_test_alloc_count(void *ptr)
+{
+    if (g_alloc_counting && ptr != NULL) {
+        g_alloc_live++;
+    }
+    return ptr;
+}
+
 void *
 __wrap_malloc(size_t size)
 {
-    return xqc_test_alloc_should_fail() ? NULL : __real_malloc(size);
+    if (xqc_test_alloc_should_fail()) {
+        return NULL;
+    }
+    return xqc_test_alloc_count(__real_malloc(size));
 }
 
 void *
 __wrap_calloc(size_t nmemb, size_t size)
 {
-    return xqc_test_alloc_should_fail() ? NULL : __real_calloc(nmemb, size);
+    if (xqc_test_alloc_should_fail()) {
+        return NULL;
+    }
+    return xqc_test_alloc_count(__real_calloc(nmemb, size));
 }
 
 void *
 __wrap_realloc(void *ptr, size_t size)
 {
-    return xqc_test_alloc_should_fail() ? NULL : __real_realloc(ptr, size);
+    if (xqc_test_alloc_should_fail()) {
+        return NULL;
+    }
+    if (ptr == NULL) {
+        return xqc_test_alloc_count(__real_realloc(ptr, size));
+    }
+    return __real_realloc(ptr, size);
+}
+
+void
+__wrap_free(void *ptr)
+{
+    if (g_alloc_counting && ptr != NULL) {
+        g_alloc_live--;
+    }
+    __real_free(ptr);
 }
 
 static unsigned char g_initial[2048];
@@ -88,6 +127,8 @@ xqc_test_af_accept(xqc_engine_t *engine, xqc_connection_t *conn, const xqc_cid_t
     return 0;
 }
 
+static xqc_config_t *g_af_config;   /* NULL: the default engine config */
+
 static xqc_engine_t *
 xqc_test_af_engine(xqc_engine_type_t type)
 {
@@ -107,7 +148,8 @@ xqc_test_af_engine(xqc_engine_type_t type)
         .server_accept = xqc_test_af_accept,
     };
 
-    xqc_engine_t *engine = xqc_engine_create(type, NULL, &ssl, &cb, &tcbs, NULL);
+    xqc_engine_t *engine = xqc_engine_create(type, g_af_config, &ssl, &cb,
+                                             &tcbs, NULL);
     if (engine != NULL) {
         xqc_app_proto_callbacks_t ap = {{NULL}, {NULL}};
         xqc_engine_register_alpn(engine, "transport", 9, &ap, NULL);
@@ -130,6 +172,88 @@ xqc_test_af_connect(xqc_engine_t *engine)
     peer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     return xqc_connect(engine, &cs, NULL, 0, "", 0, &ssl, (struct sockaddr *)&peer,
                        sizeof(peer), "transport", NULL);
+}
+
+static int       g_af_created, g_af_closed;
+static xqc_cid_t g_af_created_cid;
+
+static int
+xqc_test_af_count_create(xqc_connection_t *conn, const xqc_cid_t *cid,
+    void *conn_user_data, void *conn_proto_data)
+{
+    g_af_created++;
+    g_af_created_cid = *cid;
+    return 0;
+}
+
+static int
+xqc_test_af_count_close(xqc_connection_t *conn, const xqc_cid_t *cid,
+    void *conn_user_data, void *conn_proto_data)
+{
+    g_af_closed++;
+    return 0;
+}
+
+static void *
+xqc_test_af_no_growth(void *opaque, size_t size)
+{
+    return NULL;
+}
+
+/*
+ * An xqc_connect() that fails after conn_create_notify must not leave its
+ * connection behind: the connection must be gone from the engine, and
+ * conn_close_notify must have run. Called from one of the engine's callbacks
+ * (the engine is running), xqc_connect() leaves its connection in the active
+ * queue: with a capacity of one, the second connection finds the queue full,
+ * and here the queue cannot grow.
+ */
+void
+xqc_test_client_connect_active_queue_full(void)
+{
+    xqc_config_t config;
+    CU_ASSERT_FATAL(xqc_engine_get_default_config(&config, XQC_ENGINE_CLIENT)
+                    == XQC_OK);
+    config.conns_active_pq_capacity = 1;
+
+    xqc_app_proto_callbacks_t ap = {{NULL}, {NULL}};
+    ap.conn_cbs.conn_create_notify = xqc_test_af_count_create;
+    ap.conn_cbs.conn_close_notify = xqc_test_af_count_close;
+
+    for (int grows = 1; grows >= 0; grows--) {
+        g_af_config = &config;
+        xqc_engine_t *engine = xqc_test_af_engine(XQC_ENGINE_CLIENT);
+        g_af_config = NULL;
+        CU_ASSERT_FATAL(engine != NULL);
+        xqc_engine_register_alpn(engine, "transport", 9, &ap, NULL);
+
+        engine->eng_flag |= XQC_ENG_FLAG_RUNNING;
+        CU_ASSERT_FATAL(xqc_test_af_connect(engine) != NULL);
+
+        xqc_malloc_wrap_t pq_malloc = engine->conns_active_pq->a.malloc;
+        if (!grows) {
+            engine->conns_active_pq->a.malloc = xqc_test_af_no_growth;
+        }
+        g_af_created = 0;
+        g_af_closed = 0;
+        const xqc_cid_t *cid = xqc_test_af_connect(engine);
+        engine->conns_active_pq->a.malloc = pq_malloc;
+
+        CU_ASSERT(g_af_created == 1);
+        if (grows) {
+            CU_ASSERT(cid != NULL);
+            CU_ASSERT(g_af_closed == 0);
+
+        } else {
+            CU_ASSERT(cid == NULL);
+            CU_ASSERT(g_af_closed == 1);
+            CU_ASSERT(xqc_engine_get_conn_by_scid(engine, &g_af_created_cid)
+                      == NULL);
+        }
+
+        engine->eng_flag &= ~XQC_ENG_FLAG_RUNNING;
+        xqc_engine_destroy(engine);
+    }
 }
 
 void
@@ -193,7 +317,59 @@ xqc_test_conn_create_alloc_failures(void)
     xqc_engine_destroy(client);
 }
 
+static int g_af_create_notify_ret;
+
+static int
+xqc_test_af_create_notify(xqc_connection_t *conn, const xqc_cid_t *cid,
+    void *conn_user_data, void *conn_proto_data)
+{
+    return g_af_create_notify_ret;
+}
+
+/*
+ * The allocations that a client engine leaves behind once destroyed, after
+ * one xqc_connect() whose conn_create_notify returns create_ret. The first
+ * run settles what the process allocates only once; the second is counted.
+ */
+static long
+xqc_test_af_connect_leftovers(int create_ret)
+{
+    xqc_app_proto_callbacks_t ap = {{NULL}, {NULL}};
+    ap.conn_cbs.conn_create_notify = xqc_test_af_create_notify;
+    g_af_create_notify_ret = create_ret;
+
+    for (int run = 0; run < 2; run++) {
+        g_alloc_live = 0;
+        g_alloc_counting = 1;
+        xqc_engine_t *engine = xqc_test_af_engine(XQC_ENGINE_CLIENT);
+        CU_ASSERT_FATAL(engine != NULL);
+        xqc_engine_register_alpn(engine, "transport", 9, &ap, NULL);
+        const xqc_cid_t *cid = xqc_test_af_connect(engine);
+        CU_ASSERT((cid != NULL) == (create_ret == 0));
+        xqc_engine_destroy(engine);
+        g_alloc_counting = 0;
+    }
+    return g_alloc_live;
+}
+
+void
+xqc_test_conn_destroy_frees_crypto_data(void)
+{
+    /* the crypto stream frees the ClientHello once it has written it */
+    CU_ASSERT(xqc_test_af_connect_leftovers(0) == 0);
+
+    /* conn_create_notify fails before the ClientHello is written: the
+     * connection is destroyed with it still queued */
+    CU_ASSERT(xqc_test_af_connect_leftovers(-1) == 0);
+}
+
 #else
+
+void
+xqc_test_client_connect_active_queue_full(void)
+{
+    /* shares the helpers above, built where --wrap is (Linux) */
+}
 
 void
 xqc_test_conn_create_alloc_failures(void)
@@ -201,4 +377,89 @@ xqc_test_conn_create_alloc_failures(void)
     /* needs the linker's --wrap (see tests/CMakeLists.txt) */
 }
 
+void
+xqc_test_conn_destroy_frees_crypto_data(void)
+{
+    /* needs the linker's --wrap (see tests/CMakeLists.txt) */
+}
+
 #endif
+
+
+#ifdef XQC_TEST_ALLOC_WRAP
+
+static xqc_var_buf_t *
+xqc_test_af_qpack_get_buf(xqc_qpack_ins_type_t type, void *user_data)
+{
+    return NULL;
+}
+
+static ssize_t
+xqc_test_af_qpack_write_ins(xqc_qpack_ins_type_t type, xqc_var_buf_t *buf,
+    void *user_data)
+{
+    return 0;
+}
+
+/*
+ * Make the chunks that malloc hands out next hold garbage, as reused
+ * memory does: a field the caller does not set is then not NULL.
+ */
+static void
+xqc_test_af_dirty_heap(void)
+{
+    size_t  size;
+    void   *chunk[64];
+
+    for (size = 8; size <= 512; size += 8) {
+        chunk[size / 8 - 1] = malloc(size);
+        if (chunk[size / 8 - 1] != NULL) {
+            memset(chunk[size / 8 - 1], 0xbe, size);
+        }
+    }
+
+    for (size = 8; size <= 512; size += 8) {
+        free(chunk[size / 8 - 1]);
+    }
+}
+
+#endif
+
+/*
+ * Every allocation that xqc_qpack_create() makes, failed in turn: the
+ * creation fails, and what it created so far is freed, with nothing else.
+ */
+void
+xqc_test_qpack_create_alloc_failures(void)
+{
+#ifdef XQC_TEST_ALLOC_WRAP
+    long                n;
+    xqc_qpack_t        *qpk;
+    xqc_engine_t       *engine;
+    xqc_qpack_ins_cb_t  ins_cb = {
+        .get_buf_cb = xqc_test_af_qpack_get_buf,
+        .write_ins_cb = xqc_test_af_qpack_write_ins,
+    };
+
+    engine = xqc_test_af_engine(XQC_ENGINE_CLIENT);
+    CU_ASSERT_FATAL(engine != NULL);
+
+    for (n = 1; n < 1000; n++) {
+        xqc_test_af_dirty_heap();
+        g_alloc_failed = 0;
+        g_alloc_fail_at = n;
+        g_alloc_count = 0;
+        qpk = xqc_qpack_create(16 * 1024, 16 * 1024, engine->log, &ins_cb, NULL);
+        g_alloc_count = -1;
+
+        CU_ASSERT((qpk == NULL) == (g_alloc_failed == 1));
+        xqc_qpack_destroy(qpk);
+        if (!g_alloc_failed) {
+            break;
+        }
+    }
+    CU_ASSERT(n > 1);
+
+    xqc_engine_destroy(engine);
+#endif
+}
