@@ -146,6 +146,19 @@ skip_path:
  * list while they wait to be sent. */
 #define XQC_MINRTT_DEAD_PROBE_INTERVAL_US (500 * 1000)
 
+/* Does one full-size packet fit @path's congestion window? The probe list
+ * is not held back by congestion control, so the probe checks it itself. */
+static xqc_bool_t
+xqc_minrtt_probe_fits_cwnd(xqc_path_ctx_t *path)
+{
+    xqc_packet_out_t probe;
+
+    memset(&probe, 0, sizeof(probe));
+    probe.po_used_size = path->curr_pkt_out_size;
+    return xqc_send_ctl_can_send(path->path_send_ctl, &probe,
+                                 path->path_schedule_bytes);
+}
+
 static void
 xqc_minrtt_scheduler_handle_conn_event(void *scheduler,
     xqc_connection_t *conn, xqc_scheduler_conn_event_t event, void *event_arg)
@@ -171,6 +184,20 @@ xqc_minrtt_scheduler_handle_conn_event(void *scheduler,
         if (path->path_state != XQC_PATH_STATE_ACTIVE
             || path->app_path_status == XQC_APP_PATH_STATUS_FROZEN
             || !xqc_path_is_dead_with_alternative(path))
+        {
+            continue;
+        }
+
+        /* Not before the third PTO that fired, which moved the path's data
+         * to the other paths (xqc_path_requeue_unacked_on_pto). The path
+         * can count as dead earlier, from expiries hidden by sends, and a
+         * PING re-arms the loss detection timer from its send time: with a
+         * PTO above a quarter of the interval the third PTO would never
+         * fire, and the data would wait for the path idle timeout. After
+         * it, only the PTO probes are in flight, so the PING fits the
+         * congestion window too, unless the window says otherwise. */
+        if (path->path_send_ctl->ctl_pto_count < XQC_PATH_REQUEUE_PTO_THRESH
+            || !xqc_minrtt_probe_fits_cwnd(path))
         {
             continue;
         }

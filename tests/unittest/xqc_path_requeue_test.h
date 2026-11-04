@@ -10,5 +10,6 @@ void xqc_test_path_requeue_needs_a_working_path(void);
 void xqc_test_minrtt_skips_dead_path(void);
 void xqc_test_minrtt_keeps_path_without_alternative(void);
 void xqc_test_minrtt_probes_dead_path(void);
+void xqc_test_minrtt_dead_probe_waits_for_fired_ptos(void);
 
 #endif /* XQC_PATH_REQUEUE_TEST_H_INCLUDED */

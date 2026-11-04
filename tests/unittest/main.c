@@ -969,6 +969,8 @@ main(int argc, char *argv[])
                         xqc_test_minrtt_keeps_path_without_alternative)
         || !CU_add_test(pSuite, "xqc_test_minrtt_probes_dead_path",
                         xqc_test_minrtt_probes_dead_path)
+        || !CU_add_test(pSuite, "xqc_test_minrtt_dead_probe_waits_for_fired_ptos",
+                        xqc_test_minrtt_dead_probe_waits_for_fired_ptos)
         || !CU_add_test(pSuite, "xqc_test_pmtud_smaller_ack_keeps_larger_loss",
                         xqc_test_pmtud_smaller_ack_keeps_larger_loss)
         || !CU_add_test(pSuite, "xqc_test_pmtud_ack_spill_losses_make_path_suspect",
