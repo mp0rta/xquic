@@ -3496,6 +3496,8 @@ xqc_conn_schedule_start(xqc_connection_t *conn)
         return;
     }
 
+    xqc_conn_wake_quiet_standby(conn);
+
     if (conn->scheduler_callback->xqc_scheduler_handle_conn_event) {
         conn->scheduler_callback->xqc_scheduler_handle_conn_event(
             conn->scheduler, conn, XQC_SCHED_EVENT_CONN_ROUND_START, NULL);

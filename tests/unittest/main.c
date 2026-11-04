@@ -985,6 +985,10 @@ main(int argc, char *argv[])
                         xqc_test_pmtud_smaller_spill_ack_keeps_larger_loss)
         || !CU_add_test(pSuite, "xqc_test_quiet_standby_rule",
                         xqc_test_quiet_standby_rule)
+        || !CU_add_test(pSuite, "xqc_test_two_backups_not_quiet_without_primary",
+                        xqc_test_two_backups_not_quiet_without_primary)
+        || !CU_add_test(pSuite, "xqc_test_quiet_standby_woken_once",
+                        xqc_test_quiet_standby_woken_once)
         || !CU_add_test(pSuite, "xqc_test_keepalive_skips_quiet_standby",
                         xqc_test_keepalive_skips_quiet_standby)
         || !CU_add_test(pSuite, "xqc_test_idle_timer_keeps_quiet_standby",
