@@ -858,6 +858,26 @@ main(int argc, char *argv[])
                         xqc_test_send_ctl_single_loss_does_not_reset_rtt)
         || !CU_add_test(pSuite, "xqc_test_send_ctl_persistent_congestion_no_rtt_sample_early_return",
                         xqc_test_send_ctl_persistent_congestion_no_rtt_sample_early_return)
+        /* RFC 9002 7.6.2: persistent congestion from the lost packets */
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_rfc9002_example",
+                        xqc_test_send_ctl_pc_rfc9002_example)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_acked_in_between",
+                        xqc_test_send_ctl_pc_acked_in_between)
+        || !CU_add_test(pSuite,
+                        "xqc_test_send_ctl_pc_needs_sample_and_confirmation",
+                        xqc_test_send_ctl_pc_needs_sample_and_confirmation)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_lost_close_together",
+                        xqc_test_send_ctl_pc_lost_close_together)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_loss_timer",
+                        xqc_test_send_ctl_pc_loss_timer)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_lost_pmtud_probe",
+                        xqc_test_send_ctl_pc_lost_pmtud_probe)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_per_path",
+                        xqc_test_send_ctl_pc_per_path)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_pto_copies",
+                        xqc_test_send_ctl_pc_pto_copies)
+        || !CU_add_test(pSuite, "xqc_test_send_ctl_pc_pto_spurious",
+                        xqc_test_send_ctl_pc_pto_spurious)
         /* RFC 9000 14.4: no congestion reaction to a lost PMTU probe */
         || !CU_add_test(pSuite, "xqc_test_send_ctl_lost_pmtud_probe_no_cc_reaction",
                         xqc_test_send_ctl_lost_pmtud_probe_no_cc_reaction)
@@ -1078,6 +1098,8 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_mp21_path_cids_blocked_validation", xqc_test_mp21_path_cids_blocked_validation)
         || !CU_add_test(pSuite, "xqc_test_mp21_blocked_frames_pi_frame_types", xqc_test_mp21_blocked_frames_pi_frame_types)
         || !CU_add_test(pSuite, "xqc_test_mp21_solo_frame_in_datagram_no_pv", xqc_test_mp21_solo_frame_in_datagram_no_pv)
+        || !CU_add_test(pSuite, "xqc_test_mp21_paths_blocked_sent_on_draft21", xqc_test_mp21_paths_blocked_sent_on_draft21)
+        || !CU_add_test(pSuite, "xqc_test_mp21_paths_blocked_not_sent_on_draft10", xqc_test_mp21_paths_blocked_not_sent_on_draft10)
         || !CU_add_test(pSuite, "xqc_test_mp21_max_path_id_grant_disabled_by_default", xqc_test_mp21_max_path_id_grant_disabled_by_default)
         || !CU_add_test(pSuite, "xqc_test_mp21_max_path_id_grant_trigger_on_paths_blocked", xqc_test_mp21_max_path_id_grant_trigger_on_paths_blocked)
         || !CU_add_test(pSuite, "xqc_test_mp21_max_path_id_grant_skipped_at_max", xqc_test_mp21_max_path_id_grant_skipped_at_max)
@@ -1177,6 +1199,9 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_applimit_lingering_ack_only", xqc_test_applimit_lingering_ack_only)
         || !CU_add_test(pSuite, "xqc_test_applimit_marker_value", xqc_test_applimit_marker_value)
         || !CU_add_test(pSuite, "xqc_test_applimit_pacer_untouched", xqc_test_applimit_pacer_untouched)
+        || !CU_add_test(pSuite, "xqc_test_applimit_pacer_restart_credit", xqc_test_applimit_pacer_restart_credit)
+        || !CU_add_test(pSuite, "xqc_test_applimit_pacer_restart_back_to_back", xqc_test_applimit_pacer_restart_back_to_back)
+        || !CU_add_test(pSuite, "xqc_test_applimit_pacer_restart_write_patterns", xqc_test_applimit_pacer_restart_write_patterns)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();

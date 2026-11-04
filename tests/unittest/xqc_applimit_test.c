@@ -22,6 +22,8 @@
 #include "src/transport/xqc_send_ctl.h"
 #include "src/transport/xqc_send_queue.h"
 #include "src/transport/xqc_timer.h"
+#include "src/transport/xqc_pacing.h"
+#include "src/congestion_control/xqc_bbr.h"
 #include "xqc_common_test.h"
 #include "xqc_test_helpers.h"
 #include "xqc_applimit_test.h"
@@ -455,5 +457,251 @@ xqc_test_applimit_pacer_untouched(void)
     CU_ASSERT_NOT_EQUAL(pacing->bytes_budget, 1234);
     CU_ASSERT_NOT_EQUAL(pacing->last_sent_time, 42);
 
+    xqc_engine_destroy(conn->engine);
+}
+
+/*
+ * The pacer cases run on a clock they advance by hand. It starts at the time
+ * it is installed, after the ClientHello was sent, so the pacer never sees
+ * time go backwards.
+ */
+static xqc_usec_t applimit_now;
+
+static xqc_usec_t
+applimit_clock(void)
+{
+    return applimit_now;
+}
+
+static xqc_timestamp_pt
+applimit_clock_install(void)
+{
+    xqc_timestamp_pt saved = xqc_monotonic_timestamp;
+
+    applimit_now = saved();
+    xqc_monotonic_timestamp = applimit_clock;
+    return saved;
+}
+
+/*
+ * T7. The write-time check restarts the pacer with at least one timer
+ * granularity of data at the pacing rate: once the credit is spent the pacer
+ * waits at least XQC_PACING_DELAY_US (1 ms), so a 10-packet credit at
+ * 10 Gbit/s stalled the sender for a millisecond every time it went idle.
+ * Below ~115 Mbit/s the 10-packet floor still applies. Each restart here
+ * comes after 1 ms or more of idle time; T8 covers back-to-back restarts.
+ */
+void
+xqc_test_applimit_pacer_restart_credit(void)
+{
+    xqc_connection_t *conn = applimit_conn_create(NULL);
+    xqc_send_ctl_t   *ctl = conn->conn_initial_path->path_send_ctl;
+    xqc_pacing_t     *pacing = &ctl->ctl_pacing;
+    xqc_bbr_t        *bbr = (xqc_bbr_t *)ctl->ctl_cong;
+    xqc_timestamp_pt  saved = applimit_clock_install();
+
+    /* 10 Gbit/s: one millisecond is 1.25 MB */
+    bbr->pacing_rate = 1250000000;
+    applimit_now += 5000;
+    xqc_conn_check_app_limit(conn);
+    CU_ASSERT(ctl->ctl_app_limited > 0);
+    CU_ASSERT_EQUAL(pacing->bytes_budget, 1250000);
+
+    /* 8 Mbit/s: one millisecond is 1000 bytes, below the 10-packet floor */
+    ctl->ctl_app_limited = 0;
+    bbr->pacing_rate = 1000000;
+    applimit_now += 5000;
+    xqc_conn_check_app_limit(conn);
+    CU_ASSERT(ctl->ctl_app_limited > 0);
+    CU_ASSERT_EQUAL(pacing->bytes_budget, 10 * XQC_MSS);
+
+    /* a pacer that never sent gets the full millisecond whatever the clock
+     * reads, even from a clock that starts at zero */
+    bbr->pacing_rate = 1250000000;
+    xqc_pacing_init(pacing, 1, ctl);
+    applimit_now = 500;
+    xqc_conn_check_app_limit(conn);
+    CU_ASSERT_EQUAL(pacing->bytes_budget, 1250000);
+
+    xqc_monotonic_timestamp = saved;
+    xqc_engine_destroy(conn->engine);
+}
+
+/* n packets of XQC_MSS sent at the current time, as the send path does */
+static void
+applimit_pacer_send(xqc_pacing_t *pacing, int n)
+{
+    int i;
+
+    for (i = 0; i < n; i++) {
+        xqc_pacing_on_packet_sent(pacing, XQC_MSS);
+    }
+}
+
+/*
+ * T8. Every write that finds nothing queued restarts the pacer, however
+ * recently the path sent. A restart less than 1 ms after the last send gets
+ * what the pacer earned since then, at least ten packets, and never the
+ * fresh millisecond of a restart after idle time: otherwise writes of more
+ * than ten packets, faster than the pacing rate, leave unpaced up to the
+ * cwnd (RFC 9002 Section 7.7).
+ */
+void
+xqc_test_applimit_pacer_restart_back_to_back(void)
+{
+    xqc_connection_t *conn = applimit_conn_create(NULL);
+    xqc_send_ctl_t   *ctl = conn->conn_initial_path->path_send_ctl;
+    xqc_pacing_t     *pacing = &ctl->ctl_pacing;
+    xqc_bbr_t        *bbr = (xqc_bbr_t *)ctl->ctl_cong;
+    xqc_timestamp_pt  saved = applimit_clock_install();
+
+    /* 10 Gbit/s: 1250 bytes per microsecond, 1.25 MB per millisecond */
+    bbr->pacing_rate = 1250000000;
+    applimit_now += 5000;
+    xqc_conn_check_app_limit(conn);
+    CU_ASSERT_EQUAL(pacing->bytes_budget, 1250000);
+
+    /* 870 packets spend all but 680 bytes of it */
+    applimit_pacer_send(pacing, 870);
+    CU_ASSERT_EQUAL(pacing->bytes_budget, 680);
+
+    /* 100 us later, the pacer earned 125 KB */
+    applimit_now += 100;
+    xqc_conn_check_app_limit(conn);
+    CU_ASSERT_EQUAL(pacing->bytes_budget, 680 + 125000);
+
+    /* 87 packets leave 748 bytes; 1 us later, ten packets are more */
+    applimit_pacer_send(pacing, 87);
+    CU_ASSERT_EQUAL(pacing->bytes_budget, 748);
+    applimit_now += 1;
+    xqc_conn_check_app_limit(conn);
+    CU_ASSERT_EQUAL(pacing->bytes_budget, 10 * XQC_MSS);
+    CU_ASSERT(!xqc_pacing_can_write(pacing, 11 * XQC_MSS));
+    CU_ASSERT(xqc_timer_is_set(&ctl->path_timer_manager, XQC_TIMER_PACING));
+    xqc_timer_unset(&ctl->path_timer_manager, XQC_TIMER_PACING);
+
+    /* 999 us after the last send, just under 1 ms of data, then 1 ms */
+    applimit_pacer_send(pacing, 10);
+    CU_ASSERT_EQUAL(pacing->bytes_budget, 0);
+    applimit_now += 999;
+    xqc_conn_check_app_limit(conn);
+    CU_ASSERT_EQUAL(pacing->bytes_budget, 999 * 1250);
+
+    applimit_pacer_send(pacing, 869);
+    applimit_now += 1000;
+    xqc_conn_check_app_limit(conn);
+    CU_ASSERT_EQUAL(pacing->bytes_budget, 1250000);
+
+    xqc_monotonic_timestamp = saved;
+    xqc_engine_destroy(conn->engine);
+}
+
+/*
+ * After 5 ms of idle time, writes of pkts packets every gap_us, each through
+ * the write-time check of xqc_stream_send() and then through the pacer packet
+ * by packet, as the send path drives them. A packet the pacer holds stays
+ * queued, so no later write can restart the pacer: the writes end there.
+ * Returns the bytes sent before then and the time they took.
+ */
+static uint64_t
+applimit_pacer_writes(xqc_connection_t *conn, uint32_t rate, uint32_t cwnd,
+    int pkts, xqc_usec_t gap_us, int writes, xqc_usec_t *elapsed, int *held)
+{
+    xqc_send_ctl_t *ctl = conn->conn_initial_path->path_send_ctl;
+    xqc_pacing_t   *pacing = &ctl->ctl_pacing;
+    xqc_bbr_t      *bbr = (xqc_bbr_t *)ctl->ctl_cong;
+    xqc_usec_t      start;
+    uint64_t        sent = 0;
+    int             w, p;
+
+    bbr->pacing_rate = rate;
+    bbr->congestion_window = cwnd;
+    ctl->ctl_bytes_in_flight = 0;
+    xqc_timer_unset(&ctl->path_timer_manager, XQC_TIMER_PACING);
+
+    applimit_now += 5000;
+    start = applimit_now;
+    *held = 0;
+
+    for (w = 0; w < writes && !*held; w++) {
+        if (w > 0) {
+            applimit_now += gap_us;
+        }
+
+        xqc_conn_check_app_limit(conn);
+
+        for (p = 0; p < pkts; p++) {
+            if (!xqc_pacing_can_write(pacing, XQC_MSS)) {
+                *held = 1;
+                break;
+            }
+
+            xqc_pacing_on_packet_sent(pacing, XQC_MSS);
+            ctl->ctl_bytes_in_flight += XQC_MSS;
+            sent += XQC_MSS;
+        }
+    }
+
+    *elapsed = applimit_now - start;
+    return sent;
+}
+
+/*
+ * T9. Writes of more than ten packets, faster than the pacing rate, each
+ * find the queue drained and restart the pacer; the pacer holds them once
+ * the first restart's millisecond of credit and what the rate earned since
+ * are spent, instead of letting them out up to the cwnd. Writes slower than
+ * the rate never wait for the pacing timer.
+ */
+void
+xqc_test_applimit_pacer_restart_write_patterns(void)
+{
+    static const struct {
+        uint32_t    rate;       /* bytes per second */
+        uint32_t    cwnd;
+        int         pkts;       /* packets per write */
+        xqc_usec_t  gap_us;     /* between writes */
+        int         paced;      /* faster than the rate */
+    } patterns[] = {
+        { 125000000,  5000000,  22,   10, 1 },  /* 1 Gbit/s */
+        { 1250000000, 50000000, 22,   10, 1 },  /* 10 Gbit/s */
+        { 125000000,  5000000,  80,  100, 1 },
+        { 25000000,   2000000,  15,   50, 1 },  /* 200 Mbit/s */
+        { 125000000,  5000000,  22, 1000, 0 },
+        { 125000000,  5000000,  22,  300, 0 },
+    };
+    xqc_connection_t *conn = applimit_conn_create(NULL);
+    xqc_timestamp_pt  saved = applimit_clock_install();
+    size_t            i;
+
+    CU_ASSERT_EQUAL(conn->conn_initial_path->path_state,
+                    XQC_PATH_STATE_ACTIVE);
+
+    for (i = 0; i < sizeof(patterns) / sizeof(patterns[0]); i++) {
+        uint64_t   rate = patterns[i].rate;
+        uint64_t   credit = rate * 1000 / 1000000;     /* 1 ms of data */
+        int        writes = patterns[i].paced ? 100000 : 50;
+        xqc_usec_t elapsed;
+        int        held;
+        uint64_t   sent;
+
+        sent = applimit_pacer_writes(conn, patterns[i].rate, patterns[i].cwnd,
+                                     patterns[i].pkts, patterns[i].gap_us,
+                                     writes, &elapsed, &held);
+        if (patterns[i].paced) {
+            /* the first restart's credit, then the rate, then ten packets */
+            CU_ASSERT(held);
+            CU_ASSERT(sent + XQC_MSS > credit);
+            CU_ASSERT(sent <= credit + rate * elapsed / 1000000
+                              + 10 * XQC_MSS);
+
+        } else {
+            CU_ASSERT(!held);
+            CU_ASSERT_EQUAL(sent, (uint64_t)writes * patterns[i].pkts
+                                  * XQC_MSS);
+        }
+    }
+
+    xqc_monotonic_timestamp = saved;
     xqc_engine_destroy(conn->engine);
 }
