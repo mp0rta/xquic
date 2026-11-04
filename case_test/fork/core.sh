@@ -141,6 +141,66 @@ fi
 grep_err_log
 }
 
+# 1307 and 1308: both endpoints allow path IDs 0 and 1 only, and the client
+# opens two paths besides its first: the last one is refused with
+# -XQC_EMP_NO_AVAIL_PATH_ID (-651).
+# 1307 happy path, draft-21: the client reports it with PATHS_BLOCKED
+# (draft-ietf-quic-multipath-21 Section 4.7), the server accepts it, and
+# the transfer completes on two paths.
+case_fork_core_MP_draft21_reports_path_blocked()
+{
+rm -rf tp_localhost test_session xqc_token
+case_test_start_server ${SERVER_BIN} -l d -e -M -x 1307 > /dev/null
+clear_log
+echo -e "MP draft-21 reports a path blocked with PATHS_BLOCKED ...\c"
+case_test_sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -i lo -i lo -x 1307 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+refused=`grep "xqc_conn_create_path err = -651" stdlog`
+sent=`grep "|PATHS_BLOCKED sent|max_path_id:1|" clog`
+accepted=`grep "|PATHS_BLOCKED received|peer_max:1|local_max:1|" slog`
+cli_res=`grep -E "xqc_conn_destroy\|.*\|err:0x0\|.*\|mp_enable:1\|create:2\|validated:2\|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$refused" ] && [ -n "$sent" ] \
+    && [ -n "$accepted" ] && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_draft21_reports_path_blocked" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} refused:${refused:+y} sent:${sent:+y}" \
+        "accepted:${accepted:+y} cli_res:${cli_res:+y} errlog:${errlog:+y})"
+    case_print_result "MP_draft21_reports_path_blocked" "fail"
+fi
+grep_err_log
+}
+
+# 1308 abnormal path, draft-10: draft-10 has no PATHS_BLOCKED, and the
+# server would close the connection on that unknown frame type with
+# FRAME_ENCODING_ERROR (RFC 9000 Section 12.4). The client sends none, and
+# the transfer completes on two paths.
+case_fork_core_MP_draft10_refuses_path_without_paths_blocked()
+{
+rm -rf tp_localhost test_session xqc_token
+case_test_start_server ${SERVER_BIN} -l d -e -M -x 1308 > /dev/null
+clear_log
+echo -e "MP draft-10 refuses a path without PATHS_BLOCKED ...\c"
+case_test_sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -i lo -i lo -x 1308 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+refused=`grep "xqc_conn_create_path err = -651" stdlog`
+sent=`grep "|PATHS_BLOCKED sent|" clog`
+unknown=`grep "|mp_version error|" slog`
+cli_res=`grep -E "xqc_conn_destroy\|.*\|err:0x0\|.*\|mp_enable:1\|create:2\|validated:2\|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$refused" ] && [ -z "$sent" ] \
+    && [ -z "$unknown" ] && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_draft10_refuses_path_without_paths_blocked" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} refused:${refused:+y} sent:${sent:+y}" \
+        "unknown:${unknown:+y} cli_res:${cli_res:+y} errlog:${errlog:+y})"
+    case_print_result "MP_draft10_refuses_path_without_paths_blocked" "fail"
+fi
+grep_err_log
+}
+
 # 727 happy path: default cap, lossy echo transfer completes and the cap
 # machinery stays quiet (no buffered-count rejections logged).
 case_fork_core_stream_reassembly_cap_happy()
@@ -544,6 +604,8 @@ case_test_case "NAT_rebinding_IP_change_cwnd_reset" --id native --mode self-repo
 case_test_case "NAT_rebinding_port_only_retain" --id native --mode self-reporting --run case_fork_core_NAT_rebinding_port_only_retain
 case_test_case "MP_datagrams_leave_silently_failed_path" --id 1300 --mode self-reporting --run case_fork_core_MP_datagrams_leave_silently_failed_path
 case_test_case "MP_datagrams_resume_after_all_paths_failed_silently" --id 1301 --mode self-reporting --run case_fork_core_MP_datagrams_resume_after_all_paths_failed_silently
+case_test_case "MP_draft21_reports_path_blocked" --id 1307 --mode self-reporting --run case_fork_core_MP_draft21_reports_path_blocked
+case_test_case "MP_draft10_refuses_path_without_paths_blocked" --id 1308 --mode self-reporting --run case_fork_core_MP_draft10_refuses_path_without_paths_blocked
 case_test_case "stream_reassembly_cap_happy" --id 727 --mode self-reporting --run case_fork_core_stream_reassembly_cap_happy
 case_test_case "stream_reassembly_cap_pressure_recovery" --id 728 --mode self-reporting --run case_fork_core_stream_reassembly_cap_pressure_recovery
 case_test_case "max_pkt_out_size_at_cap" --id 735 --mode self-reporting --run case_fork_core_max_pkt_out_size_at_cap
