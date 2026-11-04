@@ -625,7 +625,7 @@ case_test_start_server ${SERVER_BIN} -l d -e -M -y > /dev/null
 rm -rf tp_localhost test_session xqc_token
 clear_log
 echo -e "MP backup scheduler goes back to the primary after an outage ...\c"
-case_test_sudo ${CLIENT_BIN} -s 40960000 -l d -t 6 -E -T 1 -M -y -i lo -i lo -x 1318 > stdlog
+case_test_sudo ${CLIENT_BIN} -s 40960000 -l e -t 6 -E -T 1 -M -y -i lo -i lo -x 1318 > stdlog
 result=`grep ">>>>>>>> pass:1" stdlog`
 dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
 requeued=`grep "|path:0|pto_count:[0-9]*|inflight:[0-9]*|requeue unacked|" slog`
