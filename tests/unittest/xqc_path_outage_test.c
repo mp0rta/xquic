@@ -57,6 +57,7 @@ outage_test_add_path(outage_test_t *t, unsigned pto_count)
     path->parent_conn = t->conn;
     path->path_state = XQC_PATH_STATE_ACTIVE;
     path->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+    path->curr_pkt_out_size = 1200;
     path->path_send_ctl = xqc_send_ctl_create(path);
     if (path->path_send_ctl == NULL) {
         return NULL;
@@ -130,13 +131,26 @@ xqc_test_wlb_evicted_paths_probed_with_ping(void)
     CU_ASSERT_EQUAL(outage_test_pings_on(&t, 2), 2);
     CU_ASSERT_EQUAL(outage_test_pings_on(&t, 0), 0);
 
+    /* a path with a full congestion window is left to its own PTO probes,
+     * and the other evicted path still gets its PINGs */
+    xqc_send_ctl_t *ctl1 = p1->path_send_ctl;
+    ctl1->ctl_bytes_in_flight = ctl1->ctl_cong_callback->xqc_cong_ctl_get_cwnd(ctl1->ctl_cong);
+    for (int i = 0; i < 2; i++) {
+        outage_fake_now += 600000;
+        xqc_wlb_scheduler_cb.xqc_scheduler_handle_conn_event(
+            sched, t.conn, XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    }
+    CU_ASSERT_EQUAL(outage_test_pings_on(&t, 1), 2);
+    CU_ASSERT_EQUAL(outage_test_pings_on(&t, 2), 4);
+    ctl1->ctl_bytes_in_flight = 0;
+
     /* nothing probes a path that is not evicted */
     p1->path_send_ctl->ctl_pto_count = 0;
     p2->path_send_ctl->ctl_pto_count = 0;
     outage_fake_now += 600000;
     xqc_wlb_scheduler_cb.xqc_scheduler_handle_conn_event(
         sched, t.conn, XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
-    CU_ASSERT_EQUAL(outage_test_pings_on(&t, 1) + outage_test_pings_on(&t, 2), 4);
+    CU_ASSERT_EQUAL(outage_test_pings_on(&t, 1) + outage_test_pings_on(&t, 2), 6);
 
     free(sched);
     xqc_monotonic_timestamp = saved;

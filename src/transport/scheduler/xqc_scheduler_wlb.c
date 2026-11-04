@@ -1126,9 +1126,28 @@ xqc_wlb_scheduler_copy_path_stats(void *scheduler, xqc_wlb_path_stats_t *out,
 /* Send a PING on an ACTIVE-but-evicted path, at most once per
  * WLB_EVICTED_PROBE_INTERVAL_US across the connection. Round-robins across
  * multiple evicted paths so one permanently dead path cannot starve
- * another's recovery probe. The PING goes on the probe list, which neither
- * congestion control nor the scheduler holds back: a blackholed path still
- * has everything it sent in flight, so it is always cwnd-blocked. */
+ * another's recovery probe.
+ *
+ * The PING goes on the probe list, which congestion control does not hold
+ * back, so a path is probed only when one packet fits its congestion window
+ * (RFC 9002 Section 7). A blackholed path that stays cwnd-blocked has its
+ * loss detection timer armed instead, and each PTO sends a probe on it
+ * regardless of the window, whose ACK clears the PTO count once the link
+ * heals. A path with nothing in flight has room, so it still gets the PING.
+ * A blocked path is left out of the rotation, so it cannot hold up the
+ * other evicted paths' probes. */
+static xqc_bool_t
+wlb_probe_fits_cwnd(xqc_path_ctx_t *path)
+{
+    xqc_packet_out_t probe;
+
+    memset(&probe, 0, sizeof(probe));
+    probe.po_used_size = path->curr_pkt_out_size;
+    return xqc_send_ctl_can_send(path->path_send_ctl, &probe,
+                                 path->path_schedule_bytes);
+}
+
+/* Send a PING on an evicted path, see above. */
 static void
 wlb_probe_evicted_paths(xqc_wlb_scheduler_t *s, xqc_connection_t *conn,
                         uint64_t now_us)
@@ -1150,7 +1169,9 @@ wlb_probe_evicted_paths(xqc_wlb_scheduler_t *s, xqc_connection_t *conn,
     int n = 0;
     xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
         path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
-        if (!wlb_path_transport_ok(path) || !wlb_path_blackholed(path)) {
+        if (!wlb_path_transport_ok(path) || !wlb_path_blackholed(path)
+            || !wlb_probe_fits_cwnd(path))
+        {
             continue;
         }
         if (n < WLB_MAX_PATHS) {
