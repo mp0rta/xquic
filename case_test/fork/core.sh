@@ -727,14 +727,20 @@ failed=`grep -c ">>>>>>>> pass:0" stdlog`
 validated=`grep "|path validated|path_id:1|" clog`
 kept=`grep "xqc_timer_path_idle_timeout|quiet standby path kept:1|" clog`
 closed=`grep "xqc_timer_path_idle_timeout|closed path:1|" clog`
+# the server agrees: path 1 is STANDBY there too, and kept, not closed
+srv_standby=`grep "xqc_set_application_path_status|path:1|app_path_status:2->1|" slog`
+srv_kept=`grep "xqc_timer_path_idle_timeout|quiet standby path kept:1|" slog`
+srv_closed=`grep "xqc_timer_path_idle_timeout|closed path:1|" slog`
 errlog=`grep_err_log`
 if [ -z "$errlog" ] && [ "$passed" -gt 1 ] && [ "$failed" = "0" ] && [ -n "$validated" ] \
-    && [ -n "$kept" ] && [ -z "$closed" ]; then
+    && [ -n "$kept" ] && [ -z "$closed" ] && [ -n "$srv_standby" ] \
+    && [ -n "$srv_kept" ] && [ -z "$srv_closed" ]; then
     echo ">>>>>>>> pass:1"
     case_print_result "MP_backup_keeps_quiet_standby_path" "pass"
 else
     echo ">>>>>>>> pass:0 (streams:${passed}/${failed} validated:${validated:+y}" \
-        "kept:${kept:+y} closed:${closed:+y} errlog:${errlog:+y})"
+        "kept:${kept:+y} closed:${closed:+y} srv_standby:${srv_standby:+y}" \
+        "srv_kept:${srv_kept:+y} srv_closed:${srv_closed:+y} errlog:${errlog:+y})"
     case_print_result "MP_backup_keeps_quiet_standby_path" "fail"
 fi
 grep_err_log
@@ -756,14 +762,21 @@ validated=`grep "|path validated|path_id:1|" clog`
 probed=`grep "|standby_probe|path:1|.*|now>=deadline:1|" clog`
 kept=`grep "quiet standby path kept" clog`
 closed=`grep "xqc_timer_path_idle_timeout|closed path:1|" clog`
+# the server gets the probes on the STANDBY path, so it never needs to keep
+# it as quiet, and does not close it
+srv_probes=`awk '/xqc_set_application_path_status\|path:1\|app_path_status:2->1\|/ { s = 1 } s && /xqc_conn_on_pkt_processed\|.*\|path:1\|/ { n++ } END { print n + 0 }' slog`
+srv_kept=`grep "quiet standby path kept" slog`
+srv_closed=`grep "xqc_timer_path_idle_timeout|closed path:1|" slog`
 errlog=`grep_err_log`
 if [ -z "$errlog" ] && [ "$passed" -gt 1 ] && [ "$failed" = "0" ] && [ -n "$validated" ] \
-    && [ -n "$probed" ] && [ -z "$kept" ] && [ -z "$closed" ]; then
+    && [ -n "$probed" ] && [ -z "$kept" ] && [ -z "$closed" ] \
+    && [ "$srv_probes" != "0" ] && [ -z "$srv_kept" ] && [ -z "$srv_closed" ]; then
     echo ">>>>>>>> pass:1"
     case_print_result "MP_backup_probes_standby_path_when_probing_on" "pass"
 else
     echo ">>>>>>>> pass:0 (streams:${passed}/${failed} validated:${validated:+y}" \
-        "probed:${probed:+y} kept:${kept:+y} closed:${closed:+y} errlog:${errlog:+y})"
+        "probed:${probed:+y} kept:${kept:+y} closed:${closed:+y} srv_probes:${srv_probes}" \
+        "srv_kept:${srv_kept:+y} srv_closed:${srv_closed:+y} errlog:${errlog:+y})"
     case_print_result "MP_backup_probes_standby_path_when_probing_on" "fail"
 fi
 grep_err_log
