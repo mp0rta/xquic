@@ -815,7 +815,12 @@ xqc_path_move_unack_packets_from_conn(xqc_path_ctx_t *path, xqc_connection_t *co
  * back, the receiver then waits for every STREAM frame that was in flight
  * on it, and the stream stalls on the paths that work. Move the path's
  * unacknowledged packets to the lost queue now, so that their data is sent
- * again on the paths that work, as when a path is frozen. */
+ * again on the paths that work, as when a path is frozen.
+ *
+ * A PTO does not declare packets lost (RFC 9002 Section 6.2), but
+ * draft-ietf-quic-multipath-21 Section 5.7 covers this case: on PTO
+ * expiration an endpoint can retransmit the delayed packets on the other
+ * paths. */
 void
 xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path)
 {
