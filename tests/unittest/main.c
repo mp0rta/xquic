@@ -1168,6 +1168,9 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_applimit_lingering_ack_only", xqc_test_applimit_lingering_ack_only)
         || !CU_add_test(pSuite, "xqc_test_applimit_marker_value", xqc_test_applimit_marker_value)
         || !CU_add_test(pSuite, "xqc_test_applimit_pacer_untouched", xqc_test_applimit_pacer_untouched)
+        || !CU_add_test(pSuite, "xqc_test_applimit_pacer_restart_credit", xqc_test_applimit_pacer_restart_credit)
+        || !CU_add_test(pSuite, "xqc_test_applimit_pacer_restart_back_to_back", xqc_test_applimit_pacer_restart_back_to_back)
+        || !CU_add_test(pSuite, "xqc_test_applimit_pacer_restart_write_patterns", xqc_test_applimit_pacer_restart_write_patterns)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();
