@@ -487,3 +487,70 @@ xqc_test_idle_timer_keeps_quiet_standby(void)
 
     requeue_test_teardown(&t);
 }
+
+/* A path that counts as dead only from PTO expiries hidden by sends gets no
+ * PING before its third PTO fires: the PING would re-arm its loss detection
+ * timer and hold off the PTO that moves its data to the other paths. Nor
+ * does a dead path whose congestion window is full: the probe list is not
+ * held back by congestion control. Both schedulers that probe dead paths
+ * share xqc_scheduler_probe_dead_paths(). */
+static void
+requeue_test_dead_probe_waits(const xqc_scheduler_callback_t *cb,
+                              xqc_app_path_status_t alt_status)
+{
+    requeue_test_t t;
+    char state[64] = {0};
+    CU_ASSERT_FATAL(cb->xqc_scheduler_size() <= sizeof(state));
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    xqc_path_ctx_t *alt = requeue_test_add_path(&t, 0);
+    CU_ASSERT_FATAL(alt != NULL);
+    alt->app_path_status = alt_status;
+
+    /* nothing acknowledged for many PTOs, with sends hiding the expiries */
+    t.conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_CONFIRMED;
+    t.conn->conn_settings.pto_backoff_factor = 2.0;
+    xqc_send_ctl_t *ctl = t.dead->path_send_ctl;
+    CU_ASSERT_FATAL(requeue_test_stream_in_flight(&t, t.dead, 1) != NULL);
+    ctl->ctl_pto_count = 0;
+    ctl->ctl_progress_time = 1;
+    ctl->ctl_time_of_last_sent_ack_eliciting_packet[XQC_PNS_APP_DATA] =
+        ctl->ctl_progress_time + 64 * xqc_send_ctl_calc_pto(ctl);
+    CU_ASSERT_FATAL(xqc_path_is_dead_with_alternative(t.dead));
+
+    cb->xqc_scheduler_handle_conn_event(state, t.conn,
+                                        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 0);
+
+    /* the third PTO fired: the path is probed */
+    ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    cb->xqc_scheduler_handle_conn_event(state, t.conn,
+                                        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
+    requeue_test_teardown(&t);
+
+    /* a full congestion window: not probed */
+    char state2[64] = {0};
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    alt = requeue_test_add_path(&t, 0);
+    CU_ASSERT_FATAL(alt != NULL);
+    alt->app_path_status = alt_status;
+    ctl = t.dead->path_send_ctl;
+    ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    ctl->ctl_bytes_in_flight =
+        ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(ctl->ctl_cong);
+    CU_ASSERT_FATAL(xqc_path_is_dead_with_alternative(t.dead));
+    cb->xqc_scheduler_handle_conn_event(state2, t.conn,
+                                        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 0);
+    ctl->ctl_bytes_in_flight = 0;
+    requeue_test_teardown(&t);
+}
+
+void
+xqc_test_dead_probe_waits_for_fired_ptos(void)
+{
+    requeue_test_dead_probe_waits(&xqc_minrtt_scheduler_cb,
+                                  XQC_APP_PATH_STATUS_AVAILABLE);
+    requeue_test_dead_probe_waits(&xqc_backup_scheduler_cb,
+                                  XQC_APP_PATH_STATUS_STANDBY);
+}

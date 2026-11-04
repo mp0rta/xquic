@@ -681,7 +681,9 @@ case_test_start_server ${SERVER_BIN} -l d -e -M -y > /dev/null
 # STANDBY path works, then comes back. After the re-queue the backup
 # scheduler sends no data on the dead path, so it PINGs it; once a PING is
 # acknowledged, the PTO count clears and STREAM data goes back to the
-# initial path before the echo ends.
+# initial path before the echo ends. The server's first ACK on the initial
+# path after the re-queue marks the recovery: no STREAM data goes to that
+# path between the two, and some does after it.
 rm -rf tp_localhost test_session xqc_token
 clear_log
 echo -e "MP backup scheduler goes back to the primary after an outage ...\c"
@@ -690,15 +692,17 @@ result=`grep ">>>>>>>> pass:1" stdlog`
 dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
 requeued=`grep "|path:0|pto_count:[0-9]*|inflight:[0-9]*|requeue unacked|" slog`
 probed=`grep "xqc_scheduler_probe_dead_paths|path:0|.*dead path probed|" slog`
-again=`awk '/requeue unacked/ { r = 1 } r && /xqc_backup_scheduler_get_path\|best path:0\|frame_type:STREAM/ { n++ } END { print n + 0 }' slog`
+during=`awk '/requeue unacked/ { r = 1 } r && /xqc_send_ctl_on_ack_received\|conn:[^|]*\|path:0\|/ { exit } r && /xqc_backup_scheduler_get_path\|best path:0\|frame_type:STREAM/ { n++ } END { print n + 0 }' slog`
+again=`awk '/requeue unacked/ { r = 1 } r && /xqc_send_ctl_on_ack_received\|conn:[^|]*\|path:0\|/ { h = 1 } h && /xqc_backup_scheduler_get_path\|best path:0\|frame_type:STREAM/ { n++ } END { print n + 0 }' slog`
 errlog=`grep_err_log`
 if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$requeued" ] \
-    && [ -n "$probed" ] && [ "$again" != "0" ]; then
+    && [ -n "$probed" ] && [ "$during" = "0" ] && [ "$again" != "0" ]; then
     echo ">>>>>>>> pass:1"
     case_print_result "MP_backup_returns_to_primary_after_outage" "pass"
 else
     echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} requeued:${requeued:+y}" \
-        "probed:${probed:+y} stream_on_primary_after_requeue:${again} errlog:${errlog:+y})"
+        "probed:${probed:+y} stream_on_dead_primary:${during}" \
+        "stream_on_primary_after_recovery:${again} errlog:${errlog:+y})"
     case_print_result "MP_backup_returns_to_primary_after_outage" "fail"
 fi
 grep_err_log
