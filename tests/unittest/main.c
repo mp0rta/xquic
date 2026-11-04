@@ -973,6 +973,8 @@ main(int argc, char *argv[])
                         xqc_test_backup_failover)
         || !CU_add_test(pSuite, "xqc_test_backup_probes_dead_path",
                         xqc_test_backup_probes_dead_path)
+        || !CU_add_test(pSuite, "xqc_test_dead_probe_waits_for_fired_ptos",
+                        xqc_test_dead_probe_waits_for_fired_ptos)
         || !CU_add_test(pSuite, "xqc_test_backup_skips_dead_primary",
                         xqc_test_backup_skips_dead_primary)
         || !CU_add_test(pSuite, "xqc_test_pmtud_smaller_ack_keeps_larger_loss",

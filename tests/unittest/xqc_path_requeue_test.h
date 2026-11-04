@@ -12,6 +12,7 @@ void xqc_test_minrtt_keeps_path_without_alternative(void);
 void xqc_test_minrtt_probes_dead_path(void);
 void xqc_test_backup_failover(void);
 void xqc_test_backup_probes_dead_path(void);
+void xqc_test_dead_probe_waits_for_fired_ptos(void);
 void xqc_test_backup_skips_dead_primary(void);
 
 #endif /* XQC_PATH_REQUEUE_TEST_H_INCLUDED */
