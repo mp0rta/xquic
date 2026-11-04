@@ -1058,6 +1058,8 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_datagram_backlog_cap", xqc_test_datagram_backlog_cap)
         || !CU_add_test(pSuite, "xqc_test_datagram_backlog_cap_ignores_stream",
                         xqc_test_datagram_backlog_cap_ignores_stream)
+        || !CU_add_test(pSuite, "xqc_test_datagram_backlog_cap_skips_0rtt_resend",
+                        xqc_test_datagram_backlog_cap_skips_0rtt_resend)
         || !CU_add_test(pSuite, "xqc_test_mp21_version_enum", xqc_test_mp21_version_enum)
         || !CU_add_test(pSuite, "xqc_test_mp21_frame_type_constants", xqc_test_mp21_frame_type_constants)
         || !CU_add_test(pSuite, "xqc_test_mp21_path_abandon_recv_no_reason", xqc_test_mp21_path_abandon_recv_no_reason)

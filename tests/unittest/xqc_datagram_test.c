@@ -12,6 +12,8 @@
 #include "src/transport/xqc_frame_parser.h"
 #include "src/transport/xqc_packet_out.h"
 #include "src/transport/xqc_packet_in.h"
+#include "src/transport/xqc_send_ctl.h"
+#include "src/transport/xqc_multipath.h"
 #include "src/transport/xqc_multipath.h"
 #include "src/transport/xqc_send_queue.h"
 #include "xqc_common_test.h"
@@ -311,8 +313,14 @@ xqc_test_datagram_backlog_cap()
     xqc_send_queue_dgram_unsent_done(sq, copy);
     CU_ASSERT_EQUAL(xqc_send_queue_get_dgram_unsent_num(sq), 4);
 
-    /* sent once: stops counting, and only once */
-    xqc_send_queue_dgram_unsent_done(sq, po);
+    /* sent (xqc_send_ctl_on_packet_sent): stops counting, and only once */
+    xqc_path_ctx_t *path = conn->conn_initial_path;
+    po->po_path_id = path->path_id;
+    po->po_pkt.pkt_pns = XQC_PNS_APP_DATA;
+    xqc_send_ctl_on_packet_sent(path->path_send_ctl, xqc_get_pn_ctl(conn, path), po,
+                                xqc_monotonic_timestamp());
+    CU_ASSERT((po->po_flag & XQC_POF_DGRAM_UNSENT) == 0);
+    CU_ASSERT_EQUAL(xqc_send_queue_get_dgram_unsent_num(sq), 3);
     xqc_send_queue_dgram_unsent_done(sq, po);
     CU_ASSERT_EQUAL(xqc_send_queue_get_dgram_unsent_num(sq), 3);
 
@@ -372,6 +380,45 @@ xqc_test_datagram_backlog_cap_ignores_stream()
     uint64_t id;
     CU_ASSERT_EQUAL(xqc_datagram_send(conn, data, sizeof(data), &id, XQC_DATA_QOS_HIGH),
                     XQC_OK);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* the internal 0-RTT resend (use_supplied_dgram_id) is not held back by the
+ * cap: those datagrams were already accepted, and the resend treats
+ * -XQC_EAGAIN as an internal error */
+void
+xqc_test_datagram_backlog_cap_skips_0rtt_resend()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+    xqc_send_queue_t *sq = conn->conn_send_queue;
+
+    conn->conn_flag |= XQC_CONN_FLAG_CAN_SEND_1RTT | XQC_CONN_FLAG_UPPER_CONN_EXIST;
+    conn->remote_settings.max_datagram_frame_size = 1200;
+    conn->dgram_mss = 1200;
+    conn->conn_settings.max_dgram_unsent_packets = 4;
+    for (int i = 0; i < 4; i++) {
+        xqc_test_write_dgram(conn);
+    }
+    CU_ASSERT_EQUAL(xqc_send_queue_get_dgram_unsent_num(sq), 4);
+
+    unsigned char data[100] = {0};
+    struct iovec iov = {.iov_base = data, .iov_len = sizeof(data)};
+    uint64_t ids[1] = {100};
+    size_t sent = 0, sent_bytes = 0;
+
+    /* an application write is refused at the cap */
+    CU_ASSERT_EQUAL(xqc_datagram_send_multiple_internal(conn, &iov, NULL, 1, &sent,
+                        &sent_bytes, XQC_DATA_QOS_HIGH, XQC_FALSE),
+                    -XQC_EAGAIN);
+    CU_ASSERT_EQUAL(sent, 0);
+
+    /* the 0-RTT resend goes through */
+    CU_ASSERT_EQUAL(xqc_datagram_send_multiple_internal(conn, &iov, ids, 1, &sent,
+                        &sent_bytes, XQC_DATA_QOS_HIGH, XQC_TRUE),
+                    XQC_OK);
+    CU_ASSERT_EQUAL(sent, 1);
 
     xqc_engine_destroy(conn->engine);
 }

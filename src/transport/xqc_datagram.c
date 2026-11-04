@@ -567,7 +567,10 @@ xqc_datagram_send_multiple_internal(xqc_connection_t *conn,
             return -XQC_EDGRAM_TOO_LARGE;
         }
 
-        if (xqc_datagram_backlog_full(conn)) {
+        /* Not on the internal 0-RTT resend (use_supplied_dgram_id): those
+         * datagrams were already accepted, and xqc_conn_resend_0rtt_datagram()
+         * treats -XQC_EAGAIN as an internal error. */
+        if (!use_supplied_dgram_id && xqc_datagram_backlog_full(conn)) {
             ret = -XQC_EAGAIN;
             break;
         }
