@@ -895,6 +895,10 @@ xqc_engine_dgram_notify_after_send(xqc_connection_t *conn)
     if (xqc_datagram_notify_backlog_drained(conn)) {
         xqc_conn_schedule_packets_to_paths(conn);
         xqc_conn_send_packets(conn);
+        /* xqc_engine_process_conn() has already cleared it, and a datagram
+         * the callback wrote with defer_send_flush set it again; it was
+         * just sent, so nothing is left to flush */
+        conn->deferred_flush_pending = 0;
     }
 }
 
