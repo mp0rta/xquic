@@ -816,8 +816,6 @@ case_test_case "pmtud_path_below_base" --id 807 --mode self-reporting --run case
 case_test_case "pmtud_outage_stays_at_base" --id 808 --mode self-reporting --run case_fork_core_pmtud_outage_stays_at_base
 case_test_case "pmtud_smaller_second_path_validates" --id 809 --mode self-reporting --run case_fork_core_pmtud_smaller_second_path_validates
 case_test_case "pmtud_new_path_starts_at_base" --id 810 --mode self-reporting --run case_fork_core_pmtud_new_path_starts_at_base
-case_test_case "MP_dead_path_stream_data_resent_on_working_path" --id 1313 --mode self-reporting --run case_fork_core_MP_dead_path_stream_data_resent_on_working_path
-case_test_case "MP_only_path_stream_data_kept_through_outage" --id 1314 --mode self-reporting --run case_fork_core_MP_only_path_stream_data_kept_through_outage
 case_test_case "MP_minrtt_skips_dead_path" --id 1315 --mode self-reporting --run case_fork_core_MP_minrtt_skips_dead_path
 case_test_case "MP_minrtt_keeps_only_path_through_outage" --id 1316 --mode self-reporting --run case_fork_core_MP_minrtt_keeps_only_path_through_outage
 case_test_case "MP_backup_skips_dead_primary" --id 1317 --mode self-reporting --run case_fork_core_MP_backup_skips_dead_primary
@@ -825,6 +823,8 @@ case_test_case "MP_backup_returns_to_primary_after_outage" --id 1318 --mode self
 case_test_case "MP_backup_keeps_quiet_standby_path" --id 1319 --mode self-reporting --run case_fork_core_MP_backup_keeps_quiet_standby_path
 case_test_case "MP_backup_probes_standby_path_when_probing_on" --id 1320 --mode self-reporting --run case_fork_core_MP_backup_probes_standby_path_when_probing_on
 
+case_test_case "MP_dead_path_stream_data_resent_on_working_path" --id 1313 --mode self-reporting --run case_fork_core_MP_dead_path_stream_data_resent_on_working_path
+case_test_case "MP_only_path_stream_data_kept_through_outage" --id 1314 --mode self-reporting --run case_fork_core_MP_only_path_stream_data_kept_through_outage
 case_test_case "pmtud_path_shrinks_by_8_bytes" --id 811 --mode self-reporting --run case_fork_core_pmtud_path_shrinks_by_8_bytes
 
 if case_test_is_discovery; then
