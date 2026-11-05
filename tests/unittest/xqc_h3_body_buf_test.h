@@ -37,5 +37,6 @@ void xqc_test_h3bb_close_goaway(void);
 void xqc_test_h3bb_close_then_conn_close_in_callback(void);
 void xqc_test_h3bb_teardown_close_sibling(void);
 void xqc_test_h3bb_limit_zero_close_unchanged(void);
+void xqc_test_h3bb_close_in_create_notify(void);
 
 #endif

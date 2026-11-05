@@ -1730,6 +1730,7 @@ static uint64_t h3bb_max_data_at_close;
 static uint64_t h3bb_offset_at_close;
 static int h3bb_resume_instead;
 static int h3bb_own;
+static int h3bb_notifies_at_conn_close;
 
 static void
 h3bb_test_arm_then_conn_close(h3bb_fx_t *fx, int idx)
@@ -1751,6 +1752,7 @@ h3bb_test_arm_then_conn_close(h3bb_fx_t *fx, int idx)
     }
     h3bb_offset_at_close =
         fx->req[victim].stream->stream_data_in.next_read_offset;
+    h3bb_notifies_at_conn_close = fx->req[victim].n_read_notify;
     h3bb_max_data_at_close = fx->conn->conn_flow_ctl.fc_max_data_can_recv;
     CU_ASSERT_EQUAL(xqc_conn_close(fx->conn->engine,
                                    &fx->conn->scid_set.user_scid), XQC_OK);
@@ -1807,9 +1809,13 @@ xqc_test_h3bb_close_then_conn_close_in_callback(void)
                       & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
             notifies = fx.req[victim].n_read_notify;
 
+            /* request 0 is queued first, then the victim behind it: the
+             * walk is at 0 when the victim joins the list, and 0's
+             * successor is already the victim */
             fx.req[i].on_notify = h3bb_test_arm_then_conn_close;
             h3bb_feed_headers(&fx, i);
             h3bb_feed_data(&fx, i, 1000, 1000, 0);
+            h3bb_feed_data(&fx, victim, 1000, 1000, 0);
             h3bb_turn(&fx);
         }
 
@@ -1819,9 +1825,8 @@ xqc_test_h3bb_close_then_conn_close_in_callback(void)
                         h3bb_offset_at_close);
         CU_ASSERT_EQUAL(fx.conn->conn_flow_ctl.fc_max_data_can_recv,
                         h3bb_max_data_at_close);
-        if (variant == 1 || variant == 2) {
-            CU_ASSERT_EQUAL(fx.req[victim].n_read_notify, notifies);
-        }
+        CU_ASSERT_EQUAL(fx.req[victim].n_read_notify,
+                        h3bb_notifies_at_conn_close);
         CU_ASSERT_EQUAL(fx.req[victim].n_closing_notify, 0);
 
         h3bb_teardown(&fx);
@@ -1899,4 +1904,59 @@ xqc_test_h3bb_limit_zero_close_unchanged(void)
     CU_ASSERT(fx.req[i].h3r->body_buf_bytes > 0);
 
     h3bb_teardown(&fx);
+}
+
+/* the application closes the request in its create notify: the HEADERS that
+ * created it are neither decoded (no Section Acknowledgment) nor notified */
+static int h3bb_create_closed;
+
+static int
+h3bb_create_notify_close(xqc_h3_request_t *h3r, void *user_data)
+{
+    h3bb_create_closed++;
+    CU_ASSERT_EQUAL(xqc_h3_request_close(h3r), XQC_OK);
+    return 0;
+}
+
+void
+xqc_test_h3bb_close_in_create_notify(void)
+{
+    h3bb_fx_t   fx;
+    h3bb_req_t *rq;
+
+    CU_ASSERT_EQUAL_FATAL(h3bb_setup(&fx, H3BB_LIMIT, XQC_CONN_TYPE_CLIENT), 0);
+    h3bb_set_conn_window(&fx, 16 * 1024 * 1024);
+    fx.h3c->h3_request_callbacks.h3_request_create_notify =
+        h3bb_create_notify_close;
+    h3bb_create_closed = 0;
+
+    /* an H3 request stream whose request object does not exist yet, as on
+     * a server before the first HEADERS: the read creates it */
+    rq = &fx.req[0];
+    rq->fx = &fx;
+    rq->stream = xqc_create_stream_with_conn(fx.conn, XQC_UNDEFINE_STREAM_ID,
+                                             XQC_CLI_BID, NULL, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(rq->stream);
+    rq->stream->stream_flow_ctl.fc_max_stream_data_can_recv = 16 * 1024 * 1024;
+    rq->h3s = xqc_h3_stream_create(fx.h3c, rq->stream,
+                                   XQC_H3_STREAM_TYPE_REQUEST, rq);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(rq->h3s);
+    CU_ASSERT_PTR_NULL(rq->h3s->h3r);
+    fx.n_req = 1;
+
+    h3bb_feed_headers(&fx, 0);
+    h3bb_feed_data(&fx, 0, 1000, 1000, 0);
+    h3bb_read(&fx, 0);
+
+    CU_ASSERT_EQUAL(h3bb_create_closed, 1);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(rq->h3s->h3r);
+    CU_ASSERT_EQUAL(rq->h3s->h3r->completed_header_count, 0);
+    CU_ASSERT_EQUAL(rq->n_read_notify, 0);
+    CU_ASSERT_EQUAL(rq->n_closing_notify, 0);
+    CU_ASSERT_EQUAL(rq->stream->stream_data_in.next_read_offset,
+                    h3bb_fed(&fx, 0));
+    CU_ASSERT(xqc_list_empty(&rq->h3s->h3r->body_buf));
+
+    h3bb_teardown(&fx);
+    CU_ASSERT_EQUAL(rq->n_close_notify, 1);
 }

@@ -1229,6 +1229,7 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_h3bb_close_then_conn_close_in_callback", xqc_test_h3bb_close_then_conn_close_in_callback)
         || !CU_add_test(pSuite, "xqc_test_h3bb_teardown_close_sibling", xqc_test_h3bb_teardown_close_sibling)
         || !CU_add_test(pSuite, "xqc_test_h3bb_limit_zero_close_unchanged", xqc_test_h3bb_limit_zero_close_unchanged)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_in_create_notify", xqc_test_h3bb_close_in_create_notify)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();

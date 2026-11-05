@@ -8,6 +8,7 @@
 #include "src/webtransport/xqc_webtransport_dgram.h"
 #include "src/http3/xqc_h3_conn.h"
 #include "src/http3/xqc_h3_request.h"
+#include "src/http3/xqc_h3_stream.h"
 #include "src/transport/xqc_conn.h"
 #include "src/transport/xqc_stream.h"
 #include "src/transport/xqc_packet_out.h"
@@ -144,6 +145,7 @@ xqc_wt_adapter_classify(xqc_h3_request_t *request,
         }
     }
     return request->request_if->h3_request_read_notify
+           && !xqc_h3_stream_in_discard(request->h3_stream)
         ? request->request_if->h3_request_read_notify(
             request, flags, request->user_data) : XQC_OK;
 }

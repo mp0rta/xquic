@@ -1020,6 +1020,11 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
         }
     }
 
+    /* closed before or by the create notify: nothing is parsed or decoded */
+    if (xqc_h3_stream_in_discard(h3s)) {
+        return data_len;
+    }
+
     if (data == NULL) {
         return -XQC_H3_EPARAM;
     }
@@ -1954,8 +1959,10 @@ xqc_h3_stream_in_discard(const xqc_h3_stream_t *h3s)
 /*
  * Own read turn of a discarded request: free what the application will never
  * take, then read and drop the transport stream up to EAGAIN, FIN or an error
- * (RESET). The bytes still count towards the connection credit, and reading
- * up to FIN makes the receive side terminal. Nothing is parsed and no
+ * (RESET). The bytes still count towards the connection credit (RFC 9000
+ * Section 4.5: all bytes of the stream count against the final size), and
+ * reading up to FIN moves the receive side from Data Recvd to Data Read
+ * (Section 3.2). Nothing is parsed and no
  * application callback runs. A connection that is closing or being destroyed
  * is not read.
  */
@@ -2563,9 +2570,7 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
          * read and drop the rest in this turn, as nothing else would
          * schedule another one.
          */
-        if (h3s->type == XQC_H3_STREAM_TYPE_REQUEST
-            && xqc_h3_stream_in_discard(h3s))
-        {
+        if (xqc_h3_stream_in_discard(h3s)) {
             xqc_h3_stream_discard_read(h3s);
         }
 

@@ -147,15 +147,9 @@ xqc_h3_request_close(xqc_h3_request_t *h3_request)
             return XQC_OK;
         }
 
-        /*
-         * A read turn is needed unless the receive side is finished, or
-         * this request's own read notify is running (it reads on its way
-         * out).
-         */
+        /* inside its own read notify, that notify does the read */
         if (!(h3s->flags & (XQC_HTTP3_STREAM_IN_READING
-                            | XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY))
-            && h3s->stream->stream_state_recv != XQC_RECV_STREAM_ST_DATA_READ
-            && h3s->stream->stream_state_recv != XQC_RECV_STREAM_ST_RESET_READ)
+                            | XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY)))
         {
             xqc_h3_stream_ready_and_wake(h3s);
         }
