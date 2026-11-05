@@ -527,16 +527,11 @@ fi
 grep_err_log
 }
 
+# 1313: reliable-stream failover, also runnable independently.
 case_fork_core_MP_dead_path_stream_data_resent_on_working_path()
 {
-# ── Multipath: a dead path's stream data is sent again on the paths that
-# work (case IDs 1313/1314)
-# 1313 happy path: during the echo of a 4 MB body, the initial path stops
-# delivering in both directions and stays dead, while the second path keeps
-# working. The server re-queues the echo data in flight on the dead path
-# after its third PTO there, and the echo completes on the second path.
-case_test_start_server ${SERVER_BIN} -l d -e -M > /dev/null
 rm -rf tp_localhost test_session xqc_token
+case_test_start_server ${SERVER_BIN} -l d -e -M > /dev/null
 clear_log
 echo -e "MP stream data of a dead path resent on the working path ...\c"
 case_test_sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -i lo -i lo -x 1313 > stdlog
@@ -554,14 +549,11 @@ fi
 grep_err_log
 }
 
+# 1314: reliable-stream failover, also runnable independently.
 case_fork_core_MP_only_path_stream_data_kept_through_outage()
 {
-case_test_start_server ${SERVER_BIN} -l d -e -M > /dev/null
-# 1314 abnormal path: the same outage on a multipath connection with one
-# path, for one second. The server's PTOs on that path reach three, but no
-# other path works, so nothing is re-queued; the data is sent again on the
-# same path once it is back, and the echo completes.
 rm -rf tp_localhost test_session xqc_token
+case_test_start_server ${SERVER_BIN} -l d -e -M > /dev/null
 clear_log
 echo -e "MP stream data of the only path kept through an outage ...\c"
 case_test_sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -i lo -x 1314 > stdlog
@@ -824,8 +816,6 @@ case_test_case "pmtud_path_below_base" --id 807 --mode self-reporting --run case
 case_test_case "pmtud_outage_stays_at_base" --id 808 --mode self-reporting --run case_fork_core_pmtud_outage_stays_at_base
 case_test_case "pmtud_smaller_second_path_validates" --id 809 --mode self-reporting --run case_fork_core_pmtud_smaller_second_path_validates
 case_test_case "pmtud_new_path_starts_at_base" --id 810 --mode self-reporting --run case_fork_core_pmtud_new_path_starts_at_base
-case_test_case "MP_dead_path_stream_data_resent_on_working_path" --id 1313 --mode self-reporting --run case_fork_core_MP_dead_path_stream_data_resent_on_working_path
-case_test_case "MP_only_path_stream_data_kept_through_outage" --id 1314 --mode self-reporting --run case_fork_core_MP_only_path_stream_data_kept_through_outage
 case_test_case "MP_minrtt_skips_dead_path" --id 1315 --mode self-reporting --run case_fork_core_MP_minrtt_skips_dead_path
 case_test_case "MP_minrtt_keeps_only_path_through_outage" --id 1316 --mode self-reporting --run case_fork_core_MP_minrtt_keeps_only_path_through_outage
 case_test_case "MP_backup_skips_dead_primary" --id 1317 --mode self-reporting --run case_fork_core_MP_backup_skips_dead_primary
@@ -833,6 +823,8 @@ case_test_case "MP_backup_returns_to_primary_after_outage" --id 1318 --mode self
 case_test_case "MP_backup_keeps_quiet_standby_path" --id 1319 --mode self-reporting --run case_fork_core_MP_backup_keeps_quiet_standby_path
 case_test_case "MP_backup_probes_standby_path_when_probing_on" --id 1320 --mode self-reporting --run case_fork_core_MP_backup_probes_standby_path_when_probing_on
 
+case_test_case "MP_dead_path_stream_data_resent_on_working_path" --id 1313 --mode self-reporting --run case_fork_core_MP_dead_path_stream_data_resent_on_working_path
+case_test_case "MP_only_path_stream_data_kept_through_outage" --id 1314 --mode self-reporting --run case_fork_core_MP_only_path_stream_data_kept_through_outage
 case_test_case "pmtud_path_shrinks_by_8_bytes" --id 811 --mode self-reporting --run case_fork_core_pmtud_path_shrinks_by_8_bytes
 
 if case_test_is_discovery; then
