@@ -6,6 +6,7 @@
 #include <CUnit/CUnit.h>
 #include "xqc_common_test.h"
 #include "src/transport/xqc_conn.h"
+#include "src/transport/xqc_packet_parser.h"
 #include "src/tls/xqc_tls_defs.h"
 #include "src/tls/xqc_tls.h"
 #include "src/tls/xqc_crypto.h"
@@ -173,6 +174,72 @@ xqc_test_hp_sample_boundary()
 
     /* Case 8: encrypt, exact boundary (21 bytes) -> should pass check */
     xqc_test_hp_sample_boundary_one(XQC_TRUE, 21, XQC_OK);
+}
+
+
+/* RFC 9001 §5.4.4 and Appendix A.5 ChaCha20 HP test vector. */
+#ifdef OPENSSL_IS_BORINGSSL
+static const uint8_t rfc9001_chacha20_hp_key[32] = {
+    0x25, 0xa2, 0x82, 0xb9, 0xe8, 0x2f, 0x06, 0xf2,
+    0x1f, 0x48, 0x89, 0x17, 0xa4, 0xfc, 0x8f, 0x1b,
+    0x73, 0x57, 0x36, 0x85, 0x60, 0x85, 0x97, 0xd0,
+    0xef, 0xcb, 0x07, 0x6b, 0x0a, 0xb7, 0xa7, 0xa4
+};
+
+static const uint8_t rfc9001_chacha20_hp_sample[16] = {
+    0x5e, 0x5c, 0xd5, 0x5c, 0x41, 0xf6, 0x90, 0x80,
+    0x57, 0x5d, 0x79, 0x99, 0xc2, 0x5a, 0x5b, 0xfb
+};
+
+static const uint8_t rfc9001_chacha20_hp_mask[5] = {
+    0xae, 0xfe, 0xfe, 0x7d, 0x03
+};
+#endif
+
+void
+xqc_test_rfc9001_chacha20_hp_mask()
+{
+#ifdef OPENSSL_IS_BORINGSSL
+    uint8_t plaintext[sizeof(rfc9001_chacha20_hp_mask)] = {0};
+    uint8_t mask[sizeof(rfc9001_chacha20_hp_mask)] = {0};
+    size_t masklen = 0;
+
+    xqc_int_t ret = xqc_bssl_hp_mask_chacha20(NULL, NULL, mask,
+                                               sizeof(mask), &masklen,
+                                               plaintext, sizeof(plaintext),
+                                               rfc9001_chacha20_hp_key,
+                                               sizeof(rfc9001_chacha20_hp_key),
+                                               rfc9001_chacha20_hp_sample,
+                                               sizeof(rfc9001_chacha20_hp_sample));
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(masklen == sizeof(mask));
+    CU_ASSERT(memcmp(mask, rfc9001_chacha20_hp_mask, sizeof(mask)) == 0);
+#endif
+}
+
+void
+xqc_test_rfc9001_chacha20_hp_unaligned_sample()
+{
+#ifdef OPENSSL_IS_BORINGSSL
+    uint8_t plaintext[sizeof(rfc9001_chacha20_hp_mask)] = {0};
+    uint8_t mask[sizeof(rfc9001_chacha20_hp_mask)] = {0};
+    uint8_t sample[sizeof(rfc9001_chacha20_hp_sample) + 1];
+    size_t masklen = 0;
+
+    memcpy(sample + 1, rfc9001_chacha20_hp_sample,
+           sizeof(rfc9001_chacha20_hp_sample));
+
+    xqc_int_t ret = xqc_bssl_hp_mask_chacha20(NULL, NULL, mask,
+                                               sizeof(mask), &masklen,
+                                               plaintext, sizeof(plaintext),
+                                               rfc9001_chacha20_hp_key,
+                                               sizeof(rfc9001_chacha20_hp_key),
+                                               sample + 1,
+                                               sizeof(rfc9001_chacha20_hp_sample));
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(masklen == sizeof(mask));
+    CU_ASSERT(memcmp(mask, rfc9001_chacha20_hp_mask, sizeof(mask)) == 0);
+#endif
 }
 
 
@@ -481,6 +548,60 @@ xqc_test_aead_integrity_limit_unknown_cipher()
     /* unknown cipher_id: should return conservative (ChaCha20) limit */
     uint64_t unknown_limit = xqc_aead_integrity_limit(XQC_TEST_UNKOWND_CIPHER_ID);
     CU_ASSERT_EQUAL(unknown_limit, 68719476736ULL);
+}
+
+void
+xqc_test_aead_confidentiality_limit()
+{
+    CU_ASSERT_EQUAL(xqc_aead_confidentiality_limit(
+                        XQC_TLS13_AES_128_GCM_SHA256),
+                    8388608ULL);
+    CU_ASSERT_EQUAL(xqc_aead_confidentiality_limit(
+                        XQC_TLS13_AES_256_GCM_SHA384),
+                    8388608ULL);
+    CU_ASSERT_EQUAL(xqc_aead_confidentiality_limit(
+                        XQC_TLS13_CHACHA20_POLY1305_SHA256),
+                    4611686018427387904ULL);
+    CU_ASSERT_EQUAL(xqc_aead_confidentiality_limit(
+                        XQC_TEST_UNKOWND_CIPHER_ID),
+                    8388608ULL);
+}
+
+void
+xqc_test_aead_confidentiality_below_limit()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+
+    conn->key_update_ctx.enc_pkt_cnt =
+        XQC_AES_128_GCM_CONFIDENTIALITY_LIMIT - 1;
+    conn->key_update_ctx.aead_confidentiality_limit =
+        XQC_AES_128_GCM_CONFIDENTIALITY_LIMIT;
+
+    xqc_int_t ret = xqc_packet_check_aead_confidentiality_limit(conn);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_aead_confidentiality_at_limit()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_FATAL(conn != NULL);
+
+    conn->key_update_ctx.enc_pkt_cnt =
+        XQC_AES_128_GCM_CONFIDENTIALITY_LIMIT;
+    conn->key_update_ctx.aead_confidentiality_limit =
+        XQC_AES_128_GCM_CONFIDENTIALITY_LIMIT;
+
+    xqc_int_t ret = xqc_packet_check_aead_confidentiality_limit(conn);
+    CU_ASSERT_EQUAL(ret, -XQC_EAEAD_LIMIT);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_AEAD_LIMIT_REACHED);
+    CU_ASSERT_EQUAL(TRA_AEAD_LIMIT_REACHED, 0x0f);
+
+    xqc_engine_destroy(conn->engine);
 }
 
 /*

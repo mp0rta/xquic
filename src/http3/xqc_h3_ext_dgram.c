@@ -127,7 +127,7 @@ xqc_h3_ext_datagram_get_user_data(xqc_h3_conn_t *conn)
 static inline xqc_int_t
 xqc_h3_ext_datagram_send_check(xqc_h3_conn_t *conn)
 {
-    if (!conn->local_h3_conn_settings.h3_datagram) {
+    if (xqc_h3_settings_local_h3_datagram(&conn->local_h3_conn_settings) != 1) {
         return -XQC_EDGRAM_NOT_SUPPORTED;
     }
     if ((conn->flags & XQC_H3_CONN_FLAG_SETTINGS_RECVED)

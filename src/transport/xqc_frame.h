@@ -15,6 +15,10 @@
  */
 #define XQC_ACK_EXT_FEATURE_BIT_ENC_COUNT 1
 #define XQC_ACK_EXT_FEATURE_BIT_RECV_TS   2
+#define XQC_FRAME_TYPE_RESET_STREAM       0x04
+
+/* draft-ietf-quic-reliable-stream-reset-09, Section 4. */
+#define XQC_FRAME_TYPE_RESET_STREAM_AT    0x24
 
 typedef enum {
     XQC_FRAME_PADDING,
@@ -50,12 +54,13 @@ typedef enum {
     XQC_FRAME_Extension,
     XQC_FRAME_SID,
     XQC_FRAME_REPAIR_SYMBOL,
+    XQC_FRAME_RESET_STREAM_AT,
     XQC_FRAME_PATHS_BLOCKED,
     XQC_FRAME_PATH_CIDS_BLOCKED,
     XQC_FRAME_NUM,
 } xqc_frame_type_t;
 
-/* xqc_frame_type_bit_t holds bit values up to XQC_FRAME_NUM (= 34).
+/* xqc_frame_type_bit_t holds bit values up to XQC_FRAME_NUM (= 36).
  * Per C11 6.7.2.2 ¶3, enum constants must be representable as int — bits
  * at shift 31+ silently truncate to 0 (or sign-flip) on MSVC, dropping
  * SID, REPAIR_SYMBOL, NUM. This breaks frame-bit checks like
@@ -110,6 +115,8 @@ typedef uint64_t xqc_frame_type_bit_t;
 #define XQC_FRAME_BIT_SID         ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_SID)
 #define XQC_FRAME_BIT_REPAIR_SYMBOL \
     ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_REPAIR_SYMBOL)
+#define XQC_FRAME_BIT_RESET_STREAM_AT \
+    ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_RESET_STREAM_AT)
 #define XQC_FRAME_BIT_PATHS_BLOCKED \
     ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_PATHS_BLOCKED)
 #define XQC_FRAME_BIT_PATH_CIDS_BLOCKED \
@@ -125,7 +132,7 @@ _Static_assert(XQC_FRAME_BIT_REPAIR_SYMBOL ==
                    ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_REPAIR_SYMBOL),
                "XQC_FRAME_BIT_REPAIR_SYMBOL must be bit 32 (above INT_MAX)");
 _Static_assert(XQC_FRAME_BIT_NUM == ((xqc_frame_type_bit_t)1ULL << XQC_FRAME_NUM),
-               "XQC_FRAME_BIT_NUM must be bit XQC_FRAME_NUM (= 34)");
+               "XQC_FRAME_BIT_NUM must be bit XQC_FRAME_NUM (= 36)");
 
 /* draft-ietf-quic-multipath-21 frame bits (G-C3): pin each MP frame bit
  * to its enum constant so a stray enum reorder cannot silently shift the
@@ -213,16 +220,18 @@ _Static_assert(XQC_FRAME_PATH_FROZEN < 31,
  * PING and PADDING frames contain no information, so lost PING or
  *     PADDING frames do not require repair
  *
- * ACK_MP is excluded like ACK. The repair copy drops both
- *     (xqc_packet_out_remove_ack_frame), so with ACK_MP counted here a lost
- *     packet holding only ACK_MP and DATAGRAM frames was resent as a
- *     DATAGRAM-only packet; RFC 9221 Section 5.2: DATAGRAM frames are not
- *     retransmitted upon loss detection.
+ * RFC 9000 Section 13.3 / Section 8.2.2: responses to path validation using
+ *     PATH_RESPONSE frames are sent just once and MUST NOT be retransmitted on
+ *     loss; the peer sends additional PATH_CHALLENGE frames to elicit new
+ *     PATH_RESPONSE frames, so PATH_RESPONSE is excluded from repair here.
+ *
+ * ACK_MP is excluded like ACK: the repair copy drops both
+ *     (xqc_packet_out_remove_ack_frame), so counting ACK_MP here resent a
+ *     lost packet holding only ACK_MP and DATAGRAM frames as a DATAGRAM-only
+ *     packet. RFC 9221 Section 5.2: DATAGRAM frames are not retransmitted
+ *     upon loss detection.
  */
-#define XQC_NEED_REPAIR(types)                                                    \
-    ((types) & ~(XQC_FRAME_BIT_ACK | XQC_FRAME_BIT_PADDING | XQC_FRAME_BIT_PING | \
-                 XQC_FRAME_BIT_CONNECTION_CLOSE | XQC_FRAME_BIT_DATAGRAM |        \
-                 XQC_FRAME_BIT_SID | XQC_FRAME_BIT_REPAIR_SYMBOL | XQC_FRAME_BIT_ACK_MP))
+#define XQC_NEED_REPAIR(types) ((types) & ~(XQC_FRAME_BIT_ACK| XQC_FRAME_BIT_ACK_MP | XQC_FRAME_BIT_PADDING | XQC_FRAME_BIT_PING | XQC_FRAME_BIT_CONNECTION_CLOSE | XQC_FRAME_BIT_DATAGRAM | XQC_FRAME_BIT_SID | XQC_FRAME_BIT_REPAIR_SYMBOL | XQC_FRAME_BIT_PATH_RESPONSE))
 
 
 const char *xqc_frame_type_2_str(xqc_engine_t *engine, xqc_frame_type_bit_t type_bit);
@@ -243,6 +252,10 @@ xqc_int_t xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *pack
 
 xqc_int_t xqc_insert_crypto_frame(xqc_connection_t *conn, xqc_stream_t *stream, xqc_stream_frame_t *stream_frame);
 
+xqc_int_t xqc_check_crypto_frame_level(xqc_connection_t *conn,
+    xqc_stream_t *stream, xqc_stream_frame_t *stream_frame,
+    xqc_encrypt_level_t current_level);
+
 xqc_int_t xqc_process_crypto_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in);
 
 xqc_int_t xqc_process_ack_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in);
@@ -262,8 +275,11 @@ xqc_int_t xqc_process_retire_conn_id_frame(xqc_connection_t *conn,
 xqc_int_t xqc_process_conn_close_frame(xqc_connection_t *conn,
                                        xqc_packet_in_t *packet_in);
 
-xqc_int_t xqc_process_reset_stream_frame(xqc_connection_t *conn,
-                                         xqc_packet_in_t *packet_in);
+xqc_int_t xqc_process_reset_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in);
+xqc_int_t xqc_process_reset_stream_with_reset_at(xqc_connection_t *conn,
+    xqc_packet_in_t *packet_in);
+xqc_int_t xqc_process_reset_stream_at_frame(xqc_connection_t *conn,
+    xqc_packet_in_t *packet_in);
 
 xqc_int_t xqc_process_stop_sending_frame(xqc_connection_t *conn,
                                          xqc_packet_in_t *packet_in);

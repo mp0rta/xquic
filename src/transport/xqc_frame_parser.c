@@ -330,6 +330,14 @@ xqc_parse_stream_frame(xqc_packet_in_t *packet_in, xqc_connection_t *conn,
     }
     p += vlen;
 
+    /* RFC 9000 19.8: reject STREAM frame on a send-only stream */
+    if (xqc_stream_is_send_only(conn->conn_type, *stream_id)) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|STREAM frame on send-only stream|stream_id:%ui|", *stream_id);
+        XQC_CONN_ERR(conn, TRA_STREAM_STATE_ERROR);
+        return -XQC_EPROTO;
+    }
+
     if (first_byte & 0x04) {
         vlen = xqc_vint_read(p, end, &offset);
         if (vlen < 0) {
@@ -536,6 +544,85 @@ xqc_gen_padding_frame_with_len(xqc_connection_t *conn, xqc_packet_out_t *packet_
         packet_out->po_used_size += padding_len;
         packet_out->po_frame_types |= XQC_FRAME_BIT_PADDING;
     }
+    return XQC_OK;
+}
+
+/* draft-ietf-quic-reliable-stream-reset-09 Section 4. */
+ssize_t
+xqc_gen_reset_stream_at_frame(xqc_packet_out_t *packet_out,
+    xqc_stream_id_t stream_id, uint64_t error, uint64_t final_size,
+    uint64_t reliable_size)
+{
+    if (stream_id > XQC_VINT_MAX || error > XQC_VINT_MAX
+        || final_size > XQC_VINT_MAX || reliable_size > final_size)
+    {
+        return -XQC_EPARAM;
+    }
+
+    size_t need = 1 + xqc_put_varint_len(stream_id)
+                   + xqc_put_varint_len(error)
+                   + xqc_put_varint_len(final_size)
+                   + xqc_put_varint_len(reliable_size);
+    if (need > xqc_get_po_remained_size(packet_out)) {
+        return -XQC_ENOBUF;
+    }
+
+    unsigned char *p = packet_out->po_buf + packet_out->po_used_size;
+    p = xqc_put_varint(p, XQC_FRAME_TYPE_RESET_STREAM_AT);
+    p = xqc_put_varint(p, stream_id);
+    p = xqc_put_varint(p, error);
+    p = xqc_put_varint(p, final_size);
+    p = xqc_put_varint(p, reliable_size);
+    packet_out->po_frame_types |= XQC_FRAME_BIT_RESET_STREAM_AT;
+    return need;
+}
+
+xqc_int_t
+xqc_parse_reset_stream_at_frame(xqc_packet_in_t *packet_in,
+    xqc_stream_id_t *stream_id, uint64_t *error, uint64_t *final_size,
+    uint64_t *reliable_size)
+{
+    uint64_t type;
+    unsigned char *p = packet_in->pos;
+    const unsigned char *end = packet_in->last;
+
+    int vlen = xqc_vint_read(p, end, &type);
+    if (vlen < 0) {
+        return -XQC_EVINTREAD;
+    }
+    p += vlen;
+
+    vlen = xqc_vint_read(p, end, stream_id);
+    if (vlen < 0) {
+        return -XQC_EVINTREAD;
+    }
+    p += vlen;
+
+    vlen = xqc_vint_read(p, end, error);
+    if (vlen < 0) {
+        return -XQC_EVINTREAD;
+    }
+    p += vlen;
+
+    vlen = xqc_vint_read(p, end, final_size);
+    if (vlen < 0) {
+        return -XQC_EVINTREAD;
+    }
+    p += vlen;
+
+    vlen = xqc_vint_read(p, end, reliable_size);
+    if (vlen < 0) {
+        return -XQC_EVINTREAD;
+    }
+    p += vlen;
+
+    if (type != XQC_FRAME_TYPE_RESET_STREAM_AT
+        || *reliable_size > *final_size)
+    {
+        return -XQC_EPROTO;
+    }
+    packet_in->pos = p;
+    packet_in->pi_frame_types |= XQC_FRAME_BIT_RESET_STREAM_AT;
     return XQC_OK;
 }
 
@@ -1001,6 +1088,12 @@ xqc_parse_repair_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in,
         return -XQC_EVINTREAD;
     }
     p += vlen;
+    if (repair_payload_id >= XQC_REPAIR_LEN) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|quic_fec|repair symbol index exceeds supported range|idx:%ui|",
+                repair_payload_id);
+        return -XQC_EFEC_SYMBOL_ERROR;
+    }
     rpr_symbol->symbol_idx = repair_payload_id;
 
     vlen = xqc_vint_read(p, end, &repair_key_size);
@@ -1229,7 +1322,7 @@ xqc_parse_ack_frame(xqc_packet_in_t *packet_in, xqc_connection_t *conn,
     uint64_t largest_acked;
     uint64_t ack_range_count; /* the actual range cnt */
     uint64_t first_ack_range;
-    uint64_t range, gap;
+    uint64_t range, gap, range_high, range_low, previous_low;
 
     unsigned n_ranges = 0; /* the range cnt stored */
 
@@ -1268,8 +1361,21 @@ xqc_parse_ack_frame(xqc_packet_in_t *packet_in, xqc_connection_t *conn,
     }
     p += vlen;
 
+    /*
+     * RFC 9000 Section 19.3.1: a negative computed packet number is a
+     * FRAME_ENCODING_ERROR.
+     */
+    if (first_ack_range > largest_acked) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|invalid ACK range|largest_acked:%ui|first_ack_range:%ui|",
+                largest_acked, first_ack_range);
+        XQC_CONN_ERR(conn, TRA_FRAME_ENCODING_ERROR);
+        return -XQC_EILLEGAL_FRAME;
+    }
+
     ack_info->ranges[n_ranges].high = largest_acked;
-    ack_info->ranges[n_ranges].low = largest_acked - first_ack_range;
+    previous_low = largest_acked - first_ack_range;
+    ack_info->ranges[n_ranges].low = previous_low;
     n_ranges++;
 
     for (int i = 0; i < ack_range_count; ++i) {
@@ -1285,12 +1391,30 @@ xqc_parse_ack_frame(xqc_packet_in_t *packet_in, xqc_connection_t *conn,
         }
         p += vlen;
 
+        if (previous_low < 2 || gap > previous_low - 2) {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|invalid ACK gap|previous_low:%ui|gap:%ui|",
+                    previous_low, gap);
+            XQC_CONN_ERR(conn, TRA_FRAME_ENCODING_ERROR);
+            return -XQC_EILLEGAL_FRAME;
+        }
+
+        range_high = previous_low - gap - 2;
+        if (range > range_high) {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|invalid ACK range|range_high:%ui|range:%ui|",
+                    range_high, range);
+            XQC_CONN_ERR(conn, TRA_FRAME_ENCODING_ERROR);
+            return -XQC_EILLEGAL_FRAME;
+        }
+
+        range_low = range_high - range;
         if (n_ranges < XQC_MAX_ACK_RANGE_CNT) {
-            ack_info->ranges[n_ranges].high =
-                ack_info->ranges[n_ranges - 1].low - gap - 2;
-            ack_info->ranges[n_ranges].low = ack_info->ranges[n_ranges].high - range;
+            ack_info->ranges[n_ranges].high = range_high;
+            ack_info->ranges[n_ranges].low = range_low;
             n_ranges++;
         }
+        previous_low = range_low;
     }
 
     /*
@@ -1363,22 +1487,36 @@ xqc_parse_ack_frame(xqc_packet_in_t *packet_in, xqc_connection_t *conn,
  */
 ssize_t
 xqc_gen_conn_close_frame(xqc_packet_out_t *packet_out, uint64_t err_code, int is_app,
-                         int frame_type)
+                         int frame_type, const unsigned char *reason, size_t reason_len)
 {
     unsigned char *dst_buf = packet_out->po_buf + packet_out->po_used_size;
     const unsigned char *begin = dst_buf;
-
-    unsigned char *reason = NULL;
-    int reason_len = 0;
+    size_t remained = xqc_get_po_remained_size(packet_out);
 
     unsigned frame_type_bits = xqc_vint_get_2bit(frame_type);
-    unsigned reason_len_bits = xqc_vint_get_2bit(reason_len);
+    unsigned reason_len_bits = 0;
     unsigned err_code_len_bits = xqc_vint_get_2bit(err_code);
 
-    unsigned need = 1 + xqc_vint_len(err_code_len_bits) + xqc_vint_len(frame_type_bits) +
-                    xqc_vint_len(reason_len_bits) + reason_len;
-    if (need > xqc_get_po_remained_size(packet_out)) {
+    size_t need = 1 + xqc_vint_len(err_code_len_bits)
+                  + (is_app ? 0 : xqc_vint_len(frame_type_bits))
+                  + xqc_vint_len(reason_len_bits);
+    if (need > remained) {
         return -XQC_ENOBUF;
+    }
+
+    if (reason == NULL
+        || reason_len > XQC_MAX_CONN_CLOSE_REASON_LEN
+        || reason_len > remained - need)
+    {
+        reason_len = 0;
+
+    } else {
+        reason_len_bits = xqc_vint_get_2bit(reason_len);
+        need += xqc_vint_len(reason_len_bits) - 1 + reason_len;
+        if (need > remained) {
+            reason_len = 0;
+            reason_len_bits = 0;
+        }
     }
 
     if (is_app) {
@@ -1400,12 +1538,10 @@ xqc_gen_conn_close_frame(xqc_packet_out_t *packet_out, uint64_t err_code, int is
     xqc_vint_write(dst_buf, reason_len, reason_len_bits, xqc_vint_len(reason_len_bits));
     dst_buf += xqc_vint_len(reason_len_bits);
 
-#if 0 /* TODO: reason not supported yet */
     if (reason_len > 0) {
         memcpy(dst_buf, reason, reason_len);
         dst_buf += reason_len;
     }
-#endif
 
     packet_out->po_frame_types |= XQC_FRAME_BIT_CONNECTION_CLOSE;
 
@@ -1445,7 +1581,10 @@ xqc_parse_conn_close_frame(xqc_packet_in_t *packet_in, uint64_t *err_code,
     }
     p += vlen;
 
-    /* TODO: get reason string */
+    if (reason_len > (uint64_t) (end - p)) {
+        return -XQC_EILLEGAL_FRAME;
+    }
+
     p += reason_len;
 
     packet_in->pos = p;
@@ -1463,7 +1602,8 @@ xqc_parse_conn_close_frame(xqc_packet_in_t *packet_in, uint64_t *err_code,
                               : XQC_CONN_ERR_TYPE_APPLICATION;
     }
 
-    xqc_log_event(conn->log, TRA_FRAMES_PROCESSED, XQC_FRAME_CONNECTION_CLOSE, *err_code);
+    xqc_log_event(conn->log, TRA_FRAMES_PROCESSED,
+                  XQC_FRAME_CONNECTION_CLOSE, *err_code, reason_len);
     return XQC_OK;
 }
 
@@ -1529,6 +1669,14 @@ xqc_parse_reset_stream_frame(xqc_packet_in_t *packet_in, xqc_stream_id_t *stream
         return -XQC_EVINTREAD;
     }
     p += vlen;
+
+    /* RFC 9000 19.4: reject RESET_STREAM on a send-only stream */
+    if (xqc_stream_is_send_only(conn->conn_type, *stream_id)) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|RESET_STREAM on send-only stream|stream_id:%ui|", *stream_id);
+        XQC_CONN_ERR(conn, TRA_STREAM_STATE_ERROR);
+        return -XQC_EPROTO;
+    }
 
     vlen = xqc_vint_read(p, end, err_code);
     if (vlen < 0) {
@@ -1605,6 +1753,14 @@ xqc_parse_stop_sending_frame(xqc_packet_in_t *packet_in, xqc_stream_id_t *stream
         return -XQC_EVINTREAD;
     }
     p += vlen;
+
+    /* RFC 9000 19.5: reject STOP_SENDING on a recv-only stream */
+    if (xqc_stream_is_recv_only(conn->conn_type, *stream_id)) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|STOP_SENDING on recv-only stream|stream_id:%ui|", *stream_id);
+        XQC_CONN_ERR(conn, TRA_STREAM_STATE_ERROR);
+        return -XQC_EPROTO;
+    }
 
     vlen = xqc_vint_read(p, end, err_code);
     if (vlen < 0) {
@@ -1900,6 +2056,15 @@ xqc_parse_max_stream_data_frame(xqc_packet_in_t *packet_in, xqc_stream_id_t *str
     }
     p += vlen;
 
+    /* RFC 9000 Section 19.10: a receiver cannot grant itself send credit. */
+    if (xqc_stream_is_recv_only(conn->conn_type, *stream_id)) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|MAX_STREAM_DATA on recv-only stream|stream_id:%ui|",
+                *stream_id);
+        XQC_CONN_ERR(conn, TRA_STREAM_STATE_ERROR);
+        return -XQC_EPROTO;
+    }
+
     vlen = xqc_vint_read(p, end, max_stream_data);
     if (vlen < 0) {
         return -XQC_EVINTREAD;
@@ -2084,7 +2249,7 @@ xqc_parse_handshake_done_frame(xqc_packet_in_t *packet_in, xqc_connection_t *con
 }
 
 /*
- * https://tools.ietf.org/html/draft-ietf-quic-transport-34#section-19.15
+ * https://www.rfc-editor.org/rfc/rfc9000.html#section-19.15
  *
  * NEW_CONNECTION_ID Frame {
  *    Type (i) = 0x18,
@@ -2101,6 +2266,13 @@ ssize_t
 xqc_gen_new_conn_id_frame(xqc_packet_out_t *packet_out, xqc_cid_t *new_cid,
                           uint64_t retire_prior_to, const uint8_t *sr_token)
 {
+    uint64_t cid_len = new_cid->cid_len;
+
+    /* RFC 9000 Section 19.15 requires CID lengths from 1 to 20. */
+    if (cid_len == 0 || cid_len > XQC_MAX_CID_LEN) {
+        return -XQC_EPARAM;
+    }
+
     unsigned char *dst_buf = packet_out->po_buf + packet_out->po_used_size;
     const unsigned char *begin = dst_buf;
 
@@ -2108,13 +2280,7 @@ xqc_gen_new_conn_id_frame(xqc_packet_out_t *packet_out, xqc_cid_t *new_cid,
 
     unsigned sequence_number_bits = xqc_vint_get_2bit(new_cid->cid_seq_num);
     unsigned retire_prior_to_bits = xqc_vint_get_2bit(retire_prior_to);
-    uint64_t cid_len = new_cid->cid_len;
     uint8_t cid_len_bits = xqc_vint_get_2bit(cid_len);
-
-    /* make sure cid_len won't exceed XQC_MAX_CID_LEN */
-    if (cid_len > XQC_MAX_CID_LEN) {
-        return -XQC_EPARAM;
-    }
 
     xqc_vint_write(dst_buf, new_cid->cid_seq_num, sequence_number_bits,
                    xqc_vint_len(sequence_number_bits));

@@ -18,14 +18,12 @@
 #define XQC_kTimeThresholdShift             3
 #define XQC_kPersistentCongestionThreshold  3
 
-#define XQC_CONSECUTIVE_PTO_THRESH          2
 /* cap of xqc_send_ctl_get_effective_pto_count(), as the PTO backoff's */
 #define XQC_EFFECTIVE_PTO_COUNT_MAX         16
 /*
- * Timer granularity.  This is a system-dependent value.
- * However, implementations SHOULD use a value no smaller than 1ms.
+ * RFC 9002 Section 6.1.2 recommends a timer granularity of 1 ms.
  */
-#define XQC_kGranularity                    2
+#define XQC_kGranularity                    1
 
 #define XQC_kInitialRtt_us                  250000
 
@@ -86,6 +84,10 @@ typedef struct xqc_send_ctl_s {
     /* sending time of largest packet */
     xqc_usec_t                  ctl_largest_acked_sent_time[XQC_PNS_N];
 
+    /* largest packet number acknowledged by the ACK frames, of any packet:
+     * ctl_largest_acked counts the packets of the unacked list only */
+    xqc_packet_number_t         ctl_largest_acked_any[XQC_PNS_N];
+
     /* largest packet number of the received packets in packet_in */
     xqc_packet_number_t         ctl_largest_received[XQC_PNS_N];
     
@@ -120,11 +122,20 @@ typedef struct xqc_send_ctl_s {
     unsigned                    ctl_pto_count;
 
     /* PMTUD black hole detection (RFC 8899 s4.3): the largest 1-RTT packet
-     * number acked among large packets (xqc_pmtud_big_size), and how many such
-     * packets sent after it were lost since. Enough of them make the path
-     * suspect; probes at the current size then confirm it or not. */
+     * number acked among large packets (xqc_pmtud_big_size), and for each
+     * size in the ACK room above the current size (a probe or a full packet
+     * with an ACK frame), among those at least that large: entry i is for
+     * ctl_spill_acked_curr + 1 + i bytes. Then how many large packets sent
+     * after those were lost since, and the largest of them. Enough of them
+     * make the path suspect; probes at the current size then confirm it or
+     * not. A path that shrank by less than XQC_ACK_SPACE still carries the
+     * smaller packets: only a packet as large as a lost one counts against
+     * its loss. */
     xqc_packet_number_t         ctl_largest_big_acked;
+    xqc_packet_number_t         ctl_spill_acked[XQC_ACK_SPACE];
+    size_t                      ctl_spill_acked_curr;
     unsigned                    ctl_big_lost_cnt;
+    size_t                      ctl_big_lost_size;
     xqc_usec_t                  ctl_bh_suspect_time;
     xqc_usec_t                  ctl_bh_probe_time;
     unsigned                    ctl_bh_probes_sent;
@@ -281,7 +292,8 @@ int xqc_send_ctl_on_ack_received (xqc_send_ctl_t *send_ctl, xqc_pn_ctl_t *pn_ctl
 
 void xqc_send_ctl_on_dgram_received(xqc_send_ctl_t *send_ctl, size_t dgram_size);
 
-void xqc_send_ctl_update_rtt(xqc_send_ctl_t *send_ctl, xqc_usec_t *latest_rtt, xqc_usec_t ack_delay);
+void xqc_send_ctl_update_rtt(xqc_send_ctl_t *send_ctl, xqc_usec_t *latest_rtt,
+    xqc_usec_t ack_delay, xqc_usec_t ack_recv_time);
 
 void xqc_send_ctl_on_spurious_loss_detected(xqc_send_ctl_t *send_ctl,
     xqc_pkt_num_space_t pns, xqc_usec_t ack_recv_time,
@@ -290,7 +302,8 @@ void xqc_send_ctl_on_spurious_loss_detected(xqc_send_ctl_t *send_ctl,
 
 void xqc_send_ctl_detect_lost(xqc_send_ctl_t *send_ctl, xqc_send_queue_t *send_queue, xqc_pkt_num_space_t pns, xqc_usec_t now);
 
-xqc_bool_t xqc_send_ctl_in_persistent_congestion(xqc_send_ctl_t *send_ctl, xqc_packet_out_t *largest_lost, xqc_usec_t now);
+xqc_bool_t xqc_send_ctl_in_persistent_congestion(xqc_send_ctl_t *send_ctl,
+    xqc_usec_t period);
 
 void xqc_send_ctl_congestion_event(xqc_send_ctl_t *send_ctl, xqc_usec_t sent_time);
 

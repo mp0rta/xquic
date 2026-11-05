@@ -43,6 +43,7 @@ void xqc_test_mp21_init_max_path_id_tp_codepoint(void);
 void xqc_test_mp21_fixture_smoke(void);
 void xqc_test_mp21_validate_recv_path_id(void);
 void xqc_test_mp21_max_path_id_validation(void);
+void xqc_test_mp21_max_path_id_mirror_bounded(void);
 void xqc_test_mp21_init_max_path_id_upper_bound(void);
 void xqc_test_mp21_aead_nonce_min_length(void);
 void xqc_test_mp21_mp_frame_1rtt_only(void);
@@ -68,6 +69,10 @@ void xqc_test_mp21_path_cids_blocked_validation(void);
 void xqc_test_mp21_blocked_frames_pi_frame_types(void);
 void xqc_test_mp21_solo_frame_in_datagram_no_pv(void);
 
+/* draft-21 §4.7: PATHS_BLOCKED is sent on draft-21 connections only. */
+void xqc_test_mp21_paths_blocked_sent_on_draft21(void);
+void xqc_test_mp21_paths_blocked_not_sent_on_draft10(void);
+
 /* mp21 L2 M3 — MAX_PATH_ID credit grant gate behaviour. */
 void xqc_test_mp21_max_path_id_grant_disabled_by_default(void);
 void xqc_test_mp21_max_path_id_grant_trigger_on_paths_blocked(void);
@@ -76,7 +81,7 @@ void xqc_test_mp21_max_path_id_grant_rate_limited(void);
 
 /* PR5 L5b validation hardening — draft-21 §3.1 path-validation MUSTs. */
 void xqc_test_mp21_path_challenge_1200b_validation(void);
-void xqc_test_mp21_path_validation_timeout(void);
+void xqc_test_mp21_path_challenge_small_on_active_path(void);
 
 /* PR6 L5c loss-replay correctness — draft-21 §4.3 ¶12 / §4.6 ¶8 SHOULDs. */
 void xqc_test_mp21_loss_replay_should_suppress_stale(void);

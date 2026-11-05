@@ -207,9 +207,17 @@ xqc_crypto_create_nonce(uint8_t *dest, const uint8_t *iv, size_t ivlen, uint64_t
         dest[ivlen - 8 + i] ^= ((uint8_t *)&pktno)[i];
     }
 
-    path_id = ntohl(path_id);
-    for (i = 0; i < 4; ++i) {
-        dest[ivlen - 12 + i] ^= ((uint8_t *)&path_id)[i];
+    /* the path id occupies the 32 bits before the packet number, so it can
+     * only be mixed in when the IV is at least 96 bits. shorter IVs occur
+     * with the null AEAD used by no-crypt test mode, where dest[ivlen - 12]
+     * would underflow the nonce buffer. both endpoints skip the path id in
+     * the same way, so the nonce stays symmetric.
+     */
+    if (ivlen >= 12) {
+        path_id = ntohl(path_id);
+        for (i = 0; i < 4; ++i) {
+            dest[ivlen - 12 + i] ^= ((uint8_t *)&path_id)[i];
+        }
     }
 }
 
@@ -817,5 +825,25 @@ xqc_aead_integrity_limit(uint32_t cipher_id)
     default:
         /* unknown cipher, use conservative limit */
         return XQC_AEAD_CONSERVATIVE_INTEGRITY_LIMIT;
+    }
+}
+
+uint64_t
+xqc_aead_confidentiality_limit(uint32_t cipher_id)
+{
+    /* RFC 9001 Section 6.6: confidentiality limits for each AEAD. */
+    switch (cipher_id) {
+    case XQC_TLS13_AES_128_GCM_SHA256:
+        return XQC_AES_128_GCM_CONFIDENTIALITY_LIMIT;
+
+    case XQC_TLS13_AES_256_GCM_SHA384:
+        return XQC_AES_256_GCM_CONFIDENTIALITY_LIMIT;
+
+    case XQC_TLS13_CHACHA20_POLY1305_SHA256:
+        return XQC_CHACHA20_POLY1305_CONFIDENTIALITY_LIMIT;
+
+    default:
+        /* Unknown ciphers use the most conservative supported limit. */
+        return XQC_AEAD_CONSERVATIVE_CONFIDENTIALITY_LIMIT;
     }
 }

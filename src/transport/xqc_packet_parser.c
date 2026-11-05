@@ -21,6 +21,7 @@
 #include "src/transport/xqc_send_ctl.h"
 #include "src/transport/xqc_defs.h"
 #include "src/common/xqc_random.h"
+#include "src/tls/xqc_crypto.h"
 
 #define xqc_packet_number_bits2len(b) ((b) + 1)
 
@@ -467,12 +468,11 @@ xqc_packet_parse_initial(xqc_connection_t *c, xqc_packet_in_t *packet_in)
     packet_in->pi_pkt.pkt_type = XQC_PTYPE_INIT;
     packet_in->pi_pkt.pkt_pns = XQC_PNS_INIT;
 
-    /* The smallest length of udp datagrams carrying initial packet frome client is 1200
-     */
+    /* RFC 9000 Section 14.1 applies the minimum to the UDP datagram. */
     if (c->conn_type == XQC_CONN_TYPE_SERVER) {
-        if (XQC_BUFF_LEFT_SIZE(packet_in->buf, end) < XQC_PACKET_INITIAL_MIN_LENGTH) {
+        if (packet_in->datagram_size < XQC_PACKET_INITIAL_MIN_LENGTH) {
             xqc_log(c->log, XQC_LOG_ERROR, "|initial size too small|%z|",
-                    (size_t)XQC_BUFF_LEFT_SIZE(packet_in->buf, end));
+                    packet_in->datagram_size);
             XQC_CONN_ERR(c, TRA_PROTOCOL_VIOLATION);
             return -XQC_EILLPKT;
         }
@@ -579,6 +579,61 @@ xqc_packet_parse_zero_rtt(xqc_connection_t *c, xqc_packet_in_t *packet_in)
 
 
 xqc_int_t
+xqc_packet_check_aead_confidentiality_limit(xqc_connection_t *conn)
+{
+    uint64_t limit = conn->key_update_ctx.aead_confidentiality_limit;
+
+    if (conn->key_update_ctx.enc_pkt_cnt < limit) {
+        return XQC_OK;
+    }
+
+    xqc_log(conn->log, XQC_LOG_ERROR,
+            "|AEAD confidentiality limit reached|encrypted:%ui|limit:%ui|",
+            conn->key_update_ctx.enc_pkt_cnt, limit);
+    XQC_CONN_ERR(conn, TRA_AEAD_LIMIT_REACHED);
+    return -XQC_EAEAD_LIMIT;
+}
+
+xqc_bool_t
+xqc_packet_can_initiate_key_update(xqc_connection_t *conn)
+{
+    if (xqc_monotonic_timestamp() <= conn->key_update_ctx.initiate_time_guard) {
+        return XQC_FALSE;
+    }
+
+    /* the first key update needs no acknowledgment, see
+       xqc_conn_on_key_phase_acked */
+    return conn->key_update_ctx.key_update_cnt == 0
+           || conn->key_update_ctx.current_keys_acked;
+}
+
+static xqc_int_t
+xqc_packet_initiate_key_update(xqc_connection_t *conn)
+{
+    xqc_int_t ret = xqc_tls_update_1rtt_keys(conn->tls,
+                                             XQC_KEY_TYPE_RX_READ);
+    if (ret != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|xqc_tls_update_rx_keys error|");
+        return ret;
+    }
+
+    ret = xqc_tls_update_1rtt_keys(conn->tls, XQC_KEY_TYPE_TX_WRITE);
+    if (ret != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|xqc_tls_update_tx_keys error|");
+        return ret;
+    }
+
+    ret = xqc_conn_confirm_key_update(conn, XQC_TRUE);
+    if (ret != XQC_OK) {
+        xqc_log(conn->log, XQC_LOG_ERROR,
+                "|xqc_conn_confirm_key_update error|");
+    }
+    return ret;
+}
+
+xqc_int_t
 xqc_packet_encrypt_buf(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
                        unsigned char *enc_pkt, size_t enc_pkt_cap, size_t *enc_pkt_len)
 {
@@ -586,11 +641,35 @@ xqc_packet_encrypt_buf(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
     size_t enc_payload_len = 0;
 
     xqc_encrypt_level_t level = xqc_packet_type_to_enc_level(packet_out->po_pkt.pkt_type);
+    xqc_bool_t is_1rtt = packet_out->po_pkt.pkt_type == XQC_PTYPE_SHORT_HEADER
+                         && level == XQC_ENC_LEV_1RTT;
+
 
     /* check encrypt key ready */
     if (xqc_tls_is_key_ready(conn->tls, level, XQC_KEY_TYPE_TX_WRITE) == XQC_FALSE) {
         xqc_log(conn->log, XQC_LOG_ERROR, "|crypto not initialized|level:%d|", level);
         return -XQC_TLS_INVALID_STATE;
+    }
+
+    if (is_1rtt) {
+        if (conn->key_update_ctx.aead_confidentiality_limit == 0) {
+            uint32_t cipher_id = xqc_tls_get_1rtt_cipher_id(conn->tls);
+            if (cipher_id == 0) {
+                /* XQUIC's experimental no-crypto mode has no AEAD limit. */
+                is_1rtt = XQC_FALSE;
+
+            } else {
+                conn->key_update_ctx.aead_confidentiality_limit =
+                    xqc_aead_confidentiality_limit(cipher_id);
+            }
+        }
+
+        if (is_1rtt) {
+            ret = xqc_packet_check_aead_confidentiality_limit(conn);
+            if (ret != XQC_OK) {
+                return ret;
+            }
+        }
     }
 
     /* source buffer */
@@ -653,33 +732,29 @@ xqc_packet_encrypt_buf(xqc_connection_t *conn, xqc_packet_out_t *packet_out,
         return ret;
     }
 
-    /* update enc_pkt_cnt for current 1-rtt key & maybe initiate a key update */
-    if (conn->conn_settings.keyupdate_pkt_threshold > 0 &&
-        packet_out->po_pkt.pkt_type == XQC_PTYPE_SHORT_HEADER &&
-        level == XQC_ENC_LEV_1RTT) {
+    /* RFC 9001 Section 6.6: count every protected packet per write key. */
+    if (is_1rtt) {
         conn->key_update_ctx.enc_pkt_cnt++;
 
-        if (conn->key_update_ctx.enc_pkt_cnt >
-                conn->conn_settings.keyupdate_pkt_threshold &&
-            conn->key_update_ctx.first_sent_pktno <=
-                conn->conn_initial_path->path_send_ctl
-                    ->ctl_largest_acked[XQC_PNS_APP_DATA] &&
-            xqc_monotonic_timestamp() > conn->key_update_ctx.initiate_time_guard) {
-            ret = xqc_tls_update_1rtt_keys(conn->tls, XQC_KEY_TYPE_RX_READ);
-            if (ret != XQC_OK) {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_tls_update_rx_keys error|");
-                return ret;
-            }
+        /* Start before the limit: the initiation guard or unacknowledged
+           keys can defer the update, and reaching the limit closes the
+           connection. */
+        uint64_t limit = conn->key_update_ctx.aead_confidentiality_limit;
+        xqc_bool_t confidentiality_trigger =
+            conn->key_update_ctx.enc_pkt_cnt >= limit - (limit >> 3);
+        xqc_bool_t configured_trigger =
+            conn->conn_settings.keyupdate_pkt_threshold > 0
+            && conn->key_update_ctx.enc_pkt_cnt
+                   > conn->conn_settings.keyupdate_pkt_threshold;
 
-            ret = xqc_tls_update_1rtt_keys(conn->tls, XQC_KEY_TYPE_TX_WRITE);
+        if ((confidentiality_trigger || configured_trigger)
+            && xqc_packet_can_initiate_key_update(conn))
+        {
+            ret = xqc_packet_initiate_key_update(conn);
             if (ret != XQC_OK) {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_tls_update_tx_keys error|");
-                return ret;
-            }
-
-            ret = xqc_conn_confirm_key_update(conn);
-            if (ret != XQC_OK) {
-                xqc_log(conn->log, XQC_LOG_ERROR, "|xqc_conn_confirm_key_update error|");
+                if (confidentiality_trigger) {
+                    XQC_CONN_ERR(conn, TRA_AEAD_LIMIT_REACHED);
+                }
                 return ret;
             }
         }
@@ -763,18 +838,35 @@ xqc_packet_decrypt(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|largest_pn:%ui|", largest_pn);
 
-    /* check key phase, determine weather to update read keys */
+    /*
+     * RFC 9001 Section 6.5 and draft-ietf-quic-multipath-21 Section 2.5: keep
+     * two sets of read keys and select them by the Key Phase bit alone. The
+     * other set holds the previous keys until they are discarded, and the next
+     * keys after that. Packet numbers of different paths are not comparable.
+     */
+    xqc_key_update_ctx_t *ku = &conn->key_update_ctx;
+    xqc_bool_t is_1rtt = packet_in->pi_pkt.pkt_type == XQC_PTYPE_SHORT_HEADER
+                         && level == XQC_ENC_LEV_1RTT;
     xqc_uint_t key_phase = XQC_PACKET_SHORT_HEADER_KEY_PHASE(header);
-    if (packet_in->pi_pkt.pkt_type == XQC_PTYPE_SHORT_HEADER &&
-        level == XQC_ENC_LEV_1RTT &&
-        key_phase != conn->key_update_ctx.next_in_key_phase &&
-        packet_in->pi_pkt.pkt_num > conn->key_update_ctx.first_recv_pktno &&
-        xqc_tls_is_key_update_confirmed(conn->tls)) {
+    xqc_bool_t other_phase = is_1rtt && key_phase != ku->next_in_key_phase;
+
+    if (other_phase && ku->other_rx_keys == XQC_KU_RX_KEYS_OLD
+        && xqc_timer_is_set(&conn->conn_timer_manager, XQC_TIMER_KEY_UPDATE)
+        && conn->conn_timer_manager.timer[XQC_TIMER_KEY_UPDATE].expire_time
+           <= xqc_monotonic_timestamp())
+    {
+        /* the discard deadline has passed, but the timers have not run yet */
+        xqc_conn_discard_old_rx_keys(conn);
+    }
+
+    if (other_phase && ku->other_rx_keys == XQC_KU_RX_KEYS_NONE) {
+        /* RFC 9001 Section 6.3: retained even if the packet is discarded */
         ret = xqc_tls_update_1rtt_keys(conn->tls, XQC_KEY_TYPE_RX_READ);
         if (ret != XQC_OK) {
             xqc_log(conn->log, XQC_LOG_INFO, "|xqc_tls_update_rx_keys error|");
             return ret;
         }
+        ku->other_rx_keys = XQC_KU_RX_KEYS_NEXT;
     }
 
     /* decrypt packet payload */
@@ -787,9 +879,8 @@ xqc_packet_decrypt(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
                                   nonce_path_id, header, header_len, payload, payload_len,
                                   dst, dst_cap, &packet_in->decode_payload_len);
     if (ret != XQC_OK) {
-        if (!xqc_tls_is_key_update_confirmed(conn->tls)) {
-            xqc_log(conn->log, XQC_LOG_WARN,
-                    "|xqc_tls_decrypt_payload error when keyupdate|");
+        if (other_phase && ku->other_rx_keys == XQC_KU_RX_KEYS_NEXT) {
+            xqc_log(conn->log, XQC_LOG_WARN, "|xqc_tls_decrypt_payload error when keyupdate|");
             return -XQC_TLS_DECRYPT_WHEN_KU_ERROR;
 
         } else {
@@ -801,27 +892,50 @@ xqc_packet_decrypt(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     packet_in->pos = dst;
     packet_in->last = dst + packet_in->decode_payload_len;
 
-    /* update write keys, apply key update */
-    if (packet_in->pi_pkt.pkt_type == XQC_PTYPE_SHORT_HEADER &&
-        level == XQC_ENC_LEV_1RTT) {
-        if (key_phase != conn->key_update_ctx.next_in_key_phase &&
-            !xqc_tls_is_key_update_confirmed(conn->tls)) {
-            ret = xqc_tls_update_1rtt_keys(conn->tls, XQC_KEY_TYPE_TX_WRITE);
-            if (ret != XQC_OK) {
-                xqc_log(conn->log, XQC_LOG_WARN, "|xqc_tls_update_tx_keys error|");
-                return ret;
-            }
+    if (!is_1rtt) {
+        return XQC_OK;
+    }
 
-            ret = xqc_conn_confirm_key_update(conn);
-            if (ret != XQC_OK) {
-                xqc_log(conn->log, XQC_LOG_WARN, "|xqc_conn_confirm_key_update error|");
-                return ret;
-            }
-
-        } else if (key_phase == conn->key_update_ctx.next_in_key_phase &&
-                   packet_in->pi_pkt.pkt_num < conn->key_update_ctx.first_recv_pktno) {
-            conn->key_update_ctx.first_recv_pktno = packet_in->pi_pkt.pkt_num;
+    if (other_phase && ku->other_rx_keys == XQC_KU_RX_KEYS_OLD) {
+        /* RFC 9001 Section 6.4: newer keys protected a lower packet number of
+           the same packet number space */
+        if (path != NULL
+            && packet_in->pi_pkt.pkt_num > path->path_ku_first_recv_pktno)
+        {
+            xqc_log(conn->log, XQC_LOG_ERROR,
+                    "|old keys after newer keys|path:%ui|pkt_num:%ui|first:%ui|",
+                    path->path_id, packet_in->pi_pkt.pkt_num,
+                    path->path_ku_first_recv_pktno);
+            XQC_CONN_ERR(conn, TRA_KEY_UPDATE_ERROR);
+            return -XQC_EPROTO;
         }
+        return XQC_OK;
+    }
+
+    /* the peer has started a key update: apply it to the write keys */
+    if (other_phase) {
+        ret = xqc_tls_update_1rtt_keys(conn->tls, XQC_KEY_TYPE_TX_WRITE);
+        if (ret != XQC_OK) {
+            xqc_log(conn->log, XQC_LOG_WARN, "|xqc_tls_update_tx_keys error|");
+            return ret;
+        }
+
+        ret = xqc_conn_confirm_key_update(conn, XQC_FALSE);
+        if (ret != XQC_OK) {
+            xqc_log(conn->log, XQC_LOG_WARN, "|xqc_conn_confirm_key_update error|");
+            return ret;
+        }
+
+    } else {
+        xqc_conn_confirm_peer_key_update(conn);
+    }
+
+    /* a path created for this packet records it, see xqc_frame.c */
+    packet_in->pi_flag |= XQC_PIF_CURRENT_KEY_PHASE;
+    if (path != NULL
+        && packet_in->pi_pkt.pkt_num < path->path_ku_first_recv_pktno)
+    {
+        path->path_ku_first_recv_pktno = packet_in->pi_pkt.pkt_num;
     }
 
     return XQC_OK;

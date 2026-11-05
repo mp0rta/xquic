@@ -15,6 +15,7 @@
 typedef enum {
     XQC_PIF_REINJECTED_REPLICA  = 1 << 0,
     XQC_PIF_FEC_RECOVERED       = 1 << 1,
+    XQC_PIF_CURRENT_KEY_PHASE   = 1 << 2,   /* 1-RTT, current read keys */
 } xqc_packet_in_flag_t;
 
 struct xqc_packet_in_s {
@@ -22,6 +23,7 @@ struct xqc_packet_in_s {
     xqc_list_head_t         pi_list;
     const unsigned char    *buf;
     size_t                  buf_size;
+    size_t                  datagram_size;
     unsigned char          *decode_payload;
     size_t                  decode_payload_size;
     size_t                  decode_payload_len;

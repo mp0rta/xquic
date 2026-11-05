@@ -226,6 +226,17 @@ test_capsule_errors(void)
 
     /* encode: paylen > 0 but payload is NULL */
     CU_ASSERT_EQUAL(masque_capsule_encode(buf, sizeof(buf), 0, NULL, 5), 0);
+
+    /* decode: length one past the buffer */
+    const uint8_t short_cap[] = {0x00, 0x02, 0xaa};
+    CU_ASSERT_EQUAL(masque_capsule_decode(short_cap, sizeof(short_cap), &type, &poff, &plen),
+                    -1);
+
+    /* decode: type + length + 0xffffffff wraps to 8 in a 32-bit size_t, which
+       fits the 9 bytes of the buffer */
+    const uint8_t huge_cap[] = {0x00, 0xc0, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff};
+    CU_ASSERT_EQUAL(masque_capsule_decode(huge_cap, sizeof(huge_cap), &type, &poff, &plen),
+                    -1);
 }
 
 static void
