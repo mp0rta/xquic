@@ -751,9 +751,11 @@ xqc_test_h3bb_no_pause_after_reset(void)
     h3bb_teardown(&fx);
 }
 
-/* F9: RESET_STREAM_AT whose reliable part is read exactly when the buffer
- * reaches the limit: the next read completes the reset instead of pausing.
- * The reliable size is five 4 KiB reads in; 5 + 5 + 29990 = 30000 bytes fed. */
+/* F9: RESET_STREAM_AT whose reliable part is already read while the buffer
+ * is at the limit: the first read ends on a short read at the reliable size
+ * and re-queues the stream; the next read turn (read_called false) must not
+ * pause and completes the reset. 5 + 5 + 29990 = 30000 bytes fed; the
+ * reliable size 20000 is not a multiple of 4 KiB. */
 void
 xqc_test_h3bb_no_pause_reliable_prefix_read(void)
 {
@@ -767,14 +769,21 @@ xqc_test_h3bb_no_pause_reliable_prefix_read(void)
     h3bb_feed_data(&fx, i, 29990, 29990, 0);
     CU_ASSERT_EQUAL_FATAL(h3bb_fed(&fx, i), 30000);
 
-    h3bb_process_reset(&fx, i, 30000, 1, 5 * 4096);
+    h3bb_process_reset(&fx, i, 30000, 1, 20000);
     CU_ASSERT_EQUAL_FATAL(stream->reset_at.recv_state, XQC_RESET_AT_RELIABLE);
     CU_ASSERT(stream->stream_state_recv < XQC_RECV_STREAM_ST_RESET_RECVD);
 
+    /* the reliable prefix is read in full, the reset is still pending */
     h3bb_read(&fx, i);
+    CU_ASSERT_EQUAL(stream->stream_data_in.next_read_offset, 20000);
     CU_ASSERT(fx.req[i].h3r->body_buf_bytes >= H3BB_LIMIT);
     CU_ASSERT(!(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED));
+    CU_ASSERT(stream->stream_state_recv < XQC_RECV_STREAM_ST_RESET_RECVD);
+    CU_ASSERT(stream->stream_flag & XQC_STREAM_FLAG_READY_TO_READ);
+
+    h3bb_read(&fx, i);
     CU_ASSERT_EQUAL(stream->stream_state_recv, XQC_RECV_STREAM_ST_RESET_READ);
+    CU_ASSERT(!(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED));
 
     h3bb_teardown(&fx);
 }
