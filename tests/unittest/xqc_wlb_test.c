@@ -855,7 +855,7 @@ xqc_test_wlb_control_packets_use_minrtt(void)
 }
 
 void
-xqc_test_wlb_evicted_path_gets_recovery_probe(void)
+xqc_test_wlb_evicted_path_gets_no_payload(void)
 {
     wlb_test_fixture_t f;
     wlb_test_setup(&f);
@@ -867,28 +867,23 @@ xqc_test_wlb_evicted_path_gets_recovery_probe(void)
     /* Evict the relay: blackholed but still ACTIVE. */
     relay->path_send_ctl->ctl_pto_count = 3;
 
-    /* Without probing, an evicted path never carries payload, nothing can
-     * ACK on it, and ctl_pto_count can never reset — eviction would be
-     * permanent. One probe per interval breaks that deadlock. */
-    /* First payload packet arms the probe interval; it must never itself
-     * be a probe. */
-    CU_ASSERT_EQUAL(wlb_test_invoke(&f, UINT32_MAX), 0);
-
-    int probes = 0;
+    /* An evicted path is probed with a PING (wlb_probe_evicted_paths), never
+     * with payload: a datagram sent down a dead path is lost, and one per
+     * probe interval holds a single inner TCP flow on the live path near
+     * zero for the whole outage. */
     int healthy = 0;
     for (int round = 0; round < 4; round++) {
         wlb_test_clock_advance(600000); /* past the 500ms probe interval */
         for (int i = 0; i < 8; i++) {
-            uint64_t selected = wlb_test_invoke(&f, UINT32_MAX);
-            if (selected == 1) {
-                probes++;
-            } else if (selected == 0) {
+            if (wlb_test_invoke(&f, UINT32_MAX) == 0) {
+                healthy++;
+            }
+            if (wlb_test_invoke(&f, 0x1234) == 0) {
                 healthy++;
             }
         }
     }
-    CU_ASSERT_EQUAL(probes, 4);      /* exactly one probe per interval */
-    CU_ASSERT_EQUAL(healthy, 28);    /* everything else stays on the live path */
+    CU_ASSERT_EQUAL(healthy, 64);
 
     /* The probe got through: the path heals and re-enters scheduling. */
     relay->path_send_ctl->ctl_pto_count = 0;
@@ -898,53 +893,7 @@ xqc_test_wlb_evicted_path_gets_recovery_probe(void)
             on_relay++;
         }
     }
-    CU_ASSERT_TRUE(on_relay > 1); /* real share again, not just probes */
-
-    wlb_test_teardown(&f);
-}
-
-/**
- * The recovery-probe round robin has to survive a candidate it cannot send
- * on. A blackholed path normally has everything it sent still in flight, so
- * it is exactly the candidate that fails the cwnd check -- and if the cursor
- * does not move past it, it holds the rotation and no other evicted path is
- * ever probed, which is the one thing the round robin exists to prevent.
- */
-void
-xqc_test_wlb_evicted_probe_rotates_past_blocked_path(void)
-{
-    wlb_test_fixture_t f;
-    wlb_test_setup(&f);
-
-    wlb_test_add_path(&f, 0, 25000, 64 * 1024, 0);
-    /* Candidate 0: blackholed AND cwnd-blocked (inflight == cwnd). */
-    xqc_path_ctx_t *blocked = wlb_test_add_path(&f, 1, 25000, 1024, 1024);
-    /* Candidate 1: blackholed but sendable -- this is the one that can heal. */
-    xqc_path_ctx_t *sendable = wlb_test_add_path(&f, 2, 25000, 64 * 1024, 0);
-    CU_ASSERT_PTR_NOT_NULL_FATAL(blocked);
-    CU_ASSERT_PTR_NOT_NULL_FATAL(sendable);
-
-    blocked->path_send_ctl->ctl_pto_count = 3;  /* WLB_PTO_EVICT_THRESH */
-    sendable->path_send_ctl->ctl_pto_count = 3;  /* WLB_PTO_EVICT_THRESH */
-
-    /* First payload packet only arms the interval. */
-    (void)wlb_test_invoke(&f, UINT32_MAX);
-
-    int probed_sendable = 0;
-    for (int round = 0; round < 4; round++) {
-        wlb_test_clock_advance(600000); /* past the probe interval */
-        for (int i = 0; i < 4; i++) {
-            if (wlb_test_invoke(&f, UINT32_MAX) == 2) {
-                probed_sendable++;
-            }
-        }
-    }
-    /* The blocked candidate must not be able to starve this one. */
-    CU_ASSERT_TRUE(probed_sendable > 0);
-
-    /* And the probe is still rate limited: it is a recovery mechanism, not a
-     * second traffic class. Four intervals cannot yield more than four. */
-    CU_ASSERT_TRUE(probed_sendable <= 4);
+    CU_ASSERT_TRUE(on_relay > 1);
 
     wlb_test_teardown(&f);
 }
@@ -1180,9 +1129,9 @@ xqc_test_wlb_unacked_path_kept_until_third_hidden_pto(void)
 }
 
 /* Every path silently stops acknowledging. WLB then holds STREAM, control and
- * datagrams off all of them (the PTO probes bypass the scheduler) except for
- * its evicted-path datagram probe, and the first ACK on a path brings every
- * kind of traffic, pinned flows included, back onto it. */
+ * datagrams off all of them (the PTO probes and the evicted-path PING probes
+ * bypass the scheduler), and the first ACK on a path brings every kind of
+ * traffic, pinned flows included, back onto it. */
 void
 xqc_test_wlb_all_paths_silent_recover_on_ack(void)
 {
@@ -1193,7 +1142,6 @@ xqc_test_wlb_all_paths_silent_recover_on_ack(void)
     xqc_path_ctx_t *relay = wlb_test_add_path(&f, 1, 25000, 64 * 1024, 0);
     CU_ASSERT_PTR_NOT_NULL_FATAL(direct);
     CU_ASSERT_PTR_NOT_NULL_FATAL(relay);
-    /* the first datagram also arms the evicted-path probe interval */
     (void)wlb_test_invoke(&f, UINT32_MAX);
 
     xqc_usec_t pto = wlb_test_mark_unacked_since(&f, direct, g_fake_now_us);
@@ -1209,10 +1157,8 @@ xqc_test_wlb_all_paths_silent_recover_on_ack(void)
     CU_ASSERT_EQUAL(wlb_test_invoke(&f, UINT32_MAX), UINT64_MAX);
     CU_ASSERT_EQUAL(wlb_test_invoke(&f, 0x1234), UINT64_MAX);
 
-    /* past the 500ms probe interval one datagram probes an evicted path */
+    /* no datagram probes an evicted path, past the probe interval either */
     wlb_test_clock_advance(600000);
-    uint64_t probed = wlb_test_invoke(&f, UINT32_MAX);
-    CU_ASSERT_TRUE(probed == 0 || probed == 1);
     CU_ASSERT_EQUAL(wlb_test_invoke(&f, UINT32_MAX), UINT64_MAX);
 
     /* an ACK covers everything in flight on the relay */
