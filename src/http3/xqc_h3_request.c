@@ -121,6 +121,7 @@ xqc_h3_request_destroy(xqc_h3_request_t *h3_request)
     }
 
     xqc_list_buf_list_free(&h3_request->body_buf);
+    h3_request->body_buf_bytes = 0;
     xqc_free(h3_request);
 }
 
@@ -184,6 +185,7 @@ xqc_h3_request_create_inner(xqc_h3_conn_t *h3_conn, xqc_h3_stream_t *h3_stream,
 
     xqc_init_list_head(&h3_request->body_buf);
     h3_request->body_buf_count = 0;
+    h3_request->body_buf_bytes = 0;
 
     xqc_h3_request_init_callbacks(h3_conn, h3_request);
 
@@ -779,6 +781,7 @@ xqc_h3_request_recv_body(xqc_h3_request_t *h3_request, unsigned char *recv_buf,
             memcpy(recv_buf + n_recv, buf->data + buf->consumed_len,
                    buf->data_len - buf->consumed_len);
             n_recv += buf->data_len - buf->consumed_len;
+            h3_request->body_buf_bytes -= buf->data_len - buf->consumed_len;
             h3_request->body_buf_count--;
             xqc_list_buf_free(list_buf);
 
@@ -786,6 +789,7 @@ xqc_h3_request_recv_body(xqc_h3_request_t *h3_request, unsigned char *recv_buf,
             memcpy(recv_buf + n_recv, buf->data + buf->consumed_len,
                    recv_buf_size - n_recv);
             buf->consumed_len += recv_buf_size - n_recv;
+            h3_request->body_buf_bytes -= recv_buf_size - n_recv;
             n_recv = recv_buf_size;
             break;
         }

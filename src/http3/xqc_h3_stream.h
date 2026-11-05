@@ -81,7 +81,17 @@ typedef enum {
     XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED = 0x1000,
     /* FIN was sent and no data will be sent any more */
     XQC_HTTP3_STREAM_FLAG_FIN_SENT = 0x2000,
+    /* XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED indicates that reading of this
+       request was paused because the buffered body reached
+       max_body_buf_per_stream. */
+    XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED = 0x4000,
 } xqc_h3_stream_flag;
+
+/* resume once the buffered body is below a quarter of the limit */
+#define XQC_H3_BODY_BUF_LOW_WATER(limit)    ((limit) / 4)
+
+/* capacity of a node that coalesces small DATA payloads */
+#define XQC_H3_BODY_BUF_MIN_BYTES_PER_NODE  256
 
 typedef struct xqc_h3_stream_pctx_s {
     /* parsing context for uni-stream type */

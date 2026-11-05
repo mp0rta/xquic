@@ -504,8 +504,8 @@ xqc_test_h3bb_limit_zero_reads_all(void)
     h3bb_read(&fx, i);
     CU_ASSERT_EQUAL(fx.req[i].stream->stream_data_in.next_read_offset,
                     h3bb_fed(&fx, i));
-    /* body-buffer pause bit */
-    CU_ASSERT_EQUAL(fx.req[i].h3s->flags & 0x4000, 0);
+    CU_ASSERT_EQUAL(fx.req[i].h3s->flags
+                    & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED, 0);
 
     h3bb_teardown(&fx);
 }
@@ -563,4 +563,269 @@ xqc_test_h3bb_fixture_engine_turn(void)
         CU_ASSERT_EQUAL(fx.req[i].n_close_notify, 1);
     }
     CU_ASSERT_EQUAL(h3bb_test_close_hook_runs, 1);
+}
+
+#define H3BB_LIMIT  16384
+
+/* a client request with the stream and connection windows opened wide
+ * enough for the tests to feed more than the default window */
+static int
+h3bb_open_request(h3bb_fx_t *fx, size_t limit)
+{
+    int i;
+
+    CU_ASSERT_EQUAL_FATAL(h3bb_setup(fx, limit, XQC_CONN_TYPE_CLIENT), 0);
+    h3bb_set_conn_window(fx, 16 * 1024 * 1024);
+    i = h3bb_add_request(fx);
+    CU_ASSERT_EQUAL_FATAL(i, 0);
+    fx->req[i].stream->stream_flow_ctl.fc_max_stream_data_can_recv =
+        16 * 1024 * 1024;
+    fx->req[i].drain_in_notify = 0;
+    return i;
+}
+
+static size_t
+h3bb_put_varint(uint8_t *p, uint64_t v)
+{
+    p[0] = (uint8_t)(0x80 | (v >> 24));
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+    return 4;
+}
+
+/*
+ * Run the transport's own RESET_STREAM (RFC 9000 Section 19.4) or, with
+ * `reliable` set, RESET_STREAM_AT frame processing on the request's stream,
+ * inside an emulated engine pass.
+ */
+static void
+h3bb_process_reset(h3bb_fx_t *fx, int idx, uint64_t final_size, int reliable,
+    uint64_t reliable_size)
+{
+    uint8_t          frame[32];
+    size_t           n = 0;
+    xqc_packet_in_t  pi;
+
+    frame[n++] = reliable ? XQC_FRAME_TYPE_RESET_STREAM_AT
+                          : XQC_FRAME_TYPE_RESET_STREAM;
+    n += h3bb_put_varint(frame + n, fx->req[idx].stream->stream_id);
+    n += h3bb_put_varint(frame + n, 0x10c);
+    n += h3bb_put_varint(frame + n, final_size);
+    if (reliable) {
+        n += h3bb_put_varint(frame + n, reliable_size);
+    }
+
+    memset(&pi, 0, sizeof(pi));
+    pi.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+    pi.pos = frame;
+    pi.last = frame + n;
+
+    h3bb_enter_pass(fx);
+    if (reliable) {
+        fx->conn->local_settings.reset_stream_at = XQC_TRUE;
+        fx->conn->remote_settings.reset_stream_at = XQC_TRUE;
+        CU_ASSERT_EQUAL(xqc_process_reset_stream_at_frame(fx->conn, &pi),
+                        XQC_OK);
+    } else {
+        CU_ASSERT_EQUAL(xqc_process_reset_stream_frame(fx->conn, &pi),
+                        XQC_OK);
+    }
+    h3bb_leave_pass(fx);
+}
+
+/* F1: at the limit the normal read loop stops and the stream leaves the
+ * read list */
+static void
+h3bb_fill_to_limit(h3bb_fx_t *fx, int i)
+{
+    h3bb_feed_headers(fx, i);
+    h3bb_feed_data(fx, i, 65536, 1400, 0);
+    h3bb_read(fx, i);
+}
+
+void
+xqc_test_h3bb_pause_at_limit(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_fill_to_limit(&fx, i);
+
+    CU_ASSERT(fx.req[i].h3r->body_buf_bytes >= H3BB_LIMIT
+              && fx.req[i].h3r->body_buf_bytes < H3BB_LIMIT + 4096);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+    CU_ASSERT(fx.req[i].stream->stream_data_in.next_read_offset
+              < h3bb_fed(&fx, i));
+    CU_ASSERT(!(fx.req[i].stream->stream_flag & XQC_STREAM_FLAG_READY_TO_READ));
+
+    h3bb_teardown(&fx);
+}
+
+/* data arriving while paused wakes the stream, but the read turn leaves it
+ * alone */
+void
+xqc_test_h3bb_paused_notify_reads_nothing(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+    uint64_t  off;
+    size_t    bytes;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_fill_to_limit(&fx, i);
+    off = fx.req[i].stream->stream_data_in.next_read_offset;
+    bytes = fx.req[i].h3r->body_buf_bytes;
+
+    h3bb_feed_data(&fx, i, 1400, 1400, 0);
+    h3bb_read(&fx, i);
+
+    CU_ASSERT_EQUAL(fx.req[i].stream->stream_data_in.next_read_offset, off);
+    CU_ASSERT_EQUAL(fx.req[i].h3r->body_buf_bytes, bytes);
+    CU_ASSERT(!(fx.req[i].stream->stream_flag & XQC_STREAM_FLAG_READY_TO_READ));
+
+    h3bb_teardown(&fx);
+}
+
+/* F2: one-byte DATA frames share nodes */
+void
+xqc_test_h3bb_tiny_data_coalesced(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 20000, 1, 0);
+    h3bb_read(&fx, i);
+
+    CU_ASSERT(fx.req[i].h3r->body_buf_count
+              <= 2 * (H3BB_LIMIT + 4096) / 256 + 2);
+    CU_ASSERT(fx.req[i].h3r->body_buf_bytes < H3BB_LIMIT + 4096);
+    CU_ASSERT(fx.req[i].h3r->body_buf_bytes >= H3BB_LIMIT);
+
+    h3bb_teardown(&fx);
+}
+
+/* F9: the read that crosses the limit also reads FIN; no pause */
+void
+xqc_test_h3bb_no_pause_after_fin(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 17000, 17000, 1);
+    h3bb_read(&fx, i);
+
+    CU_ASSERT(fx.req[i].h3r->body_buf_bytes >= H3BB_LIMIT);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_READ_EOF);
+    CU_ASSERT(!(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED));
+
+    h3bb_teardown(&fx);
+}
+
+/* F9: a reset stream is never paused, the read reaches the transport */
+void
+xqc_test_h3bb_no_pause_after_reset(void)
+{
+    h3bb_fx_t     fx;
+    int           i;
+    xqc_stream_t *stream;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    stream = fx.req[i].stream;
+    h3bb_fill_to_limit(&fx, i);
+    CU_ASSERT(fx.req[i].h3r->body_buf_bytes >= H3BB_LIMIT);
+
+    h3bb_process_reset(&fx, i, h3bb_fed(&fx, i), 0, 0);
+    CU_ASSERT_EQUAL_FATAL(stream->stream_state_recv,
+                          XQC_RECV_STREAM_ST_RESET_RECVD);
+    CU_ASSERT(fx.req[i].h3r->body_buf_bytes >= H3BB_LIMIT);
+
+    h3bb_read(&fx, i);
+    CU_ASSERT_EQUAL(stream->stream_state_recv, XQC_RECV_STREAM_ST_RESET_READ);
+
+    h3bb_teardown(&fx);
+}
+
+/* F9: RESET_STREAM_AT whose reliable part is read exactly when the buffer
+ * reaches the limit: the next read completes the reset instead of pausing.
+ * The reliable size is five 4 KiB reads in; 5 + 5 + 29990 = 30000 bytes fed. */
+void
+xqc_test_h3bb_no_pause_reliable_prefix_read(void)
+{
+    h3bb_fx_t     fx;
+    int           i;
+    xqc_stream_t *stream;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    stream = fx.req[i].stream;
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 29990, 29990, 0);
+    CU_ASSERT_EQUAL_FATAL(h3bb_fed(&fx, i), 30000);
+
+    h3bb_process_reset(&fx, i, 30000, 1, 5 * 4096);
+    CU_ASSERT_EQUAL_FATAL(stream->reset_at.recv_state, XQC_RESET_AT_RELIABLE);
+    CU_ASSERT(stream->stream_state_recv < XQC_RECV_STREAM_ST_RESET_RECVD);
+
+    h3bb_read(&fx, i);
+    CU_ASSERT(fx.req[i].h3r->body_buf_bytes >= H3BB_LIMIT);
+    CU_ASSERT(!(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED));
+    CU_ASSERT_EQUAL(stream->stream_state_recv, XQC_RECV_STREAM_ST_RESET_READ);
+
+    h3bb_teardown(&fx);
+}
+
+/* recv_body keeps body_buf_bytes exact: whole nodes, a partial node, and
+ * the empty node that carries FIN */
+void
+xqc_test_h3bb_body_bytes_accounting(void)
+{
+    h3bb_fx_t     fx;
+    int           i;
+    unsigned char buf[4096];
+    uint8_t       fin;
+    size_t        before;
+    ssize_t       n;
+    static const uint8_t empty_fin[] = {0x00, 0x00};
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_fill_to_limit(&fx, i);
+
+    before = fx.req[i].h3r->body_buf_bytes;
+    n = xqc_h3_request_recv_body(fx.req[i].h3r, buf, 1000, &fin);
+    CU_ASSERT_EQUAL(n, 1000);
+    CU_ASSERT_EQUAL(fx.req[i].h3r->body_buf_bytes, before - 1000);
+
+    /* a read that ends inside a node */
+    before = fx.req[i].h3r->body_buf_bytes;
+    n = xqc_h3_request_recv_body(fx.req[i].h3r, buf, 1, &fin);
+    CU_ASSERT_EQUAL(n, 1);
+    CU_ASSERT_EQUAL(fx.req[i].h3r->body_buf_bytes, before - 1);
+
+    before = fx.req[i].h3r->body_buf_bytes;
+    n = xqc_h3_request_recv_body(fx.req[i].h3r, buf, sizeof(buf), &fin);
+    CU_ASSERT(n > 0);
+    CU_ASSERT_EQUAL(fx.req[i].h3r->body_buf_bytes, before - (size_t)n);
+    h3bb_teardown(&fx);
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 100, 100, 0);
+    h3bb_feed(&fx, i, empty_fin, sizeof(empty_fin), 1);
+    h3bb_read(&fx, i);
+    CU_ASSERT_EQUAL(fx.req[i].h3r->body_buf_bytes, 100);
+
+    n = xqc_h3_request_recv_body(fx.req[i].h3r, buf, 60, &fin);
+    CU_ASSERT_EQUAL(n, 60);
+    CU_ASSERT_EQUAL(fx.req[i].h3r->body_buf_bytes, 40);
+    n = xqc_h3_request_recv_body(fx.req[i].h3r, buf, sizeof(buf), &fin);
+    CU_ASSERT_EQUAL(n, 40);
+    CU_ASSERT_EQUAL(fx.req[i].h3r->body_buf_bytes, 0);
+    CU_ASSERT(fin);
+
+    h3bb_teardown(&fx);
 }

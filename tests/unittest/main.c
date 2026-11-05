@@ -1200,6 +1200,13 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_h3bb_settings_propagate", xqc_test_h3bb_settings_propagate)
         || !CU_add_test(pSuite, "xqc_test_h3bb_limit_zero_reads_all", xqc_test_h3bb_limit_zero_reads_all)
         || !CU_add_test(pSuite, "xqc_test_h3bb_fixture_engine_turn", xqc_test_h3bb_fixture_engine_turn)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_pause_at_limit", xqc_test_h3bb_pause_at_limit)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_paused_notify_reads_nothing", xqc_test_h3bb_paused_notify_reads_nothing)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_tiny_data_coalesced", xqc_test_h3bb_tiny_data_coalesced)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_no_pause_after_fin", xqc_test_h3bb_no_pause_after_fin)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_no_pause_after_reset", xqc_test_h3bb_no_pause_after_reset)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_no_pause_reliable_prefix_read", xqc_test_h3bb_no_pause_reliable_prefix_read)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_body_bytes_accounting", xqc_test_h3bb_body_bytes_accounting)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();

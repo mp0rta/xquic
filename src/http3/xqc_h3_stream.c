@@ -1195,25 +1195,55 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                     || (fin_flag && processed == data_len
                         && pctx->frame.len == 0))
                 {
-                    buf = xqc_var_buf_create(len);
-                    if (buf == NULL) {
-                        return -XQC_EMALLOC;
+                    xqc_h3_request_t *h3r = h3s->h3r;
+                    xqc_var_buf_t    *tail = NULL;
+                    /*
+                     * With a body limit, payloads below the minimum node size
+                     * share a node so that tiny DATA frames do not pile up
+                     * list entries.
+                     */
+                    xqc_bool_t        small = h3s->h3c->max_body_buf_per_stream > 0
+                                              && len > 0
+                                              && len < XQC_H3_BODY_BUF_MIN_BYTES_PER_NODE;
+
+                    if (small && !xqc_list_empty(&h3r->body_buf)) {
+                        xqc_list_buf_t *last = xqc_list_entry(
+                            h3r->body_buf.prev, xqc_list_buf_t, list_head);
+                        if (last->buf->buf_len - last->buf->data_len >= len) {
+                            tail = last->buf;
+                        }
                     }
 
-                    ret = xqc_var_buf_save_data(buf, data + processed, len);
-                    if (ret != XQC_OK) {
-                        xqc_var_buf_free(buf);
-                        xqc_h3_frm_reset_pctx(pctx);
-                        return ret;
-                    }
+                    if (tail != NULL) {
+                        ret = xqc_var_buf_save_data(tail, data + processed, len);
+                        if (ret != XQC_OK) {
+                            xqc_h3_frm_reset_pctx(pctx);
+                            return ret;
+                        }
 
-                    /* add data to buffer list */
-                    ret = xqc_list_buf_to_tail(&h3s->h3r->body_buf, buf);
-                    if (ret < 0) {
-                        xqc_h3_frm_reset_pctx(pctx);
-                        return ret;
+                    } else {
+                        buf = xqc_var_buf_create(
+                            small ? XQC_H3_BODY_BUF_MIN_BYTES_PER_NODE : len);
+                        if (buf == NULL) {
+                            return -XQC_EMALLOC;
+                        }
+
+                        ret = xqc_var_buf_save_data(buf, data + processed, len);
+                        if (ret != XQC_OK) {
+                            xqc_var_buf_free(buf);
+                            xqc_h3_frm_reset_pctx(pctx);
+                            return ret;
+                        }
+
+                        /* add data to buffer list */
+                        ret = xqc_list_buf_to_tail(&h3r->body_buf, buf);
+                        if (ret < 0) {
+                            xqc_h3_frm_reset_pctx(pctx);
+                            return ret;
+                        }
+                        h3r->body_buf_count++;
                     }
-                    h3s->h3r->body_buf_count++;
+                    h3r->body_buf_bytes += len;
                 }
 
                 processed += len;
@@ -1973,6 +2003,50 @@ xqc_h3_stream_process_blocked_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s,
 }
 
 
+/*
+ * Whether reading this request may be paused for the body limit. Not once
+ * the transport stream is reset or the reliable part of a reset was read
+ * (the next read completes the reset), nor after FIN.
+ */
+static xqc_bool_t
+xqc_h3_stream_body_buf_can_pause(xqc_h3_stream_t *h3s)
+{
+    xqc_stream_t *stream = h3s->stream;
+
+    if (h3s->type != XQC_H3_STREAM_TYPE_REQUEST || h3s->h3r == NULL
+        || stream == NULL)
+    {
+        return XQC_FALSE;
+    }
+
+    if (stream->stream_state_recv >= XQC_RECV_STREAM_ST_RESET_RECVD) {
+        return XQC_FALSE;
+    }
+
+    if (stream->reset_at.recv_state != XQC_RESET_AT_RECV_NONE
+        && stream->stream_data_in.next_read_offset
+           >= stream->reset_at.recv_size)
+    {
+        return XQC_FALSE;
+    }
+
+    return !(h3s->flags & XQC_HTTP3_STREAM_FLAG_READ_EOF);
+}
+
+/*
+ * A read turn that called xqc_stream_recv already left the connection's read
+ * list; otherwise take the stream off it here, in its own read turn.
+ */
+static void
+xqc_h3_stream_body_buf_pause(xqc_h3_stream_t *h3s, xqc_bool_t read_called)
+{
+    h3s->flags |= XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED;
+
+    if (!read_called && (h3s->flags & XQC_HTTP3_STREAM_IN_READING)) {
+        xqc_stream_shutdown_read(h3s->stream);
+    }
+}
+
 xqc_int_t
 xqc_h3_stream_process_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s, xqc_bool_t *fin)
 {
@@ -1982,9 +2056,19 @@ xqc_h3_stream_process_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s, xqc_bool_
     unsigned char buff[XQC_DATA_BUF_SIZE_4K];
     size_t buff_size = XQC_DATA_BUF_SIZE_4K;
     uint64_t insert_cnt = xqc_qpack_get_dec_insert_count(h3s->qpack);
+    xqc_bool_t read_called = XQC_FALSE;
 
     do {
+        if (h3c->max_body_buf_per_stream > 0
+            && xqc_h3_stream_body_buf_can_pause(h3s)
+            && h3s->h3r->body_buf_bytes >= h3c->max_body_buf_per_stream)
+        {
+            xqc_h3_stream_body_buf_pause(h3s, read_called);
+            return XQC_OK;
+        }
+
         /* recv data from transport stream */
+        read_called = XQC_TRUE;
         read = xqc_stream_recv(h3s->stream, buff, buff_size, fin);
         if (read == -XQC_EAGAIN) {
             return XQC_OK;
