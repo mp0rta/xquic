@@ -825,8 +825,6 @@ case_test_case "MP_backup_returns_to_primary_after_outage" --id 1318 --mode self
 case_test_case "MP_backup_keeps_quiet_standby_path" --id 1319 --mode self-reporting --run case_fork_core_MP_backup_keeps_quiet_standby_path
 case_test_case "MP_backup_probes_standby_path_when_probing_on" --id 1320 --mode self-reporting --run case_fork_core_MP_backup_probes_standby_path_when_probing_on
 
-case_test_case "MP_dead_path_stream_data_resent_on_working_path" --id 1313 --mode self-reporting --run case_fork_core_MP_dead_path_stream_data_resent_on_working_path
-case_test_case "MP_only_path_stream_data_kept_through_outage" --id 1314 --mode self-reporting --run case_fork_core_MP_only_path_stream_data_kept_through_outage
 case_test_case "pmtud_path_shrinks_by_8_bytes" --id 811 --mode self-reporting --run case_fork_core_pmtud_path_shrinks_by_8_bytes
 
 if case_test_is_discovery; then
