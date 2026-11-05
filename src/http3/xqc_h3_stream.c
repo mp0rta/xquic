@@ -2104,9 +2104,17 @@ xqc_h3_stream_process_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s, xqc_bool_
     xqc_bool_t read_called = XQC_FALSE;
 
     do {
+        /*
+         * blocked_buf_size is 0 unless the section is blocked. Counting it
+         * here as well keeps the bytes kept for a blocked field section
+         * inside the limit when the resume loop reads a still-blocked
+         * stream (RFC 9204 Section 2.2.1: blocked data should stay in the
+         * flow-control window, not move into unbounded buffers).
+         */
         if (h3c->max_body_buf_per_stream > 0
             && xqc_h3_stream_body_buf_can_pause(h3s)
-            && h3s->h3r->body_buf_bytes >= h3c->max_body_buf_per_stream)
+            && h3s->blocked_buf_size + h3s->h3r->body_buf_bytes
+               >= h3c->max_body_buf_per_stream)
         {
             xqc_h3_stream_body_buf_pause(h3s, read_called);
             return XQC_OK;
@@ -2270,9 +2278,12 @@ xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s)
         }
     }
 
-    /* the replay may have taken the body below the low-water mark */
+    /*
+     * A replay that brought little payload (frame overhead, empty or unknown
+     * frames) leaves the application nothing to drain, and nothing else
+     * would resume the request.
+     */
     if ((h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED)
-        && h3s->h3r != NULL
         && !(h3s->flags & (XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED
                            | XQC_HTTP3_STREAM_FLAG_CLOSED))
         && h3s->h3r->body_buf_bytes

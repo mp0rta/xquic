@@ -1287,3 +1287,36 @@ xqc_test_h3bb_qpack_blocked_replay_resumes(void)
 
     h3bb_teardown(&fx);
 }
+
+/* a blocked trailer section followed by more bytes: the body notify drains
+ * and resumes, and the resume loop reads the still-blocked stream; the bytes
+ * kept for the blocked section stay under the limit */
+static void
+h3bb_trailer_bounded(size_t limit)
+{
+    h3bb_fx_t       fx;
+    int             i;
+    static uint8_t  junk[64 * 1024];
+
+    i = h3bb_open_request(&fx, limit);
+    fx.h3c->max_blocked_buf_per_stream = 0;
+    fx.h3c->max_blocked_buf_per_conn = 0;
+    fx.req[i].drain_in_notify = 1;
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 100, 100, 0);
+    h3bb_feed(&fx, i, h3bb_blocked_headers, sizeof(h3bb_blocked_headers), 0);
+    h3bb_feed(&fx, i, junk, limit + 12000, 0);
+    h3bb_read(&fx, i);
+
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED);
+    CU_ASSERT(fx.req[i].h3s->blocked_buf_size < limit + 4096);
+
+    h3bb_teardown(&fx);
+}
+
+void
+xqc_test_h3bb_qpack_blocked_trailer_bounded(void)
+{
+    h3bb_trailer_bounded(16384);
+    h3bb_trailer_bounded(17000);
+}

@@ -1218,6 +1218,7 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_h3bb_qpack_blocked_pause", xqc_test_h3bb_qpack_blocked_pause)
         || !CU_add_test(pSuite, "xqc_test_h3bb_tiny_data_coalesced_replay", xqc_test_h3bb_tiny_data_coalesced_replay)
         || !CU_add_test(pSuite, "xqc_test_h3bb_qpack_blocked_replay_resumes", xqc_test_h3bb_qpack_blocked_replay_resumes)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_qpack_blocked_trailer_bounded", xqc_test_h3bb_qpack_blocked_trailer_bounded)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();
