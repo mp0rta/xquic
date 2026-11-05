@@ -67,6 +67,7 @@
 #include "xqc_conn_reapply_test.h"
 #include "xqc_send_ctl_test.h"
 #include "xqc_pmtud_test.h"
+#include "xqc_path_requeue_test.h"
 #include "xqc_vn_test.h"
 #include "xqc_frame_type_bit_test.h"
 #include "xqc_applimit_test.h"
@@ -958,6 +959,10 @@ main(int argc, char *argv[])
                         xqc_test_pmtud_no_ack_into_packet_above_path_size)
         || !CU_add_test(pSuite, "xqc_test_pmtud_pto_copy_fits_path_size",
                         xqc_test_pmtud_pto_copy_fits_path_size)
+        || !CU_add_test(pSuite, "xqc_test_path_requeue_unacked_on_pto",
+                        xqc_test_path_requeue_unacked_on_pto)
+        || !CU_add_test(pSuite, "xqc_test_path_requeue_needs_a_working_path",
+                        xqc_test_path_requeue_needs_a_working_path)
         || !CU_add_test(pSuite, "xqc_test_pmtud_smaller_ack_keeps_larger_loss",
                         xqc_test_pmtud_smaller_ack_keeps_larger_loss)
         || !CU_add_test(pSuite, "xqc_test_pmtud_ack_spill_losses_make_path_suspect",
