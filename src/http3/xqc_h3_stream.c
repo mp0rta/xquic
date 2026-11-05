@@ -2386,6 +2386,7 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
             /* notify DATA whenever there is data */
             do {
                 size_t     buffered;
+                uint64_t   nodes;
                 xqc_bool_t was_paused =
                     (h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED) != 0;
 
@@ -2414,6 +2415,7 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
                 }
 
                 buffered = h3s->h3r->body_buf_bytes;
+                nodes = h3s->h3r->body_buf_count;
                 h3s->flags |= XQC_HTTP3_STREAM_IN_READING;
                 ret = xqc_h3_stream_process_data(stream, h3s, &fin);
                 h3s->flags &= ~XQC_HTTP3_STREAM_IN_READING;
@@ -2425,8 +2427,14 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
                     return ret;
                 }
 
-                /* nothing new was read: do not notify the same leftover again */
-                if (h3s->h3r->body_buf_bytes == buffered) {
+                /*
+                 * Nothing new was read: do not notify the same leftover
+                 * again. A node counts as new even with no bytes (the empty
+                 * DATA frame that carries FIN), as only a notify delivers it.
+                 */
+                if (h3s->h3r->body_buf_bytes == buffered
+                    && h3s->h3r->body_buf_count == nodes)
+                {
                     break;
                 }
             } while (!xqc_list_empty(&h3s->h3r->body_buf)

@@ -1115,3 +1115,30 @@ xqc_test_h3bb_resume_loop_no_notify_after_close(void)
 
     h3bb_teardown(&fx);
 }
+
+/* the final, empty DATA frame with FIN arrives after the application drained
+ * everything in the resumed notify: the read-on must still notify it */
+void
+xqc_test_h3bb_resume_loop_final_empty_data_fin(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+    static const uint8_t empty_data[] = {0x00, 0x00};
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    fx.req[i].drain_in_notify = 1;
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 5 * 4096 - 10, 5 * 4096 - 10, 0);
+    h3bb_feed(&fx, i, empty_data, sizeof(empty_data), 1);
+
+    h3bb_read(&fx, i);
+
+    CU_ASSERT_EQUAL(fx.req[i].bytes_delivered, 5 * 4096 - 10);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_READ_EOF);
+    /* the application was told that the message ended */
+    CU_ASSERT(xqc_list_empty(&fx.req[i].h3r->body_buf));
+    CU_ASSERT(fx.req[i].h3r->h3r_end_time > 0);
+    CU_ASSERT_EQUAL(fx.req[i].n_read_notify, 3);
+
+    h3bb_teardown(&fx);
+}
