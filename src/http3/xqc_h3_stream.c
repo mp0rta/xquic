@@ -1168,6 +1168,11 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                         xqc_log(h3s->log, XQC_LOG_ERROR, "|recv header error|%d|", ret);
                         return ret;
                     }
+
+                    /* a callback closed the request: drop the rest */
+                    if (xqc_h3_stream_in_discard(h3s)) {
+                        return data_len;
+                    }
                 }
                 break;
 
@@ -1933,6 +1938,44 @@ xqc_h3_stream_get_buf(xqc_h3_stream_t *h3s, xqc_list_head_t *head, size_t expect
 }
 
 
+xqc_bool_t
+xqc_h3_stream_in_discard(const xqc_h3_stream_t *h3s)
+{
+    return h3s->h3c->max_body_buf_per_stream > 0
+           && (h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED)
+           && h3s->stream != NULL;
+}
+
+/*
+ * Own read turn of a discarded request: free what the application will never
+ * take, then read and drop the transport stream up to EAGAIN, FIN or an error
+ * (RESET). The bytes still count towards the connection credit, and reading
+ * up to FIN makes the receive side terminal. Nothing is parsed and no
+ * application callback runs. A connection that is closing or being destroyed
+ * is not read.
+ */
+static void
+xqc_h3_stream_discard_read(xqc_h3_stream_t *h3s)
+{
+    unsigned char buf[XQC_DATA_BUF_SIZE_4K];
+    uint8_t       fin;
+    ssize_t       n;
+
+    if (h3s->h3r != NULL) {
+        xqc_list_buf_list_free(&h3s->h3r->body_buf);
+        h3s->h3r->body_buf_count = 0;
+        h3s->h3r->body_buf_bytes = 0;
+    }
+
+    while (!xqc_conn_is_tearing_down(h3s->h3c->conn)) {
+        fin = 0;
+        n = xqc_stream_recv(h3s->stream, buf, sizeof(buf), &fin);
+        if (n < 0 || fin) {
+            break;
+        }
+    }
+}
+
 /*
  * Whether reading this request may be paused for the body limit. Not once
  * the transport stream is reset or the reliable part of a reset was read
@@ -2060,19 +2103,35 @@ xqc_h3_stream_process_blocked_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s,
 
 
 /*
+ * The engine must read the stream (again), wherever the caller ran: inside
+ * this request's own body notify the read loop there reads on; elsewhere in
+ * the engine the read list walk may be past this stream and the active queue
+ * refuses a connection being processed, so a due timer brings the connection
+ * back; outside the engine the app's event timer is fired at once.
+ */
+void
+xqc_h3_stream_ready_and_wake(xqc_h3_stream_t *h3s)
+{
+    xqc_engine_t *engine = h3s->h3c->conn->engine;
+
+    xqc_stream_ready_to_read(h3s->stream);
+
+    if (!(engine->eng_flag & XQC_ENG_FLAG_RUNNING)) {
+        xqc_engine_wakeup_once(engine);
+
+    } else if (!(h3s->flags & XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY)) {
+        xqc_h3_conn_body_buf_revisit(h3s->h3c);
+    }
+}
+
+/*
  * Called once the application drained a paused request to the low-water
- * mark. The engine must read the stream again, wherever the drain ran:
- * inside this request's own body notify the read loop there reads on;
- * elsewhere in the engine the read list walk may be past this stream and
- * the active queue refuses a connection being processed, so a due timer
- * brings the connection back; outside the engine the app's event timer is
- * fired at once.
+ * mark: the engine must read the stream again.
  */
 void
 xqc_h3_stream_body_buf_resume(xqc_h3_stream_t *h3s)
 {
     xqc_h3_conn_t *h3c = h3s->h3c;
-    xqc_engine_t  *engine = h3c->conn->engine;
 
     h3s->flags &= ~XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED;
 
@@ -2082,14 +2141,7 @@ xqc_h3_stream_body_buf_resume(xqc_h3_stream_t *h3s)
         return;
     }
 
-    xqc_stream_ready_to_read(h3s->stream);
-
-    if (!(engine->eng_flag & XQC_ENG_FLAG_RUNNING)) {
-        xqc_engine_wakeup_once(engine);
-
-    } else if (!(h3s->flags & XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY)) {
-        xqc_h3_conn_body_buf_revisit(h3c);
-    }
+    xqc_h3_stream_ready_and_wake(h3s);
 }
 
 xqc_int_t
@@ -2151,6 +2203,12 @@ xqc_h3_stream_process_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s, xqc_bool_
                 XQC_H3_CONN_ERR(h3s->h3c, H3_INTERNAL_ERROR, ret);
             }
             return ret;
+        }
+
+        /* a callback closed the request: the rest of its input is dropped by
+         * its discard read */
+        if (xqc_h3_stream_in_discard(h3s)) {
+            return XQC_OK;
         }
 
         /* after process in, the stream might be blocked, read all data and add to blocked
@@ -2369,6 +2427,26 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
     }
     h3s->flags |= XQC_HTTP3_STREAM_IN_READING;
 
+    /*
+     * A callback may have closed the connection after this stream was
+     * queued: the read list walk does not check, so read nothing.
+     */
+    if (h3c->max_body_buf_per_stream > 0 && xqc_conn_is_tearing_down(h3c->conn)) {
+        h3s->flags &= ~XQC_HTTP3_STREAM_IN_READING;
+        return XQC_OK;
+    }
+
+    /*
+     * A closed request is read and dropped before the GOAWAY branch, which
+     * would send STOP_SENDING and read nothing, leaving the stream's bytes
+     * (and a FIN or RESET) unprocessed for good.
+     */
+    if (xqc_h3_stream_in_discard(h3s)) {
+        xqc_h3_stream_discard_read(h3s);
+        h3s->flags &= ~XQC_HTTP3_STREAM_IN_READING;
+        return XQC_OK;
+    }
+
     /* check goaway */
     if (xqc_h3_conn_is_goaway_recved(h3c, stream->stream_id) == XQC_TRUE) {
         /*
@@ -2473,6 +2551,17 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
                 }
             } while (!xqc_list_empty(&h3s->h3r->body_buf)
                      && !xqc_conn_is_tearing_down(h3c->conn));
+        }
+
+        /*
+         * The application closed the request in one of the callbacks above:
+         * read and drop the rest in this turn, as nothing else would
+         * schedule another one.
+         */
+        if (h3s->type == XQC_H3_STREAM_TYPE_REQUEST
+            && xqc_h3_stream_in_discard(h3s))
+        {
+            xqc_h3_stream_discard_read(h3s);
         }
 
         /* TODO: BYTESTRAM: notify DATA to application ASAP */

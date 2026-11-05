@@ -230,6 +230,18 @@ xqc_int_t xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s);
  * drained its buffer, and make sure the engine reads it again */
 void xqc_h3_stream_body_buf_resume(xqc_h3_stream_t *h3s);
 
+/* put the stream on the connection's read list and make the engine read it:
+ * wake the engine from outside, or arm the revisit timer inside */
+void xqc_h3_stream_ready_and_wake(xqc_h3_stream_t *h3s);
+
+/*
+ * The discard state of a request the application closed (only with
+ * max_body_buf_per_stream > 0): its input never reaches the parser, the
+ * application gets no read or closing notification, and the stream's own
+ * read turn reads and drops what remains so that the credit returns.
+ */
+xqc_bool_t xqc_h3_stream_in_discard(const xqc_h3_stream_t *h3s);
+
 xqc_var_buf_t *xqc_h3_stream_get_send_buf(xqc_h3_stream_t *h3s);
 
 uint64_t xqc_h3_stream_get_err(xqc_h3_stream_t *h3s);

@@ -27,5 +27,15 @@ void xqc_test_h3bb_qpack_blocked_pause(void);
 void xqc_test_h3bb_tiny_data_coalesced_replay(void);
 void xqc_test_h3bb_qpack_blocked_replay_resumes(void);
 void xqc_test_h3bb_qpack_blocked_trailer_bounded(void);
+void xqc_test_h3bb_close_paused_drains(void);
+void xqc_test_h3bb_close_no_callbacks_after(void);
+void xqc_test_h3bb_close_in_body_notify_last_stream(void);
+void xqc_test_h3bb_close_sibling_in_read_walk(void);
+void xqc_test_h3bb_close_before_trailer_notify(void);
+void xqc_test_h3bb_close_outside_engine_reliable_reset(void);
+void xqc_test_h3bb_close_goaway(void);
+void xqc_test_h3bb_close_then_conn_close_in_callback(void);
+void xqc_test_h3bb_teardown_close_sibling(void);
+void xqc_test_h3bb_limit_zero_close_unchanged(void);
 
 #endif

@@ -1320,3 +1320,583 @@ xqc_test_h3bb_qpack_blocked_trailer_bounded(void)
     h3bb_trailer_bounded(16384);
     h3bb_trailer_bounded(17000);
 }
+
+
+/*
+ * A5: a request the application closed is read and dropped by its own read
+ * turn; the application hears nothing more but the final close notify.
+ */
+
+/* the credit must come back: everything received was read, the window
+ * advertised more than before, and the application heard nothing */
+static void
+h3bb_check_drained(h3bb_fx_t *fx, int i, uint64_t max_before, int notifies)
+{
+    xqc_conn_flow_ctl_t *fc = &fx->conn->conn_flow_ctl;
+
+    CU_ASSERT_EQUAL(fc->fc_data_read, fc->fc_data_recved);
+    CU_ASSERT(fc->fc_max_data_can_recv > max_before);
+    CU_ASSERT_EQUAL(fx->req[i].n_read_notify, notifies);
+    CU_ASSERT_EQUAL(fx->req[i].n_closing_notify, 0);
+    CU_ASSERT_EQUAL(fx->req[i].h3r->body_buf_bytes, 0);
+    CU_ASSERT(xqc_list_empty(&fx->req[i].h3r->body_buf));
+}
+
+/* F6: a request closed while paused gives its credit back, also when the
+ * peer already sent FIN (no STOP_SENDING answer or RESET will come) */
+void
+xqc_test_h3bb_close_paused_drains(void)
+{
+    int variant;
+
+    for (variant = 0; variant < 2; variant++) {
+        h3bb_fx_t     fx;
+        int           i;
+        xqc_stream_t *stream;
+        uint64_t      max_before;
+        int           notifies;
+
+        i = h3bb_open_request(&fx, H3BB_LIMIT);
+        /* a small connection window, so reading 100000 bytes crosses half */
+        h3bb_set_conn_window(&fx, 128 * 1024);
+        stream = fx.req[i].stream;
+        h3bb_feed_headers(&fx, i);
+        h3bb_feed_data(&fx, i, 100000, 1400, variant);
+        h3bb_read(&fx, i);
+        CU_ASSERT_FATAL(fx.req[i].h3s->flags
+                        & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+        CU_ASSERT(stream->stream_data_in.next_read_offset < h3bb_fed(&fx, i));
+        if (variant) {
+            CU_ASSERT_EQUAL(stream->stream_state_recv,
+                            XQC_RECV_STREAM_ST_DATA_RECVD);
+        }
+        max_before = fx.conn->conn_flow_ctl.fc_max_data_can_recv;
+        notifies = fx.req[i].n_read_notify;
+
+        /* outside the engine */
+        CU_ASSERT_EQUAL(xqc_h3_request_close(fx.req[i].h3r), XQC_OK);
+        CU_ASSERT(xqc_h3_stream_in_discard(fx.req[i].h3s));
+        CU_ASSERT_EQUAL(fx.req[i].h3s->flags
+                        & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED, 0);
+        h3bb_turn(&fx);
+
+        CU_ASSERT_EQUAL(stream->stream_data_in.next_read_offset,
+                        h3bb_fed(&fx, i));
+        if (variant) {
+            CU_ASSERT_EQUAL(stream->stream_state_recv,
+                            XQC_RECV_STREAM_ST_DATA_READ);
+        }
+        h3bb_check_drained(&fx, i, max_before, notifies);
+
+        h3bb_teardown(&fx);
+        CU_ASSERT_EQUAL(fx.req[i].n_close_notify, 1);
+    }
+}
+
+/* nothing but the close notify reaches the application after the close:
+ * not DATA, nor a trailer section, nor the empty FIN */
+void
+xqc_test_h3bb_close_no_callbacks_after(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+    int       notifies;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 1000, 1000, 0);
+    h3bb_turn(&fx);
+    CU_ASSERT(fx.req[i].n_read_notify > 0);
+    notifies = fx.req[i].n_read_notify;
+
+    /* inside an engine pass: the fixture connection has no 1-RTT keys, so a
+     * close that runs the engine to send STOP_SENDING ends the connection */
+    h3bb_enter_pass(&fx);
+    CU_ASSERT_EQUAL(xqc_h3_request_close(fx.req[i].h3r), XQC_OK);
+    h3bb_leave_pass(&fx);
+    h3bb_turn(&fx);
+
+    h3bb_feed_data(&fx, i, 5000, 1000, 0);
+    h3bb_turn(&fx);
+    h3bb_feed_headers(&fx, i);
+    h3bb_turn(&fx);
+    h3bb_feed(&fx, i, NULL, 0, 1);
+    h3bb_turn(&fx);
+
+    CU_ASSERT_EQUAL(fx.req[i].n_read_notify, notifies);
+    CU_ASSERT_EQUAL(fx.req[i].n_closing_notify, 0);
+    CU_ASSERT_EQUAL(fx.req[i].stream->stream_data_in.next_read_offset,
+                    h3bb_fed(&fx, i));
+    CU_ASSERT(xqc_list_empty(&fx.req[i].h3r->body_buf));
+    CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
+
+    h3bb_teardown(&fx);
+    CU_ASSERT_EQUAL(fx.req[i].n_close_notify, 1);
+}
+
+/* the only armed stream is resumed and closed inside its own body notify:
+ * no other turn will come, so that notify itself reads and drops the rest */
+static void
+h3bb_test_drain_and_close(h3bb_fx_t *fx, int idx)
+{
+    if (fx->req[idx].h3r->body_buf_bytes == 0
+        || (fx->req[idx].h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED))
+    {
+        return;
+    }
+    h3bb_drain(fx, idx);
+    CU_ASSERT_EQUAL(xqc_h3_request_close(fx->req[idx].h3r), XQC_OK);
+}
+
+void
+xqc_test_h3bb_close_in_body_notify_last_stream(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    fx.req[i].on_notify = h3bb_test_drain_and_close;
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 100000, 1400, 0);
+
+    h3bb_read(&fx, i);
+
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED);
+    CU_ASSERT_EQUAL(fx.req[i].stream->stream_data_in.next_read_offset,
+                    h3bb_fed(&fx, i));
+    CU_ASSERT(xqc_list_empty(&fx.req[i].h3r->body_buf));
+    CU_ASSERT_EQUAL(fx.req[i].n_closing_notify, 0);
+
+    h3bb_teardown(&fx);
+}
+
+/* a callback in the engine's read list walk closes a request further down
+ * the list: the walk goes on and the closed request is drained */
+static int h3bb_sibling_closed;
+
+static void
+h3bb_test_close_sibling(h3bb_fx_t *fx, int idx)
+{
+    if (idx != 0 || h3bb_sibling_closed
+        || fx->req[idx].h3r->body_buf_bytes == 0)
+    {
+        return;
+    }
+    h3bb_sibling_closed = 1;
+    CU_ASSERT_EQUAL(xqc_h3_request_close(fx->req[1].h3r), XQC_OK);
+}
+
+void
+xqc_test_h3bb_close_sibling_in_read_walk(void)
+{
+    h3bb_fx_t fx;
+    int       i, j;
+    int       notifies;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    j = h3bb_add_request(&fx);
+    CU_ASSERT_EQUAL_FATAL(j, 1);
+    fx.req[j].stream->stream_flow_ctl.fc_max_stream_data_can_recv =
+        16 * 1024 * 1024;
+    h3bb_fill_to_limit(&fx, i);
+    h3bb_fill_to_limit(&fx, j);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+    CU_ASSERT(fx.req[j].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+    notifies = fx.req[j].n_read_notify;
+
+    /* both re-armed, request 0 first */
+    h3bb_sibling_closed = 0;
+    fx.req[i].on_notify = h3bb_test_close_sibling;
+    CU_ASSERT(h3bb_drain(&fx, i) > 0);
+    CU_ASSERT(h3bb_drain(&fx, j) > 0);
+
+    h3bb_turn(&fx);
+    h3bb_turn(&fx);
+
+    CU_ASSERT_EQUAL(h3bb_sibling_closed, 1);
+    CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
+    CU_ASSERT_EQUAL(fx.req[j].stream->stream_data_in.next_read_offset,
+                    h3bb_fed(&fx, j));
+    CU_ASSERT_EQUAL(fx.req[j].n_read_notify, notifies);
+    CU_ASSERT_EQUAL(fx.req[j].n_closing_notify, 0);
+    CU_ASSERT(xqc_list_empty(&fx.req[j].h3r->body_buf));
+
+    h3bb_teardown(&fx);
+}
+
+/* the body notify that precedes a trailer section closes the request: the
+ * trailer is not notified */
+static void
+h3bb_test_close_on_body(h3bb_fx_t *fx, int idx)
+{
+    if (fx->req[idx].h3r->body_buf_bytes > 0
+        && !(fx->req[idx].h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED))
+    {
+        CU_ASSERT_EQUAL(xqc_h3_request_close(fx->req[idx].h3r), XQC_OK);
+    }
+}
+
+/* the header notify closes the request: what follows in the same read, or
+ * in the next one, never reaches the parser (no trailer is parsed) */
+static void
+h3bb_test_close_on_header(h3bb_fx_t *fx, int idx)
+{
+    if (!(fx->req[idx].h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED)) {
+        CU_ASSERT_EQUAL(xqc_h3_request_close(fx->req[idx].h3r), XQC_OK);
+    }
+}
+
+/* DATA of `payload` bytes (one frame) and a trailer section */
+static void
+h3bb_feed_data_and_trailer(h3bb_fx_t *fx, int i, size_t payload)
+{
+    uint8_t *buf = xqc_malloc(payload + 16);
+    size_t   n = 0;
+
+    buf[n++] = 0x00;
+    if (payload < 64) {
+        buf[n++] = (uint8_t)payload;
+
+    } else {
+        buf[n++] = (uint8_t)(0x40 | (payload >> 8));
+        buf[n++] = (uint8_t)payload;
+    }
+    memset(buf + n, 0xa5, payload);
+    n += payload;
+    memcpy(buf + n, h3bb_valid_headers, sizeof(h3bb_valid_headers));
+    n += sizeof(h3bb_valid_headers);
+    h3bb_feed(fx, i, buf, n, 0);
+    xqc_free(buf);
+}
+
+/* a paused request is resumed by the first notify; the notify nested in the
+ * resume loop's read (the one before the trailer) closes it */
+static int h3bb_notifies_at_nested_close;
+
+static void
+h3bb_test_drain_then_close_nested(h3bb_fx_t *fx, int idx)
+{
+    if (fx->req[idx].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED) {
+        h3bb_drain(fx, idx);
+
+    } else if (!h3bb_notifies_at_nested_close
+               && fx->req[idx].h3r->body_buf_bytes > 0)
+    {
+        h3bb_notifies_at_nested_close = fx->req[idx].n_read_notify;
+        CU_ASSERT_EQUAL(xqc_h3_request_close(fx->req[idx].h3r), XQC_OK);
+    }
+}
+
+void
+xqc_test_h3bb_close_before_trailer_notify(void)
+{
+    h3bb_fx_t fx;
+    int       i, variant;
+
+    /* the body notify before the trailer closes */
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    fx.req[i].on_notify = h3bb_test_close_on_body;
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data_and_trailer(&fx, i, 8);
+
+    h3bb_read(&fx, i);
+
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED);
+    /* the header section and the body, no trailer */
+    CU_ASSERT_EQUAL(fx.req[i].n_read_notify, 2);
+    CU_ASSERT_EQUAL(fx.req[i].stream->stream_data_in.next_read_offset,
+                    h3bb_fed(&fx, i));
+    h3bb_teardown(&fx);
+
+    /* closed in a notify nested in the resume loop: neither the trailer nor
+     * a further body notify follows */
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    fx.req[i].on_notify = h3bb_test_drain_then_close_nested;
+    h3bb_notifies_at_nested_close = 0;
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, H3BB_LIMIT + 6000, 1400, 0);
+    h3bb_feed(&fx, i, h3bb_valid_headers, sizeof(h3bb_valid_headers), 0);
+
+    h3bb_read(&fx, i);
+
+    CU_ASSERT(h3bb_notifies_at_nested_close > 0);
+    CU_ASSERT_EQUAL(fx.req[i].n_read_notify, h3bb_notifies_at_nested_close);
+    CU_ASSERT_EQUAL(fx.req[i].stream->stream_data_in.next_read_offset,
+                    h3bb_fed(&fx, i));
+    h3bb_teardown(&fx);
+
+    /* the header notify closes: the trailer is in the same read (payload
+     * 8) or starts the next one (HEADERS 5 + DATA header 3 + payload 4088
+     * fill the 4096-byte read) */
+    for (variant = 0; variant < 2; variant++) {
+        i = h3bb_open_request(&fx, H3BB_LIMIT);
+        fx.req[i].on_notify = h3bb_test_close_on_header;
+        h3bb_feed_headers(&fx, i);
+        h3bb_feed_data_and_trailer(&fx, i, variant ? 4088 : 8);
+
+        h3bb_read(&fx, i);
+
+        CU_ASSERT_EQUAL(fx.req[i].h3r->completed_header_count, 1);
+        CU_ASSERT_EQUAL(fx.req[i].n_read_notify, 1);
+        CU_ASSERT_EQUAL(fx.req[i].stream->stream_data_in.next_read_offset,
+                        h3bb_fed(&fx, i));
+        CU_ASSERT(xqc_list_empty(&fx.req[i].h3r->body_buf));
+        h3bb_teardown(&fx);
+    }
+}
+
+/* a pending RESET_STREAM_AT with an unread reliable prefix: closing outside
+ * the engine reads the prefix, completes the reset and tells nobody */
+void
+xqc_test_h3bb_close_outside_engine_reliable_reset(void)
+{
+    h3bb_fx_t     fx;
+    int           i;
+    xqc_stream_t *stream;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    stream = fx.req[i].stream;
+    h3bb_fill_to_limit(&fx, i);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+
+    h3bb_process_reset(&fx, i, h3bb_fed(&fx, i), 1, h3bb_fed(&fx, i) - 1000);
+    CU_ASSERT_EQUAL_FATAL(stream->reset_at.recv_state, XQC_RESET_AT_RELIABLE);
+    CU_ASSERT(stream->stream_data_in.next_read_offset
+              < stream->reset_at.recv_size);
+
+    CU_ASSERT_EQUAL(xqc_h3_request_close(fx.req[i].h3r), XQC_OK);
+    h3bb_turn(&fx);
+    h3bb_turn(&fx);
+
+    CU_ASSERT_EQUAL(stream->stream_state_recv, XQC_RECV_STREAM_ST_RESET_READ);
+    CU_ASSERT_EQUAL(fx.req[i].n_closing_notify, 0);
+    CU_ASSERT(xqc_list_empty(&fx.req[i].h3r->body_buf));
+
+    h3bb_teardown(&fx);
+}
+
+/* a GOAWAY that covers the request must not keep a closed request from
+ * being read: the GOAWAY branch would send STOP_SENDING and read nothing */
+void
+xqc_test_h3bb_close_goaway(void)
+{
+    int variant;
+
+    for (variant = 0; variant < 2; variant++) {
+        h3bb_fx_t     fx;
+        int           i;
+        xqc_stream_t *stream;
+        int           closings;
+
+        i = h3bb_open_request(&fx, H3BB_LIMIT);
+        h3bb_set_conn_window(&fx, 128 * 1024);
+        stream = fx.req[i].stream;
+        h3bb_feed_headers(&fx, i);
+        h3bb_feed_data(&fx, i, 100000, 1400, variant == 0);
+        h3bb_read(&fx, i);
+        CU_ASSERT_FATAL(fx.req[i].h3s->flags
+                        & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+        if (variant == 1) {
+            h3bb_process_reset(&fx, i, h3bb_fed(&fx, i), 0, 0);
+        }
+
+        fx.h3c->flags |= XQC_H3_CONN_FLAG_GOAWAY_RECVD;
+        fx.h3c->goaway_stream_id = stream->stream_id;
+        CU_ASSERT(xqc_h3_conn_is_goaway_recved(fx.h3c, stream->stream_id));
+        /* the RESET itself was delivered while the request was open */
+        closings = fx.req[i].n_closing_notify;
+
+        CU_ASSERT_EQUAL(xqc_h3_request_close(fx.req[i].h3r), XQC_OK);
+        h3bb_turn(&fx);
+
+        CU_ASSERT(xqc_list_empty(&fx.req[i].h3r->body_buf));
+        CU_ASSERT_EQUAL(fx.req[i].h3r->body_buf_bytes, 0);
+        CU_ASSERT_EQUAL(fx.conn->conn_flow_ctl.fc_data_read,
+                        fx.conn->conn_flow_ctl.fc_data_recved);
+        CU_ASSERT_EQUAL(stream->stream_state_recv,
+                        variant == 0 ? XQC_RECV_STREAM_ST_DATA_READ
+                                     : XQC_RECV_STREAM_ST_RESET_READ);
+        CU_ASSERT_EQUAL(fx.req[i].n_closing_notify, closings);
+
+        h3bb_teardown(&fx);
+    }
+}
+
+/* a callback closes the connection after (re-)arming or closing a request:
+ * the walk still reaches that request in the same pass and must neither
+ * read it, nor notify, nor send credit */
+static int h3bb_conn_closed;
+static uint64_t h3bb_max_data_at_close;
+static uint64_t h3bb_offset_at_close;
+static int h3bb_resume_instead;
+static int h3bb_own;
+
+static void
+h3bb_test_arm_then_conn_close(h3bb_fx_t *fx, int idx)
+{
+    int victim = (!h3bb_own && idx == 0 && fx->n_req > 1) ? 1 : 0;
+
+    if (h3bb_conn_closed || fx->req[idx].h3r->body_buf_bytes == 0) {
+        return;
+    }
+    h3bb_conn_closed = 1;
+
+    if (h3bb_resume_instead) {
+        h3bb_drain(fx, victim);
+    } else {
+        if (victim == idx) {
+            h3bb_drain(fx, victim);
+        }
+        CU_ASSERT_EQUAL(xqc_h3_request_close(fx->req[victim].h3r), XQC_OK);
+    }
+    h3bb_offset_at_close =
+        fx->req[victim].stream->stream_data_in.next_read_offset;
+    h3bb_max_data_at_close = fx->conn->conn_flow_ctl.fc_max_data_can_recv;
+    CU_ASSERT_EQUAL(xqc_conn_close(fx->conn->engine,
+                                   &fx->conn->scid_set.user_scid), XQC_OK);
+}
+
+void
+xqc_test_h3bb_close_then_conn_close_in_callback(void)
+{
+    int variant;
+
+    /* 0: own request, closed; 1: sibling, closed; 2: sibling, resumed;
+     * 3, 4: own request resumed / closed, with a sibling in front of its
+     * re-queued position, so that the walk comes back to it */
+    for (variant = 0; variant < 5; variant++) {
+        h3bb_fx_t fx;
+        int       i, victim, notifies;
+
+        i = h3bb_open_request(&fx, H3BB_LIMIT);
+        victim = i;
+        h3bb_conn_closed = 0;
+        h3bb_resume_instead = (variant == 2 || variant == 3);
+        h3bb_own = (variant >= 3);
+
+        if (variant == 0) {
+            h3bb_feed_headers(&fx, i);
+            h3bb_feed_data(&fx, i, 100000, 1400, 0);
+            fx.req[i].on_notify = h3bb_test_arm_then_conn_close;
+            notifies = 0;
+            h3bb_read(&fx, i);
+
+        } else if (variant >= 3) {
+            int j = h3bb_add_request(&fx);
+
+            CU_ASSERT_EQUAL_FATAL(j, 1);
+            fx.req[j].stream->stream_flow_ctl.fc_max_stream_data_can_recv =
+                16 * 1024 * 1024;
+            fx.req[i].on_notify = h3bb_test_arm_then_conn_close;
+            h3bb_feed_headers(&fx, i);
+            h3bb_feed_data(&fx, i, 100000, 1400, 0);
+            h3bb_feed_headers(&fx, j);
+            h3bb_feed_data(&fx, j, 1000, 1000, 0);
+            notifies = 0;
+            h3bb_turn(&fx);
+
+        } else {
+            /* request 1 is paused and off the list, request 0 is armed
+             * ahead of it: the callback of 0 re-arms 1 behind itself */
+            victim = h3bb_add_request(&fx);
+            CU_ASSERT_EQUAL_FATAL(victim, 1);
+            fx.req[victim].stream->stream_flow_ctl.fc_max_stream_data_can_recv =
+                16 * 1024 * 1024;
+            h3bb_fill_to_limit(&fx, victim);
+            CU_ASSERT(fx.req[victim].h3s->flags
+                      & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+            notifies = fx.req[victim].n_read_notify;
+
+            fx.req[i].on_notify = h3bb_test_arm_then_conn_close;
+            h3bb_feed_headers(&fx, i);
+            h3bb_feed_data(&fx, i, 1000, 1000, 0);
+            h3bb_turn(&fx);
+        }
+
+        CU_ASSERT_EQUAL(h3bb_conn_closed, 1);
+        CU_ASSERT(xqc_conn_is_tearing_down(fx.conn));
+        CU_ASSERT_EQUAL(fx.req[victim].stream->stream_data_in.next_read_offset,
+                        h3bb_offset_at_close);
+        CU_ASSERT_EQUAL(fx.conn->conn_flow_ctl.fc_max_data_can_recv,
+                        h3bb_max_data_at_close);
+        if (variant == 1 || variant == 2) {
+            CU_ASSERT_EQUAL(fx.req[victim].n_read_notify, notifies);
+        }
+        CU_ASSERT_EQUAL(fx.req[victim].n_closing_notify, 0);
+
+        h3bb_teardown(&fx);
+    }
+}
+
+/* a close callback of the connection teardown closes a request that is not
+ * yet destroyed: nothing is written or queued, and both are destroyed */
+static int h3bb_teardown_closed;
+
+static void
+h3bb_test_close_sibling_on_close(h3bb_fx_t *fx, int idx)
+{
+    if (idx != 0) {
+        return;
+    }
+    CU_ASSERT_NOT_EQUAL(fx->conn->conn_flag & XQC_CONN_FLAG_DESTROYING, 0);
+    CU_ASSERT_EQUAL(xqc_h3_request_close(fx->req[1].h3r), XQC_OK);
+    CU_ASSERT(fx->req[1].h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED);
+    /* xqc_stream_close() would have written STOP_SENDING and queued the
+     * dying connection */
+    CU_ASSERT_EQUAL(fx->req[1].stream->stream_flag
+                    & XQC_STREAM_FLAG_STOP_SENDING_SENT, 0);
+    CU_ASSERT_EQUAL(fx->conn->conn_flag
+                    & (XQC_CONN_FLAG_TICKING | XQC_CONN_FLAG_WAIT_WAKEUP), 0);
+    h3bb_teardown_closed = 1;
+}
+
+void
+xqc_test_h3bb_teardown_close_sibling(void)
+{
+    h3bb_fx_t fx;
+    int       i, j;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    j = h3bb_add_request(&fx);
+    CU_ASSERT_EQUAL_FATAL(j, 1);
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_headers(&fx, j);
+    h3bb_turn(&fx);
+
+    fx.req[i].on_close = h3bb_test_close_sibling_on_close;
+    h3bb_teardown_closed = 0;
+    h3bb_teardown(&fx);
+
+    CU_ASSERT_EQUAL(h3bb_teardown_closed, 1);
+    CU_ASSERT_EQUAL(fx.req[i].n_close_notify, 1);
+    CU_ASSERT_EQUAL(fx.req[j].n_close_notify, 1);
+}
+
+/* F8, close half: without a limit the close is what it was */
+void
+xqc_test_h3bb_limit_zero_close_unchanged(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+    int       notifies;
+
+    i = h3bb_open_request(&fx, 0);
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 1000, 1000, 0);
+    h3bb_turn(&fx);
+    notifies = fx.req[i].n_read_notify;
+
+    h3bb_enter_pass(&fx);
+    CU_ASSERT_EQUAL(xqc_h3_request_close(fx.req[i].h3r), XQC_OK);
+    h3bb_leave_pass(&fx);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED);
+    CU_ASSERT(!xqc_h3_stream_in_discard(fx.req[i].h3s));
+
+    /* late DATA is parsed and delivered as before */
+    h3bb_feed_data(&fx, i, 1000, 1000, 0);
+    h3bb_turn(&fx);
+    CU_ASSERT(fx.req[i].n_read_notify > notifies);
+    CU_ASSERT(fx.req[i].h3r->body_buf_bytes > 0);
+
+    h3bb_teardown(&fx);
+}

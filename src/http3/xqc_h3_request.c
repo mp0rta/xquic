@@ -128,21 +128,51 @@ xqc_h3_request_destroy(xqc_h3_request_t *h3_request)
 xqc_int_t
 xqc_h3_request_close(xqc_h3_request_t *h3_request)
 {
-    xqc_connection_t *conn = h3_request->h3_stream->h3c->conn;
     xqc_h3_stream_t *h3s = h3_request->h3_stream;
+    xqc_connection_t *conn = h3s->h3c->conn;
+    xqc_stream_id_t stream_id = h3s->stream_id;
+    xqc_int_t ret;
 
-    xqc_int_t ret = xqc_h3_stream_close(h3_request->h3_stream);
+    /*
+     * With a body limit the closed request enters the discard state: its
+     * stream's own read turn reads and drops the rest. xqc_stream_close()
+     * below would requeue and run a connection that is being destroyed, and
+     * xqc_h3_stream_close() may free h3s, so nothing of it is touched after.
+     */
+    if (h3s->h3c->max_body_buf_per_stream > 0 && h3s->stream != NULL) {
+        h3s->flags |= XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED;
+        h3s->flags &= ~XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED;
+
+        if (xqc_conn_is_tearing_down(conn)) {
+            return XQC_OK;
+        }
+
+        /*
+         * A read turn is needed unless the receive side is finished, or
+         * this request's own read notify is running (it reads on its way
+         * out).
+         */
+        if (!(h3s->flags & (XQC_HTTP3_STREAM_IN_READING
+                            | XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY))
+            && h3s->stream->stream_state_recv != XQC_RECV_STREAM_ST_DATA_READ
+            && h3s->stream->stream_state_recv != XQC_RECV_STREAM_ST_RESET_READ)
+        {
+            xqc_h3_stream_ready_and_wake(h3s);
+        }
+    }
+
+    ret = xqc_h3_stream_close(h3s);
     if (ret) {
         xqc_log(conn->log, XQC_LOG_ERROR,
                 "|fail|ret:%d|stream_id:%ui|conn:%p|conn_state:%s|"
                 "flag:%s|",
-                ret, h3s->stream_id, conn, xqc_conn_state_2_str(conn->conn_state),
+                ret, stream_id, conn, xqc_conn_state_2_str(conn->conn_state),
                 xqc_conn_flag_2_str(conn, conn->conn_flag));
         return ret;
     }
 
     xqc_log(conn->log, XQC_LOG_DEBUG,
-            "|success|stream_id:%ui|conn:%p|conn_state:%s|flag:%s|", h3s->stream_id, conn,
+            "|success|stream_id:%ui|conn:%p|conn_state:%s|flag:%s|", stream_id, conn,
             xqc_conn_state_2_str(conn->conn_state),
             xqc_conn_flag_2_str(conn, conn->conn_flag));
 
@@ -947,7 +977,9 @@ xqc_h3_request_on_recv_header(xqc_h3_request_t *h3r)
     h3r->completed_header_count++;
 
     /* header notify callback */
-    if (h3r->request_if->h3_request_read_notify) {
+    if (h3r->request_if->h3_request_read_notify
+        && !xqc_h3_stream_in_discard(h3r->h3_stream))
+    {
         ret =
             h3r->request_if->h3_request_read_notify(h3r, h3r->read_flag, h3r->user_data);
         if (ret < 0) {
@@ -968,7 +1000,9 @@ xqc_h3_request_on_recv_body(xqc_h3_request_t *h3r)
     /* Note, the case of empty fin is already handled at another place. */
     if (!xqc_list_empty(&h3r->body_buf)) {
         h3r->read_flag |= XQC_REQ_NOTIFY_READ_BODY;
-        if (h3r->request_if->h3_request_read_notify) {
+        if (h3r->request_if->h3_request_read_notify
+            && !xqc_h3_stream_in_discard(h3r->h3_stream))
+        {
             xqc_int_t ret = h3r->request_if->h3_request_read_notify(h3r, h3r->read_flag,
                                                                     h3r->user_data);
             if (ret < 0) {
@@ -1007,7 +1041,9 @@ xqc_h3_request_on_recv_empty_fin(xqc_h3_request_t *h3r)
         return XQC_OK;
     }
 
-    if (h3r->request_if->h3_request_read_notify) {
+    if (h3r->request_if->h3_request_read_notify
+        && !xqc_h3_stream_in_discard(h3r->h3_stream))
+    {
         /* if all header and content were received by application, notify empty fin */
         ret = h3r->request_if->h3_request_read_notify(h3r, XQC_REQ_NOTIFY_READ_EMPTY_FIN,
                                                       h3r->user_data);
@@ -1118,7 +1154,9 @@ xqc_h3_request_end(xqc_h3_request_t *h3r)
 void
 xqc_h3_request_closing(xqc_h3_request_t *h3r, xqc_int_t err)
 {
-    if (h3r->request_if->h3_request_closing_notify) {
+    if (h3r->request_if->h3_request_closing_notify
+        && !xqc_h3_stream_in_discard(h3r->h3_stream))
+    {
         h3r->request_if->h3_request_closing_notify(h3r, err, h3r->user_data);
     }
 }
