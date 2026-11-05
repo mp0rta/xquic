@@ -1,0 +1,480 @@
+/**
+ * @copyright Copyright (c) 2022, Alibaba Group Holding Limited
+ */
+
+/*
+ * Tests for conn_settings.max_body_buf_per_stream, the bound on HTTP/3 DATA
+ * payload buffered per request stream. The h3bb_* fixture drives the real
+ * HTTP/3 stack on a connection built by test_engine_connect(): request
+ * streams are fed as transport STREAM frames and read by the engine's own
+ * read pass, so tests see the same ordering production code does.
+ */
+
+#include <CUnit/CUnit.h>
+#include <string.h>
+#include "xquic/xquic.h"
+#include "xquic/xqc_errno.h"
+#include "src/http3/xqc_h3_conn.h"
+#include "src/http3/xqc_h3_stream.h"
+#include "src/http3/xqc_h3_request.h"
+#include "src/transport/xqc_stream.h"
+#include "src/transport/xqc_conn.h"
+#include "src/transport/xqc_engine.h"
+#include "src/transport/xqc_frame.h"
+#include "src/transport/xqc_timer.h"
+#include "src/common/xqc_time.h"
+#include "xqc_common_test.h"
+#include "xqc_h3_body_buf_test.h"
+
+#define H3BB_MAX_REQ    8
+#define H3BB_CHUNK      1200
+
+typedef struct h3bb_fx_s h3bb_fx_t;
+
+typedef struct {
+    h3bb_fx_t        *fx;
+    xqc_stream_t     *stream;
+    xqc_h3_stream_t  *h3s;
+    xqc_h3_request_t *h3r;
+    uint64_t          offset;           /* next transport offset to feed */
+    int               n_read_notify;
+    int               n_closing_notify;
+    int               n_close_notify;
+    size_t            bytes_delivered;  /* bytes the application collected */
+    int               drain_in_notify;  /* collect the whole body in notify */
+    void            (*on_notify)(h3bb_fx_t *fx, int idx);
+} h3bb_req_t;
+
+struct h3bb_fx_s {
+    xqc_connection_t *conn;
+    xqc_h3_conn_t    *h3c;
+    h3bb_req_t        req[H3BB_MAX_REQ];
+    int               n_req;
+    int               n_wake;           /* engine set_event_timer calls */
+    xqc_usec_t        last_wake_us;
+    xqc_engine_t     *srv_engine;       /* server-type fixtures only */
+};
+
+/* RFC 9114 Section 7.2.1: DATA frame; the HEADERS frame is a minimal valid
+ * field section (see xqc_h3_test.c). */
+static const uint8_t h3bb_valid_headers[] = {0x01, 0x03, 0x00, 0x00, 0xC0};
+
+
+static void
+h3bb_set_event_timer(xqc_usec_t wake_after, void *engine_user_data)
+{
+    h3bb_fx_t *fx = (h3bb_fx_t *)engine_user_data;
+
+    fx->n_wake++;
+    fx->last_wake_us = wake_after;
+}
+
+static int
+h3bb_read_notify(xqc_h3_request_t *h3r, xqc_request_notify_flag_t flag,
+    void *user_data)
+{
+    h3bb_req_t *rq = (h3bb_req_t *)user_data;
+    h3bb_fx_t  *fx = rq->fx;
+    int         idx = (int)(rq - fx->req);
+    unsigned char buf[16 * 1024];
+    uint8_t     fin;
+    ssize_t     n;
+
+    rq->n_read_notify++;
+
+    if (rq->drain_in_notify && (flag & XQC_REQ_NOTIFY_READ_BODY)) {
+        do {
+            fin = 0;
+            n = xqc_h3_request_recv_body(h3r, buf, sizeof(buf), &fin);
+            if (n > 0) {
+                rq->bytes_delivered += (size_t)n;
+            }
+        } while (n > 0);
+    }
+
+    if (rq->on_notify) {
+        rq->on_notify(fx, idx);
+    }
+    return 0;
+}
+
+static void
+h3bb_closing_notify(xqc_h3_request_t *h3r, xqc_int_t err, void *user_data)
+{
+    ((h3bb_req_t *)user_data)->n_closing_notify++;
+}
+
+static int
+h3bb_close_notify(xqc_h3_request_t *h3r, void *user_data)
+{
+    ((h3bb_req_t *)user_data)->n_close_notify++;
+    return 0;
+}
+
+/*
+ * A connection that is an H3 connection the way the engine makes one: ALPN
+ * h3, the H3 connection and stream callbacks, the setting under test, an
+ * established state, and the control and QPACK streams. type selects which
+ * way max_body_buf_per_stream reaches the connection: a client takes
+ * `limit` straight from its settings; a server takes it from its engine's
+ * defaults, set through xqc_server_set_conn_settings().
+ */
+int
+h3bb_setup(h3bb_fx_t *fx, size_t limit, xqc_conn_type_t type)
+{
+    xqc_connection_t *conn;
+
+    memset(fx, 0, sizeof(*fx));
+
+    conn = test_engine_connect();
+    if (conn == NULL) {
+        return -1;
+    }
+
+    if (type == XQC_CONN_TYPE_SERVER) {
+        /* a server connection takes its settings from the engine defaults
+         * (xqc_conn_create copies them); the connection is the client-built
+         * one, which carries a usable TLS state, relabelled as a server's */
+        xqc_conn_settings_t s;
+
+        fx->srv_engine = test_create_engine_server();
+        if (fx->srv_engine == NULL) {
+            return -1;
+        }
+        memset(&s, 0, sizeof(s));
+        s.max_body_buf_per_stream = limit;
+        xqc_server_set_conn_settings(fx->srv_engine, &s);
+        conn->conn_settings = fx->srv_engine->default_conn_settings;
+        conn->conn_type = XQC_CONN_TYPE_SERVER;
+
+    } else {
+        conn->conn_settings.max_body_buf_per_stream = limit;
+    }
+
+    fx->conn = conn;
+
+    if (conn->alpn) {
+        xqc_free(conn->alpn);
+    }
+    conn->alpn_len = strlen(XQC_ALPN_H3);
+    conn->alpn = xqc_calloc(1, conn->alpn_len + 1);
+    xqc_memcpy(conn->alpn, XQC_ALPN_H3, conn->alpn_len);
+
+    conn->app_proto_cbs.conn_cbs = h3_conn_callbacks;
+    conn->app_proto_cbs.stream_cbs = h3_stream_callbacks;
+
+    conn->conn_state = XQC_CONN_STATE_ESTABED;
+    conn->conn_flag |= XQC_CONN_FLAG_CAN_SEND_1RTT;
+    conn->conn_flow_ctl.fc_max_streams_bidi_can_send = 1024;
+    conn->conn_flow_ctl.fc_max_streams_uni_can_send = 1024;
+
+    conn->engine->eng_callback.set_event_timer = h3bb_set_event_timer;
+    conn->engine->user_data = fx;
+
+    if (h3_conn_callbacks.conn_create_notify(conn, NULL, NULL, NULL) != XQC_OK) {
+        return -1;
+    }
+    conn->conn_flag |= XQC_CONN_FLAG_UPPER_CONN_EXIST;
+
+    fx->h3c = (xqc_h3_conn_t *)conn->proto_data;
+    if (fx->h3c == NULL) {
+        return -1;
+    }
+
+    fx->h3c->h3_request_callbacks.h3_request_read_notify = h3bb_read_notify;
+    fx->h3c->h3_request_callbacks.h3_request_closing_notify =
+        h3bb_closing_notify;
+    fx->h3c->h3_request_callbacks.h3_request_close_notify = h3bb_close_notify;
+    return 0;
+}
+
+/* a consistent connection window and the credit advertised for it */
+void
+h3bb_set_conn_window(h3bb_fx_t *fx, uint64_t w)
+{
+    xqc_conn_flow_ctl_t *fc = &fx->conn->conn_flow_ctl;
+
+    fc->fc_recv_windows_size = w;
+    fc->fc_max_data_can_recv = fc->fc_data_read + w;
+}
+
+/* a new client bidi request, wired to the real H3 stream and request */
+int
+h3bb_add_request(h3bb_fx_t *fx)
+{
+    h3bb_req_t *rq;
+    int         idx = fx->n_req;
+
+    if (idx >= H3BB_MAX_REQ) {
+        return -1;
+    }
+    rq = &fx->req[idx];
+    rq->fx = fx;
+
+    rq->stream = xqc_create_stream_with_conn(fx->conn, XQC_UNDEFINE_STREAM_ID,
+                                             XQC_CLI_BID, NULL, NULL);
+    if (rq->stream == NULL) {
+        return -1;
+    }
+
+    rq->h3s = xqc_h3_stream_create(fx->h3c, rq->stream,
+                                   XQC_H3_STREAM_TYPE_REQUEST, NULL);
+    if (rq->h3s == NULL) {
+        return -1;
+    }
+
+    rq->h3r = xqc_h3_request_create_inner(fx->h3c, rq->h3s, rq);
+    if (rq->h3r == NULL) {
+        return -1;
+    }
+
+    fx->n_req++;
+    return idx;
+}
+
+uint64_t
+h3bb_conn_credit_left(const h3bb_fx_t *fx)
+{
+    return fx->conn->conn_flow_ctl.fc_max_data_can_recv
+           - fx->conn->conn_flow_ctl.fc_data_recved;
+}
+
+/*
+ * Hand `len` bytes to the request's transport stream as STREAM frames of at
+ * most H3BB_CHUNK bytes at the stream's current receive offset, with the
+ * receive accounting xqc_process_stream_frame() does, after the two flow
+ * control checks it makes first (RFC 9000 Section 4.1).
+ */
+void
+h3bb_feed(h3bb_fx_t *fx, int idx, const uint8_t *h3, size_t len, int fin)
+{
+    h3bb_req_t          *rq = &fx->req[idx];
+    xqc_stream_t        *stream = rq->stream;
+    xqc_connection_t    *conn = fx->conn;
+    xqc_stream_data_in_t *in = &stream->stream_data_in;
+    size_t               done = 0;
+
+    do {
+        size_t              n = len - done > H3BB_CHUNK ? H3BB_CHUNK
+                                                        : len - done;
+        int                 last = (done + n == len);
+        uint64_t            end = rq->offset + n;
+        uint64_t            ext = end > stream->stream_max_recv_offset
+                                  ? end - stream->stream_max_recv_offset : 0;
+        xqc_stream_frame_t *f;
+        xqc_int_t           ret;
+
+        CU_ASSERT_FATAL(end <= stream->stream_flow_ctl
+                                     .fc_max_stream_data_can_recv);
+        CU_ASSERT_FATAL(conn->conn_flow_ctl.fc_data_recved + ext
+                        <= conn->conn_flow_ctl.fc_max_data_can_recv);
+
+        f = xqc_calloc(1, sizeof(xqc_stream_frame_t));
+        f->data_offset = rq->offset;
+        f->data_length = n;
+        f->fin = (fin && last) ? 1 : 0;
+        f->data = xqc_malloc(n ? n : 1);
+        if (n) {
+            memcpy(f->data, h3 + done, n);
+        }
+
+        if (f->fin) {
+            in->stream_length = end;
+            in->stream_determined = XQC_TRUE;
+            if (stream->stream_state_recv == XQC_RECV_STREAM_ST_RECV) {
+                xqc_stream_recv_state_update(stream,
+                                             XQC_RECV_STREAM_ST_SIZE_KNOWN);
+            }
+        }
+
+        ret = xqc_insert_stream_frame(conn, stream, f);
+        CU_ASSERT_EQUAL_FATAL(ret, XQC_OK);
+
+        conn->conn_flow_ctl.fc_data_recved += ext;
+        if (ext) {
+            stream->stream_max_recv_offset = end;
+        }
+        rq->offset = end;
+        done += n;
+
+        if (in->stream_determined && in->stream_length == in->merged_offset_end) {
+            if (stream->stream_state_recv == XQC_RECV_STREAM_ST_SIZE_KNOWN) {
+                xqc_stream_recv_state_update(stream,
+                                             XQC_RECV_STREAM_ST_DATA_RECVD);
+            }
+            xqc_stream_ready_to_read(stream);
+
+        } else if (in->next_read_offset < in->merged_offset_end) {
+            xqc_stream_ready_to_read(stream);
+        }
+    } while (done < len);
+}
+
+void
+h3bb_feed_headers(h3bb_fx_t *fx, int idx)
+{
+    h3bb_feed(fx, idx, h3bb_valid_headers, sizeof(h3bb_valid_headers), 0);
+}
+
+/* H3 DATA frames of `frame_payload` bytes (pattern 0xa5) until
+ * `payload_len` bytes are fed, packed into transport chunks */
+void
+h3bb_feed_data(h3bb_fx_t *fx, int idx, size_t payload_len,
+    size_t frame_payload, int fin)
+{
+    uint8_t *buf;
+    size_t   cap = payload_len / frame_payload * (frame_payload + 5) + 2 * frame_payload + 16;
+    size_t   n = 0;
+
+    buf = xqc_malloc(cap);
+    while (payload_len > 0) {
+        size_t p = payload_len < frame_payload ? payload_len : frame_payload;
+
+        buf[n++] = 0x00;                                /* DATA */
+        if (p < 64) {
+            buf[n++] = (uint8_t)p;
+        } else if (p < 16384) {
+            buf[n++] = (uint8_t)(0x40 | (p >> 8));
+            buf[n++] = (uint8_t)(p & 0xff);
+        } else {
+            buf[n++] = (uint8_t)(0x80 | (p >> 24));
+            buf[n++] = (uint8_t)(p >> 16);
+            buf[n++] = (uint8_t)(p >> 8);
+            buf[n++] = (uint8_t)p;
+        }
+        memset(buf + n, 0xa5, p);
+        n += p;
+        payload_len -= p;
+    }
+
+    h3bb_feed(fx, idx, buf, n, fin);
+    xqc_free(buf);
+}
+
+size_t
+h3bb_fed(const h3bb_fx_t *fx, int idx)
+{
+    return (size_t)fx->req[idx].offset;
+}
+
+/* one direct read turn of the request's own stream */
+int
+h3bb_read(h3bb_fx_t *fx, int idx)
+{
+    h3bb_req_t *rq = &fx->req[idx];
+
+    return h3_stream_callbacks.stream_read_notify(rq->stream, rq->h3s);
+}
+
+/* one emulated engine pass in production order: due timers first, then the
+ * connection's read list; a timer armed during the pass fires in the next */
+void
+h3bb_turn(h3bb_fx_t *fx)
+{
+    xqc_engine_t *engine = fx->conn->engine;
+
+    engine->eng_flag |= XQC_ENG_FLAG_RUNNING;
+    xqc_timer_expire(&fx->conn->conn_timer_manager, xqc_monotonic_timestamp());
+    xqc_process_read_streams(fx->conn);
+    engine->eng_flag &= ~XQC_ENG_FLAG_RUNNING;
+}
+
+/* the production path: the engine pops the connection from its queues and
+ * destroys it, which runs the H3 connection teardown */
+void
+h3bb_teardown(h3bb_fx_t *fx)
+{
+    xqc_engine_destroy(fx->conn->engine);
+    xqc_engine_destroy(fx->srv_engine);
+    fx->conn = NULL;
+    fx->h3c = NULL;
+}
+
+
+/* the limit reaches the H3 connection from client settings and, through the
+ * engine defaults, from server settings (xqc_conn_create copies them) */
+void
+xqc_test_h3bb_settings_propagate(void)
+{
+    h3bb_fx_t           fx;
+    xqc_engine_t       *engine;
+    xqc_conn_settings_t s;
+
+    engine = test_create_engine_server();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(engine);
+    memset(&s, 0, sizeof(s));
+    s.max_body_buf_per_stream = 64 * 1024;
+    xqc_server_set_conn_settings(engine, &s);
+    CU_ASSERT_EQUAL(engine->default_conn_settings.max_body_buf_per_stream,
+                    64 * 1024);
+    xqc_engine_destroy(engine);
+
+    CU_ASSERT_EQUAL_FATAL(h3bb_setup(&fx, 64 * 1024, XQC_CONN_TYPE_SERVER), 0);
+    CU_ASSERT_EQUAL(fx.srv_engine->default_conn_settings
+                        .max_body_buf_per_stream, 64 * 1024);
+    CU_ASSERT_EQUAL(fx.conn->conn_settings.max_body_buf_per_stream, 64 * 1024);
+    CU_ASSERT_EQUAL(fx.h3c->max_body_buf_per_stream, 64 * 1024);
+    h3bb_teardown(&fx);
+
+    CU_ASSERT_EQUAL_FATAL(h3bb_setup(&fx, 0, XQC_CONN_TYPE_SERVER), 0);
+    CU_ASSERT_EQUAL(fx.h3c->max_body_buf_per_stream, 0);
+    h3bb_teardown(&fx);
+
+    CU_ASSERT_EQUAL_FATAL(h3bb_setup(&fx, 32768, XQC_CONN_TYPE_CLIENT), 0);
+    CU_ASSERT_EQUAL(fx.h3c->max_body_buf_per_stream, 32768);
+    h3bb_teardown(&fx);
+}
+
+/* limit 0: one read turn takes everything the transport holds and leaves
+ * the pause bit down */
+void
+xqc_test_h3bb_limit_zero_reads_all(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    CU_ASSERT_EQUAL_FATAL(h3bb_setup(&fx, 0, XQC_CONN_TYPE_CLIENT), 0);
+    h3bb_set_conn_window(&fx, 16 * 1024 * 1024);
+    i = h3bb_add_request(&fx);
+    CU_ASSERT_EQUAL_FATAL(i, 0);
+    fx.req[i].stream->stream_flow_ctl.fc_max_stream_data_can_recv =
+        16 * 1024 * 1024;
+    fx.req[i].drain_in_notify = 0;
+
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 256 * 1024, 1000, 0);
+
+    h3bb_read(&fx, i);
+    CU_ASSERT_EQUAL(fx.req[i].stream->stream_data_in.next_read_offset,
+                    h3bb_fed(&fx, i));
+    /* body-buffer pause bit */
+    CU_ASSERT_EQUAL(fx.req[i].h3s->flags & 0x4000, 0);
+
+    h3bb_teardown(&fx);
+}
+
+/* the fixture itself: the H3 callbacks are wired, the engine pass reads, and
+ * teardown runs the H3 connection close */
+void
+xqc_test_h3bb_fixture_engine_turn(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    CU_ASSERT_EQUAL_FATAL(h3bb_setup(&fx, 0, XQC_CONN_TYPE_CLIENT), 0);
+    h3bb_set_conn_window(&fx, 16 * 1024 * 1024);
+    i = h3bb_add_request(&fx);
+    CU_ASSERT_EQUAL_FATAL(i, 0);
+
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 4096, 1000, 0);
+
+    h3bb_turn(&fx);
+    CU_ASSERT(fx.req[i].n_read_notify >= 1);
+    CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
+
+    h3bb_teardown(&fx);
+    for (i = 0; i < fx.n_req; i++) {
+        CU_ASSERT_EQUAL(fx.req[i].n_close_notify, 1);
+    }
+}

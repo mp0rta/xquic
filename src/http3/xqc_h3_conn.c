@@ -540,6 +540,7 @@ xqc_h3_conn_create(xqc_connection_t *conn, void *user_data)
     /* read effective blocked buffer limits (already computed in xqc_server_set_conn_settings) */
     h3c->max_blocked_buf_per_stream = conn->conn_settings.max_blocked_buf_per_stream;
     h3c->max_blocked_buf_per_conn = conn->conn_settings.max_blocked_buf_per_conn;
+    h3c->max_body_buf_per_stream = conn->conn_settings.max_body_buf_per_stream;
     xqc_log(h3c->log, XQC_LOG_DEBUG, "|blocked_buf_limits|per_stream:%uz|per_conn:%uz|",
             h3c->max_blocked_buf_per_stream, h3c->max_blocked_buf_per_conn);
 

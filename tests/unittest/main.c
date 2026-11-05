@@ -35,6 +35,7 @@
 #include "xqc_tls_test.h"
 #include "xqc_crypto_test.h"
 #include "xqc_h3_test.h"
+#include "xqc_h3_body_buf_test.h"
 #include "xqc_hq_test.h"
 #include "xqc_stable_test.h"
 #include "xqc_dtable_test.h"
@@ -1196,6 +1197,9 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_applimit_pacer_restart_credit", xqc_test_applimit_pacer_restart_credit)
         || !CU_add_test(pSuite, "xqc_test_applimit_pacer_restart_back_to_back", xqc_test_applimit_pacer_restart_back_to_back)
         || !CU_add_test(pSuite, "xqc_test_applimit_pacer_restart_write_patterns", xqc_test_applimit_pacer_restart_write_patterns)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_settings_propagate", xqc_test_h3bb_settings_propagate)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_limit_zero_reads_all", xqc_test_h3bb_limit_zero_reads_all)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_fixture_engine_turn", xqc_test_h3bb_fixture_engine_turn)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();

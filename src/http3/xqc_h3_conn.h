@@ -114,6 +114,9 @@ typedef struct xqc_h3_conn_s {
     size_t                       max_blocked_buf_per_stream;       /* effective limit per stream */
     size_t                       max_blocked_buf_per_conn;         /* effective limit per connection */
 
+    /* 0: unbounded; else cap on unread body bytes held per request stream */
+    size_t                       max_body_buf_per_stream;
+
     /* blocked buffer monitoring */
     size_t                       total_blocked_buf_size;           /* current total blocked buffer size */
 
