@@ -800,6 +800,13 @@ xqc_h3_request_recv_body(xqc_h3_request_t *h3_request, unsigned char *recv_buf,
         h3_request->read_flag &= ~XQC_REQ_NOTIFY_READ_BODY;
     }
 
+    if ((h3_request->h3_stream->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED)
+        && h3_request->body_buf_bytes
+           <= XQC_H3_BODY_BUF_LOW_WATER(h3_request->h3_stream->h3c->max_body_buf_per_stream))
+    {
+        xqc_h3_stream_body_buf_resume(h3_request->h3_stream);
+    }
+
     h3_request->body_recvd += n_recv;
     if (h3_request->body_buf_count == 0) {
         *fin = h3_request->fin_flag;

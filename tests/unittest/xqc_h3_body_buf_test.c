@@ -838,3 +838,196 @@ xqc_test_h3bb_body_bytes_accounting(void)
 
     h3bb_teardown(&fx);
 }
+
+/* take everything the application can see out of the request's body buffer */
+static size_t
+h3bb_drain(h3bb_fx_t *fx, int idx)
+{
+    unsigned char buf[16 * 1024];
+    uint8_t       fin;
+    ssize_t       n;
+    size_t        total = 0;
+
+    do {
+        fin = 0;
+        n = xqc_h3_request_recv_body(fx->req[idx].h3r, buf, sizeof(buf), &fin);
+        if (n > 0) {
+            total += (size_t)n;
+        }
+    } while (n > 0);
+    fx->req[idx].bytes_delivered += total;
+    return total;
+}
+
+/* F3a: a drain inside the body notify is followed by more reading in the same
+ * engine pass, until the transport is empty */
+void
+xqc_test_h3bb_resume_in_body_notify(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    fx.req[i].drain_in_notify = 1;
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 256 * 1024, 1400, 0);
+
+    h3bb_read(&fx, i);
+
+    CU_ASSERT_EQUAL(fx.req[i].bytes_delivered, 256 * 1024);
+    CU_ASSERT_EQUAL(fx.req[i].h3s->flags
+                    & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED, 0);
+    CU_ASSERT_EQUAL(fx.req[i].h3s->flags
+                    & XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY, 0);
+
+    h3bb_teardown(&fx);
+}
+
+/* F3b: a drain elsewhere inside the engine leaves a due timer, and the next
+ * pass reads the stream on */
+void
+xqc_test_h3bb_resume_in_engine_elsewhere(void)
+{
+    h3bb_fx_t   fx;
+    int         i;
+    uint64_t    off;
+    xqc_bool_t  is_set = XQC_FALSE;
+    xqc_usec_t  expire = 0;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_fill_to_limit(&fx, i);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+    off = fx.req[i].stream->stream_data_in.next_read_offset;
+    CU_ASSERT(fx.h3c->body_buf_revisit_timer < 0);
+
+    fx.conn->engine->eng_flag |= XQC_ENG_FLAG_RUNNING;
+    CU_ASSERT(h3bb_drain(&fx, i) > 0);
+    fx.conn->engine->eng_flag &= ~XQC_ENG_FLAG_RUNNING;
+
+    CU_ASSERT_EQUAL(fx.req[i].h3s->flags
+                    & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED, 0);
+    CU_ASSERT_FATAL(fx.h3c->body_buf_revisit_timer >= 0);
+    CU_ASSERT_EQUAL(xqc_conn_gp_timer_get_info(fx.conn,
+                        fx.h3c->body_buf_revisit_timer, &is_set, &expire),
+                    XQC_OK);
+    CU_ASSERT(is_set);
+    CU_ASSERT(expire <= xqc_monotonic_timestamp());
+
+    h3bb_turn(&fx);
+    CU_ASSERT(fx.req[i].stream->stream_data_in.next_read_offset > off);
+
+    h3bb_teardown(&fx);
+}
+
+/* F3c: a drain outside the engine fires the app's event timer at once and
+ * queues the connection */
+void
+xqc_test_h3bb_resume_outside_engine(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+    int       wakes;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_fill_to_limit(&fx, i);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+    wakes = fx.n_wake;
+
+    CU_ASSERT(h3bb_drain(&fx, i) > 0);
+
+    CU_ASSERT(fx.n_wake > wakes);
+    CU_ASSERT(fx.last_wake_us <= 1);
+    CU_ASSERT_NOT_EQUAL(fx.conn->conn_flag & XQC_CONN_FLAG_TICKING, 0);
+    CU_ASSERT(fx.req[i].stream->stream_flag & XQC_STREAM_FLAG_READY_TO_READ);
+    CU_ASSERT(fx.h3c->body_buf_revisit_timer < 0);
+
+    h3bb_turn(&fx);
+    h3bb_teardown(&fx);
+}
+
+/* F3d: the notify drains the request and closes the connection: the read-on
+ * loop must not read again */
+static uint64_t h3bb_off_after_first_drain;
+static int      h3bb_close_done;
+
+static void
+h3bb_test_drain_then_close(h3bb_fx_t *fx, int idx)
+{
+    if (h3bb_close_done || !(fx->req[idx].h3s->flags
+                             & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED))
+    {
+        return;
+    }
+    h3bb_close_done = 1;
+    h3bb_drain(fx, idx);
+    h3bb_off_after_first_drain =
+        fx->req[idx].stream->stream_data_in.next_read_offset;
+    CU_ASSERT_EQUAL(xqc_conn_close(fx->conn->engine,
+                                   &fx->conn->scid_set.user_scid), XQC_OK);
+}
+
+void
+xqc_test_h3bb_resume_loop_stops_on_conn_close(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    fx.req[i].on_notify = h3bb_test_drain_then_close;
+    h3bb_close_done = 0;
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 256 * 1024, 1400, 0);
+
+    h3bb_read(&fx, i);
+
+    CU_ASSERT_EQUAL(h3bb_close_done, 1);
+    CU_ASSERT(xqc_conn_is_tearing_down(fx.conn));
+    CU_ASSERT_EQUAL(fx.req[i].stream->stream_data_in.next_read_offset,
+                    h3bb_off_after_first_drain);
+
+    h3bb_teardown(&fx);
+}
+
+/* F11: while the connection is destroyed, a drain from a close callback does
+ * not queue the connection or arm the timer */
+static int h3bb_destroy_checked;
+static int h3bb_destroy_wakes;
+
+static void
+h3bb_test_drain_in_close(h3bb_fx_t *fx, int idx)
+{
+    if (idx != 0) {
+        return;
+    }
+    CU_ASSERT_NOT_EQUAL(fx->conn->conn_flag & XQC_CONN_FLAG_DESTROYING, 0);
+    CU_ASSERT(h3bb_drain(fx, 1) > 0);
+    CU_ASSERT(!(fx->req[1].stream->stream_flag & XQC_STREAM_FLAG_READY_TO_READ));
+    CU_ASSERT_EQUAL(fx->n_wake, h3bb_destroy_wakes);
+    CU_ASSERT(fx->h3c->body_buf_revisit_timer < 0);
+    h3bb_destroy_checked = 1;
+}
+
+void
+xqc_test_h3bb_resume_during_destroy_not_queued(void)
+{
+    h3bb_fx_t fx;
+    int       i, j;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    j = h3bb_add_request(&fx);
+    CU_ASSERT_EQUAL_FATAL(j, 1);
+    fx.req[j].stream->stream_flow_ctl.fc_max_stream_data_can_recv =
+        16 * 1024 * 1024;
+    h3bb_fill_to_limit(&fx, j);
+    CU_ASSERT(fx.req[j].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+
+    fx.req[i].on_close = h3bb_test_drain_in_close;
+    h3bb_destroy_checked = 0;
+    h3bb_destroy_wakes = fx.n_wake;
+
+    h3bb_teardown(&fx);
+
+    CU_ASSERT_EQUAL(h3bb_destroy_checked, 1);
+    CU_ASSERT_EQUAL(fx.req[i].n_close_notify, 1);
+    CU_ASSERT_EQUAL(fx.req[j].n_close_notify, 1);
+}

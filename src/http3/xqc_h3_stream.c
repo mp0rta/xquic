@@ -2047,6 +2047,39 @@ xqc_h3_stream_body_buf_pause(xqc_h3_stream_t *h3s, xqc_bool_t read_called)
     }
 }
 
+/*
+ * Called once the application drained a paused request to the low-water
+ * mark. The engine must read the stream again, wherever the drain ran:
+ * inside this request's own body notify the read loop there reads on;
+ * elsewhere in the engine the read list walk may be past this stream and
+ * the active queue refuses a connection being processed, so a due timer
+ * brings the connection back; outside the engine the app's event timer is
+ * fired at once.
+ */
+void
+xqc_h3_stream_body_buf_resume(xqc_h3_stream_t *h3s)
+{
+    xqc_h3_conn_t *h3c = h3s->h3c;
+    xqc_engine_t  *engine = h3c->conn->engine;
+
+    h3s->flags &= ~XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED;
+
+    if (h3s->stream == NULL || (h3s->flags & XQC_HTTP3_STREAM_FLAG_READ_EOF)
+        || xqc_conn_is_tearing_down(h3c->conn))
+    {
+        return;
+    }
+
+    xqc_stream_ready_to_read(h3s->stream);
+
+    if (!(engine->eng_flag & XQC_ENG_FLAG_RUNNING)) {
+        xqc_engine_wakeup_once(engine);
+
+    } else if (!(h3s->flags & XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY)) {
+        xqc_h3_conn_body_buf_revisit(h3c);
+    }
+}
+
 xqc_int_t
 xqc_h3_stream_process_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s, xqc_bool_t *fin)
 {
@@ -2351,11 +2384,41 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
         if (h3s->type == XQC_H3_STREAM_TYPE_REQUEST &&
             !xqc_list_empty(&h3s->h3r->body_buf)) {
             /* notify DATA whenever there is data */
-            ret = xqc_h3_request_on_recv_body(h3s->h3r);
-            if (ret != XQC_OK) {
-                xqc_log(h3s->log, XQC_LOG_ERROR, "|recv body error|%d|", ret);
-                return ret;
-            }
+            do {
+                xqc_bool_t was_paused =
+                    (h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED) != 0;
+
+                h3s->flags |= XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY;
+                ret = xqc_h3_request_on_recv_body(h3s->h3r);
+                h3s->flags &= ~XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY;
+                if (ret != XQC_OK) {
+                    xqc_log(h3s->log, XQC_LOG_ERROR, "|recv body error|%d|", ret);
+                    return ret;
+                }
+
+                /* the callback resumed the request: read on in this turn,
+                 * unless it closed the request or the connection */
+                if (!was_paused
+                    || (h3s->flags & (XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED
+                                      | XQC_HTTP3_STREAM_FLAG_CLOSED
+                                      | XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED))
+                    || h3s->stream == NULL || h3s->h3r == NULL
+                    || xqc_conn_is_tearing_down(h3c->conn))
+                {
+                    break;
+                }
+
+                h3s->flags |= XQC_HTTP3_STREAM_IN_READING;
+                ret = xqc_h3_stream_process_data(stream, h3s, &fin);
+                h3s->flags &= ~XQC_HTTP3_STREAM_IN_READING;
+                if (ret == -XQC_H3_STREAM_RECV_ERROR) {
+                    return XQC_OK;
+                } else if (ret != XQC_OK) {
+                    xqc_log(h3c->log, XQC_LOG_ERROR,
+                            "|xqc_h3_stream_process_data error|%d|", ret);
+                    return ret;
+                }
+            } while (!xqc_list_empty(&h3s->h3r->body_buf));
         }
 
         /* TODO: BYTESTRAM: notify DATA to application ASAP */

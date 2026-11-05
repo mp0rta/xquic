@@ -117,6 +117,10 @@ typedef struct xqc_h3_conn_s {
     /* 0: unbounded; else cap on unread body bytes held per request stream */
     size_t                       max_body_buf_per_stream;
 
+    /* gp timer that makes the engine process this connection again once a
+     * paused request was resumed from inside the engine; -1 until needed */
+    xqc_gp_timer_id_t            body_buf_revisit_timer;
+
     /* blocked buffer monitoring */
     size_t                       total_blocked_buf_size;           /* current total blocked buffer size */
 
@@ -134,6 +138,9 @@ extern const xqc_conn_callbacks_t h3_conn_callbacks;
  */
 xqc_h3_conn_t *xqc_h3_conn_create(xqc_connection_t *conn, void *user_data);
 void xqc_h3_conn_destroy(xqc_h3_conn_t *h3c);
+
+/* make the engine process this connection again right after the current pass */
+void xqc_h3_conn_body_buf_revisit(xqc_h3_conn_t *h3c);
 xqc_h3_stream_t *xqc_h3_conn_create_uni_stream(xqc_h3_conn_t *h3c,
     xqc_h3_stream_type_t h3s_type);
 

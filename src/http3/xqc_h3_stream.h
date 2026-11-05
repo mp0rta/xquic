@@ -85,9 +85,11 @@ typedef enum {
        request was paused because the buffered body reached
        max_body_buf_per_stream. */
     XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED = 0x4000,
+    /* the request's own body notify is running (read notify) */
+    XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY = 0x8000,
 } xqc_h3_stream_flag;
 
-/* resume once the buffered body is below a quarter of the limit */
+/* resume once the buffered body is at or below a quarter of the limit */
 #define XQC_H3_BODY_BUF_LOW_WATER(limit)    ((limit) / 4)
 
 /* capacity of a node that coalesces small DATA payloads */
@@ -223,6 +225,10 @@ xqc_int_t xqc_h3_stream_send_setting(xqc_h3_stream_t *h3s,
 xqc_int_t xqc_h3_stream_send_goaway(xqc_h3_stream_t *h3s, uint64_t push_id, uint8_t fin);
 
 xqc_int_t xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s);
+
+/* re-arm a request paused at max_body_buf_per_stream once the application
+ * drained its buffer, and make sure the engine reads it again */
+void xqc_h3_stream_body_buf_resume(xqc_h3_stream_t *h3s);
 
 xqc_var_buf_t *xqc_h3_stream_get_send_buf(xqc_h3_stream_t *h3s);
 

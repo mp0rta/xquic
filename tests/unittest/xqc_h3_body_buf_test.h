@@ -15,5 +15,10 @@ void xqc_test_h3bb_no_pause_after_fin(void);
 void xqc_test_h3bb_no_pause_after_reset(void);
 void xqc_test_h3bb_no_pause_reliable_prefix_read(void);
 void xqc_test_h3bb_body_bytes_accounting(void);
+void xqc_test_h3bb_resume_in_body_notify(void);
+void xqc_test_h3bb_resume_in_engine_elsewhere(void);
+void xqc_test_h3bb_resume_outside_engine(void);
+void xqc_test_h3bb_resume_loop_stops_on_conn_close(void);
+void xqc_test_h3bb_resume_during_destroy_not_queued(void);
 
 #endif

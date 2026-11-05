@@ -582,6 +582,7 @@ static const char *const xqc_conn_flag_to_str[XQC_CONN_FLAG_SHIFT_NUM] = {
     [XQC_CONN_FLAG_HANDSHAKE_DONE_SENT_SHIFT] = "HANDSHAKE_DONE_SENT",
     [XQC_CONN_FLAG_SERVER_ACCEPT_SHIFT] = "SERVER_ACCEPT",
     [XQC_CONN_FLAG_RETRY_SENT_SHIFT] = "RETRY_PACKET_SENT",
+    [XQC_CONN_FLAG_DESTROYING_SHIFT] = "DESTROYING",
 };
 
 
@@ -1699,6 +1700,13 @@ xqc_conn_destroy_crypto_data_list(xqc_list_head_t *crypto_data_list)
     }
 }
 
+xqc_bool_t
+xqc_conn_is_tearing_down(const xqc_connection_t *conn)
+{
+    return conn->conn_state >= XQC_CONN_STATE_CLOSING
+           || (conn->conn_flag & XQC_CONN_FLAG_DESTROYING);
+}
+
 void
 xqc_conn_destroy(xqc_connection_t *xc)
 {
@@ -1709,6 +1717,8 @@ xqc_conn_destroy(xqc_connection_t *xc)
     if (!xc) {
         return;
     }
+
+    xc->conn_flag |= XQC_CONN_FLAG_DESTROYING;
 
     if (xc->conn_flag & XQC_CONN_FLAG_TICKING) {
         xqc_log(xc->log, XQC_LOG_ERROR, "|in XQC_CONN_FLAG_TICKING|%p|", xc);

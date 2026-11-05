@@ -6,6 +6,7 @@
 #include "src/http3/xqc_h3_ctx.h"
 
 #include "src/transport/xqc_engine.h"
+#include "src/common/xqc_time.h"
 #include "src/transport/xqc_stream.h"
 #include "src/transport/xqc_client.h"
 #include "src/transport/xqc_defs.h"
@@ -472,6 +473,7 @@ xqc_h3_conn_create(xqc_connection_t *conn, void *user_data)
     h3c->conn = conn;
     h3c->log = conn->log;
     h3c->user_data = user_data;
+    h3c->body_buf_revisit_timer = -1;
 
     h3c->control_stream_out = NULL;
 
@@ -582,6 +584,31 @@ fail:
     return NULL;
 }
 
+/* the timer only has to be due: the engine processes the connection's read
+ * list in the pass its expiry causes */
+static void
+xqc_h3_conn_body_buf_revisit_timeout(xqc_gp_timer_id_t gp_timer_id, xqc_usec_t now,
+                                     void *user_data)
+{
+}
+
+void
+xqc_h3_conn_body_buf_revisit(xqc_h3_conn_t *h3c)
+{
+    if (h3c->body_buf_revisit_timer < 0) {
+        xqc_gp_timer_id_t id = xqc_conn_register_gp_timer(
+            h3c->conn, "h3_body_buf_revisit", xqc_h3_conn_body_buf_revisit_timeout, h3c);
+        if (id < 0) {
+            xqc_log(h3c->log, XQC_LOG_ERROR, "|register revisit timer error|%d|", id);
+            return;
+        }
+        h3c->body_buf_revisit_timer = id;
+    }
+
+    xqc_conn_gp_timer_set(h3c->conn, h3c->body_buf_revisit_timer,
+                          xqc_monotonic_timestamp());
+}
+
 void
 xqc_h3_conn_destroy(xqc_h3_conn_t *h3_conn)
 {
@@ -594,6 +621,10 @@ xqc_h3_conn_destroy(xqc_h3_conn_t *h3_conn)
 
     xqc_h3_conn_destroy_blocked_stream_list(h3_conn);
     xqc_qpack_destroy(h3_conn->qpack);
+
+    if (h3_conn->body_buf_revisit_timer >= 0) {
+        xqc_conn_unregister_gp_timer(h3_conn->conn, h3_conn->body_buf_revisit_timer);
+    }
 
     xqc_log(h3_conn->log, XQC_LOG_DEBUG, "|success|");
     xqc_free(h3_conn);
