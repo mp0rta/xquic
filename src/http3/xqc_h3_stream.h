@@ -235,7 +235,7 @@ void xqc_h3_stream_body_buf_resume(xqc_h3_stream_t *h3s);
 void xqc_h3_stream_ready_and_wake(xqc_h3_stream_t *h3s);
 
 /*
- * The discard state of a request the application closed (only with
+ * The discard state of an application-closed request (only with
  * max_body_buf_per_stream > 0): its input never reaches the parser, the
  * application gets no read or closing notification, and the stream's own
  * read turn reads and drops what remains so that the credit returns.

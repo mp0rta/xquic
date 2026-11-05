@@ -1938,10 +1938,15 @@ xqc_h3_stream_get_buf(xqc_h3_stream_t *h3s, xqc_list_head_t *head, size_t expect
 }
 
 
+/*
+ * Discard state of an application-closed request. xqc_h3_stream_close() sets
+ * ACTIVELY_CLOSED for every stream type, hence the type test.
+ */
 xqc_bool_t
 xqc_h3_stream_in_discard(const xqc_h3_stream_t *h3s)
 {
     return h3s->h3c->max_body_buf_per_stream > 0
+           && h3s->type == XQC_H3_STREAM_TYPE_REQUEST
            && (h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED)
            && h3s->stream != NULL;
 }
