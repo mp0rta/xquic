@@ -2385,6 +2385,7 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
             !xqc_list_empty(&h3s->h3r->body_buf)) {
             /* notify DATA whenever there is data */
             do {
+                size_t     buffered;
                 xqc_bool_t was_paused =
                     (h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED) != 0;
 
@@ -2396,18 +2397,23 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
                     return ret;
                 }
 
-                /* the callback resumed the request: read on in this turn,
-                 * unless it closed the request or the connection */
+                /*
+                 * The callback resumed the request: read on in this turn,
+                 * unless it closed the request or the connection. This runs
+                 * under the engine (RUNNING) with the transport stream
+                 * alive, so closing the request in the callback only marks
+                 * ACTIVELY_CLOSED and frees nothing.
+                 */
                 if (!was_paused
                     || (h3s->flags & (XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED
                                       | XQC_HTTP3_STREAM_FLAG_CLOSED
                                       | XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED))
-                    || h3s->stream == NULL || h3s->h3r == NULL
                     || xqc_conn_is_tearing_down(h3c->conn))
                 {
                     break;
                 }
 
+                buffered = h3s->h3r->body_buf_bytes;
                 h3s->flags |= XQC_HTTP3_STREAM_IN_READING;
                 ret = xqc_h3_stream_process_data(stream, h3s, &fin);
                 h3s->flags &= ~XQC_HTTP3_STREAM_IN_READING;
@@ -2418,7 +2424,13 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
                             "|xqc_h3_stream_process_data error|%d|", ret);
                     return ret;
                 }
-            } while (!xqc_list_empty(&h3s->h3r->body_buf));
+
+                /* nothing new was read: do not notify the same leftover again */
+                if (h3s->h3r->body_buf_bytes == buffered) {
+                    break;
+                }
+            } while (!xqc_list_empty(&h3s->h3r->body_buf)
+                     && !xqc_conn_is_tearing_down(h3c->conn));
         }
 
         /* TODO: BYTESTRAM: notify DATA to application ASAP */

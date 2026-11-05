@@ -1031,3 +1031,87 @@ xqc_test_h3bb_resume_during_destroy_not_queued(void)
     CU_ASSERT_EQUAL(fx.req[i].n_close_notify, 1);
     CU_ASSERT_EQUAL(fx.req[j].n_close_notify, 1);
 }
+
+/* the application leaves a little in the buffer; the read-on finds the
+ * transport empty and must not notify that leftover a second time */
+static int h3bb_body_notifies;
+
+static void
+h3bb_test_drain_to_low_water(h3bb_fx_t *fx, int idx)
+{
+    unsigned char buf[512];
+    uint8_t       fin;
+
+    if (fx->req[idx].h3r->body_buf_bytes == 0) {
+        return;
+    }
+    h3bb_body_notifies++;
+    while (fx->req[idx].h3r->body_buf_bytes > H3BB_LIMIT / 8) {
+        if (xqc_h3_request_recv_body(fx->req[idx].h3r, buf, sizeof(buf), &fin) <= 0) {
+            break;
+        }
+    }
+}
+
+void
+xqc_test_h3bb_resume_loop_no_empty_notify(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    fx.req[i].on_notify = h3bb_test_drain_to_low_water;
+    h3bb_body_notifies = 0;
+    h3bb_feed_headers(&fx, i);
+    /* HEADERS + DATA header + payload = five full 4 KiB reads: the read
+     * ends paused with the transport empty */
+    h3bb_feed_data(&fx, i, 5 * 4096 - 10, 5 * 4096 - 10, 0);
+
+    h3bb_read(&fx, i);
+
+    CU_ASSERT_EQUAL(fx.req[i].stream->stream_data_in.next_read_offset,
+                    h3bb_fed(&fx, i));
+    CU_ASSERT_EQUAL(h3bb_body_notifies, 1);
+
+    h3bb_teardown(&fx);
+}
+
+/* a trailer parsed by the read-on notifies the body; the connection is
+ * closed there with body left: no further notify */
+static int h3bb_notifies_at_close;
+
+static void
+h3bb_test_drain_then_close_in_trailer(h3bb_fx_t *fx, int idx)
+{
+    if (fx->req[idx].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED) {
+        h3bb_drain(fx, idx);
+
+    } else if (!h3bb_notifies_at_close && fx->req[idx].h3r->body_buf_bytes > 0) {
+        h3bb_notifies_at_close = fx->req[idx].n_read_notify;
+        CU_ASSERT_EQUAL(xqc_conn_close(fx->conn->engine,
+                                       &fx->conn->scid_set.user_scid), XQC_OK);
+    }
+}
+
+void
+xqc_test_h3bb_resume_loop_no_notify_after_close(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    fx.req[i].on_notify = h3bb_test_drain_then_close_in_trailer;
+    h3bb_notifies_at_close = 0;
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, H3BB_LIMIT + 6000, 1400, 0);
+    h3bb_feed(&fx, i, h3bb_valid_headers, sizeof(h3bb_valid_headers), 0);
+
+    h3bb_read(&fx, i);
+
+    CU_ASSERT(h3bb_notifies_at_close > 0);
+    CU_ASSERT(xqc_conn_is_tearing_down(fx.conn));
+    /* only the trailer notify of the same parse follows the close */
+    CU_ASSERT_EQUAL(fx.req[i].n_read_notify, h3bb_notifies_at_close + 1);
+
+    h3bb_teardown(&fx);
+}

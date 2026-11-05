@@ -20,5 +20,7 @@ void xqc_test_h3bb_resume_in_engine_elsewhere(void);
 void xqc_test_h3bb_resume_outside_engine(void);
 void xqc_test_h3bb_resume_loop_stops_on_conn_close(void);
 void xqc_test_h3bb_resume_during_destroy_not_queued(void);
+void xqc_test_h3bb_resume_loop_no_empty_notify(void);
+void xqc_test_h3bb_resume_loop_no_notify_after_close(void);
 
 #endif
