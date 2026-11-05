@@ -1,5 +1,5 @@
 /**
- * @copyright Copyright (c) 2022, Alibaba Group Holding Limited
+ * @copyright Copyright (c) 2026, mp0rta
  */
 
 #ifndef XQUIC_XQC_H3_BODY_BUF_TEST_H

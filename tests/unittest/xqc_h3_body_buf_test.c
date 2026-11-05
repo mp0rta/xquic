@@ -1,5 +1,5 @@
 /**
- * @copyright Copyright (c) 2022, Alibaba Group Holding Limited
+ * @copyright Copyright (c) 2026, mp0rta
  */
 
 /*
@@ -43,6 +43,7 @@ typedef struct {
     size_t            bytes_delivered;  /* bytes the application collected */
     int               drain_in_notify;  /* collect the whole body in notify */
     void            (*on_notify)(h3bb_fx_t *fx, int idx);
+    void            (*on_close)(h3bb_fx_t *fx, int idx);
 } h3bb_req_t;
 
 struct h3bb_fx_s {
@@ -107,8 +108,57 @@ h3bb_closing_notify(xqc_h3_request_t *h3r, xqc_int_t err, void *user_data)
 static int
 h3bb_close_notify(xqc_h3_request_t *h3r, void *user_data)
 {
-    ((h3bb_req_t *)user_data)->n_close_notify++;
+    h3bb_req_t *rq = (h3bb_req_t *)user_data;
+    h3bb_fx_t  *fx = rq->fx;
+
+    rq->n_close_notify++;
+    if (rq->on_close) {
+        rq->on_close(fx, (int)(rq - fx->req));
+    }
+
+    /* the objects are freed once this callback returns */
+    rq->stream = NULL;
+    rq->h3s = NULL;
+    rq->h3r = NULL;
     return 0;
+}
+
+/*
+ * Leave the connection as xqc_engine_main_logic() leaves one after a pass:
+ * out of the active queue, TICKING clear, parked in the wakeup queue. Where
+ * production would destroy the connection (no next tick) this takes the
+ * NO_DESTROY branch: parked with next_tick_time 0.
+ */
+static void
+h3bb_park(h3bb_fx_t *fx)
+{
+    xqc_connection_t *conn = fx->conn;
+    xqc_engine_t     *engine = conn->engine;
+
+    xqc_engine_remove_active_queue(engine, conn);
+    xqc_engine_remove_wakeup_queue(engine, conn);
+    conn->next_tick_time = xqc_conn_next_wakeup_time(conn);
+    xqc_engine_add_wakeup_queue(engine, conn);
+}
+
+/* the state the engine holds a connection in while it processes it */
+static void
+h3bb_enter_pass(h3bb_fx_t *fx)
+{
+    xqc_connection_t *conn = fx->conn;
+
+    xqc_engine_remove_active_queue(conn->engine, conn);
+    xqc_engine_remove_wakeup_queue(conn->engine, conn);
+    conn->conn_flag |= XQC_CONN_FLAG_TICKING;
+    conn->engine->eng_flag |= XQC_ENG_FLAG_RUNNING;
+}
+
+static void
+h3bb_leave_pass(h3bb_fx_t *fx)
+{
+    fx->conn->conn_flag &= ~XQC_CONN_FLAG_TICKING;
+    h3bb_park(fx);
+    fx->conn->engine->eng_flag &= ~XQC_ENG_FLAG_RUNNING;
 }
 
 /*
@@ -185,6 +235,7 @@ h3bb_setup(h3bb_fx_t *fx, size_t limit, xqc_conn_type_t type)
     fx->h3c->h3_request_callbacks.h3_request_closing_notify =
         h3bb_closing_notify;
     fx->h3c->h3_request_callbacks.h3_request_close_notify = h3bb_close_notify;
+    h3bb_park(fx);
     return 0;
 }
 
@@ -229,6 +280,7 @@ h3bb_add_request(h3bb_fx_t *fx)
     }
 
     fx->n_req++;
+    h3bb_park(fx);
     return idx;
 }
 
@@ -308,6 +360,8 @@ h3bb_feed(h3bb_fx_t *fx, int idx, const uint8_t *h3, size_t len, int fin)
             xqc_stream_ready_to_read(stream);
         }
     } while (done < len);
+
+    h3bb_park(fx);
 }
 
 void
@@ -363,7 +417,12 @@ h3bb_read(h3bb_fx_t *fx, int idx)
 {
     h3bb_req_t *rq = &fx->req[idx];
 
-    return h3_stream_callbacks.stream_read_notify(rq->stream, rq->h3s);
+    int         ret;
+
+    h3bb_enter_pass(fx);
+    ret = h3_stream_callbacks.stream_read_notify(rq->stream, rq->h3s);
+    h3bb_leave_pass(fx);
+    return ret;
 }
 
 /* one emulated engine pass in production order: due timers first, then the
@@ -371,12 +430,10 @@ h3bb_read(h3bb_fx_t *fx, int idx)
 void
 h3bb_turn(h3bb_fx_t *fx)
 {
-    xqc_engine_t *engine = fx->conn->engine;
-
-    engine->eng_flag |= XQC_ENG_FLAG_RUNNING;
+    h3bb_enter_pass(fx);
     xqc_timer_expire(&fx->conn->conn_timer_manager, xqc_monotonic_timestamp());
     xqc_process_read_streams(fx->conn);
-    engine->eng_flag &= ~XQC_ENG_FLAG_RUNNING;
+    h3bb_leave_pass(fx);
 }
 
 /* the production path: the engine pops the connection from its queues and
@@ -455,6 +512,25 @@ xqc_test_h3bb_limit_zero_reads_all(void)
 
 /* the fixture itself: the H3 callbacks are wired, the engine pass reads, and
  * teardown runs the H3 connection close */
+static int h3bb_test_close_hook_runs;
+
+static void
+h3bb_test_on_close(h3bb_fx_t *fx, int idx)
+{
+    /* the request's objects are still valid inside the hook */
+    CU_ASSERT_PTR_NOT_NULL(fx->req[idx].h3r);
+    h3bb_test_close_hook_runs++;
+}
+
+/* after each fixture step the connection is parked as the engine leaves it */
+static void
+h3bb_test_assert_parked(h3bb_fx_t *fx)
+{
+    CU_ASSERT_EQUAL(fx->conn->conn_flag & XQC_CONN_FLAG_TICKING, 0);
+    CU_ASSERT_EQUAL(fx->conn->engine->eng_flag & XQC_ENG_FLAG_RUNNING, 0);
+    CU_ASSERT_NOT_EQUAL(fx->conn->conn_flag & XQC_CONN_FLAG_WAIT_WAKEUP, 0);
+}
+
 void
 xqc_test_h3bb_fixture_engine_turn(void)
 {
@@ -465,11 +541,20 @@ xqc_test_h3bb_fixture_engine_turn(void)
     h3bb_set_conn_window(&fx, 16 * 1024 * 1024);
     i = h3bb_add_request(&fx);
     CU_ASSERT_EQUAL_FATAL(i, 0);
+    fx.req[i].on_close = h3bb_test_on_close;
+    h3bb_test_close_hook_runs = 0;
 
     h3bb_feed_headers(&fx, i);
+    h3bb_test_assert_parked(&fx);
     h3bb_feed_data(&fx, i, 4096, 1000, 0);
+    h3bb_test_assert_parked(&fx);
 
+    h3bb_read(&fx, i);
+    h3bb_test_assert_parked(&fx);
+
+    h3bb_feed_data(&fx, i, 4096, 1000, 0);
     h3bb_turn(&fx);
+    h3bb_test_assert_parked(&fx);
     CU_ASSERT(fx.req[i].n_read_notify >= 1);
     CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
 
@@ -477,4 +562,5 @@ xqc_test_h3bb_fixture_engine_turn(void)
     for (i = 0; i < fx.n_req; i++) {
         CU_ASSERT_EQUAL(fx.req[i].n_close_notify, 1);
     }
+    CU_ASSERT_EQUAL(h3bb_test_close_hook_runs, 1);
 }
