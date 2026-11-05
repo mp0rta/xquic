@@ -1215,6 +1215,9 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_h3bb_resume_loop_no_empty_notify", xqc_test_h3bb_resume_loop_no_empty_notify)
         || !CU_add_test(pSuite, "xqc_test_h3bb_resume_loop_no_notify_after_close", xqc_test_h3bb_resume_loop_no_notify_after_close)
         || !CU_add_test(pSuite, "xqc_test_h3bb_resume_loop_final_empty_data_fin", xqc_test_h3bb_resume_loop_final_empty_data_fin)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_qpack_blocked_pause", xqc_test_h3bb_qpack_blocked_pause)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_tiny_data_coalesced_replay", xqc_test_h3bb_tiny_data_coalesced_replay)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_qpack_blocked_replay_resumes", xqc_test_h3bb_qpack_blocked_replay_resumes)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();

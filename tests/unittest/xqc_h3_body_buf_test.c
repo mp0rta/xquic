@@ -54,6 +54,8 @@ struct h3bb_fx_s {
     int               n_wake;           /* engine set_event_timer calls */
     xqc_usec_t        last_wake_us;
     xqc_engine_t     *srv_engine;       /* server-type fixtures only */
+    xqc_stream_t     *enc_stream;       /* the peer's QPACK encoder stream */
+    uint64_t          enc_offset;
 };
 
 /* RFC 9114 Section 7.2.1: DATA frame; the HEADERS frame is a minimal valid
@@ -297,11 +299,10 @@ h3bb_conn_credit_left(const h3bb_fx_t *fx)
  * receive accounting xqc_process_stream_frame() does, after the two flow
  * control checks it makes first (RFC 9000 Section 4.1).
  */
-void
-h3bb_feed(h3bb_fx_t *fx, int idx, const uint8_t *h3, size_t len, int fin)
+static void
+h3bb_feed_stream(h3bb_fx_t *fx, xqc_stream_t *stream, uint64_t *offset,
+    const uint8_t *h3, size_t len, int fin)
 {
-    h3bb_req_t          *rq = &fx->req[idx];
-    xqc_stream_t        *stream = rq->stream;
     xqc_connection_t    *conn = fx->conn;
     xqc_stream_data_in_t *in = &stream->stream_data_in;
     size_t               done = 0;
@@ -310,7 +311,7 @@ h3bb_feed(h3bb_fx_t *fx, int idx, const uint8_t *h3, size_t len, int fin)
         size_t              n = len - done > H3BB_CHUNK ? H3BB_CHUNK
                                                         : len - done;
         int                 last = (done + n == len);
-        uint64_t            end = rq->offset + n;
+        uint64_t            end = *offset + n;
         uint64_t            ext = end > stream->stream_max_recv_offset
                                   ? end - stream->stream_max_recv_offset : 0;
         xqc_stream_frame_t *f;
@@ -322,7 +323,7 @@ h3bb_feed(h3bb_fx_t *fx, int idx, const uint8_t *h3, size_t len, int fin)
                         <= conn->conn_flow_ctl.fc_max_data_can_recv);
 
         f = xqc_calloc(1, sizeof(xqc_stream_frame_t));
-        f->data_offset = rq->offset;
+        f->data_offset = *offset;
         f->data_length = n;
         f->fin = (fin && last) ? 1 : 0;
         f->data = xqc_malloc(n ? n : 1);
@@ -346,7 +347,7 @@ h3bb_feed(h3bb_fx_t *fx, int idx, const uint8_t *h3, size_t len, int fin)
         if (ext) {
             stream->stream_max_recv_offset = end;
         }
-        rq->offset = end;
+        *offset = end;
         done += n;
 
         if (in->stream_determined && in->stream_length == in->merged_offset_end) {
@@ -362,6 +363,37 @@ h3bb_feed(h3bb_fx_t *fx, int idx, const uint8_t *h3, size_t len, int fin)
     } while (done < len);
 
     h3bb_park(fx);
+}
+
+void h3bb_turn(h3bb_fx_t *fx);
+
+void
+h3bb_feed(h3bb_fx_t *fx, int idx, const uint8_t *h3, size_t len, int fin)
+{
+    h3bb_feed_stream(fx, fx->req[idx].stream, &fx->req[idx].offset, h3, len,
+                     fin);
+}
+
+/*
+ * Deliver QPACK encoder instructions (RFC 9204 Section 4.3) on the peer's
+ * encoder stream, a server-initiated unidirectional stream of type 0x02 that
+ * is opened by the first call, and let the engine read it in one pass.
+ */
+void
+h3bb_feed_encoder(h3bb_fx_t *fx, const uint8_t *ins, size_t len)
+{
+    uint8_t  buf[64];
+    size_t   n = 0;
+
+    if (fx->enc_stream == NULL) {
+        fx->enc_stream = xqc_passive_create_stream(fx->conn, 3, NULL);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(fx->enc_stream);
+        buf[n++] = 0x02;
+    }
+    CU_ASSERT_FATAL(n + len <= sizeof(buf));
+    memcpy(buf + n, ins, len);
+    h3bb_feed_stream(fx, fx->enc_stream, &fx->enc_offset, buf, n + len, 0);
+    h3bb_turn(fx);
 }
 
 void
@@ -1139,6 +1171,119 @@ xqc_test_h3bb_resume_loop_final_empty_data_fin(void)
     CU_ASSERT(xqc_list_empty(&fx.req[i].h3r->body_buf));
     CU_ASSERT(fx.req[i].h3r->h3r_end_time > 0);
     CU_ASSERT_EQUAL(fx.req[i].n_read_notify, 3);
+
+    h3bb_teardown(&fx);
+}
+
+/* a field section with Required Insert Count 1 (RFC 9204 Section 4.5.1): it
+ * waits for the first dynamic table entry */
+static const uint8_t h3bb_blocked_headers[] = {0x01, 0x03, 0x02, 0x00, 0x80};
+
+/* set a 220-byte table, then insert "x-t: 1" (RFC 9204 Section 4.3) */
+static const uint8_t h3bb_first_insert[] = {
+    0x3f, 0xbd, 0x01, 0x43, 'x', '-', 't', 0x01, '1'
+};
+
+static int
+h3bb_open_blocked_request(h3bb_fx_t *fx)
+{
+    int i = h3bb_open_request(fx, H3BB_LIMIT);
+
+    /* the mqvpn client's values: no blocked-buffer limit of its own */
+    fx->h3c->max_blocked_buf_per_stream = 0;
+    fx->h3c->max_blocked_buf_per_conn = 0;
+    h3bb_feed(fx, i, h3bb_blocked_headers, sizeof(h3bb_blocked_headers), 0);
+    return i;
+}
+
+/* F4: a QPACK-blocked request stops reading into blocked_buf at the limit;
+ * the replay moves it to the body buffer and the drain resumes the read */
+void
+xqc_test_h3bb_qpack_blocked_pause(void)
+{
+    h3bb_fx_t     fx;
+    int           i;
+    unsigned char buf[512];
+    uint8_t       fin;
+
+    i = h3bb_open_blocked_request(&fx);
+    h3bb_feed_data(&fx, i, 65536, 1400, 0);
+    h3bb_read(&fx, i);
+
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED);
+    CU_ASSERT(fx.req[i].h3s->blocked_buf_size >= H3BB_LIMIT
+              && fx.req[i].h3s->blocked_buf_size < H3BB_LIMIT + 4096);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+    CU_ASSERT(fx.req[i].stream->stream_data_in.next_read_offset
+              < h3bb_fed(&fx, i));
+    CU_ASSERT(!(fx.req[i].stream->stream_flag & XQC_STREAM_FLAG_READY_TO_READ));
+
+    h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
+
+    CU_ASSERT(!(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED));
+    CU_ASSERT_EQUAL(fx.req[i].h3s->blocked_buf_size, 0);
+    CU_ASSERT(fx.req[i].h3r->body_buf_bytes > H3BB_LIMIT / 2
+              && fx.req[i].h3r->body_buf_bytes < H3BB_LIMIT + 4096);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+    CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
+
+    while (fx.req[i].h3r->body_buf_bytes > H3BB_LIMIT / 4) {
+        CU_ASSERT_FATAL(fx.req[i].h3s->flags
+                        & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+        CU_ASSERT_FATAL(xqc_h3_request_recv_body(fx.req[i].h3r, buf,
+                                                 sizeof(buf), &fin) > 0);
+    }
+    CU_ASSERT(!(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED));
+    CU_ASSERT(fx.req[i].stream->stream_flag & XQC_STREAM_FLAG_READY_TO_READ);
+
+    h3bb_teardown(&fx);
+}
+
+/* F2, replay path: one-byte DATA frames kept while blocked share nodes once
+ * replayed */
+void
+xqc_test_h3bb_tiny_data_coalesced_replay(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    i = h3bb_open_blocked_request(&fx);
+    h3bb_feed_data(&fx, i, 20000, 1, 0);
+    h3bb_read(&fx, i);
+    CU_ASSERT(fx.req[i].h3s->blocked_buf_size < H3BB_LIMIT + 4096);
+
+    h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
+
+    CU_ASSERT(!(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED));
+    CU_ASSERT(fx.req[i].h3r->body_buf_bytes > 0);
+    CU_ASSERT(fx.req[i].h3r->body_buf_bytes < H3BB_LIMIT + 4096);
+    CU_ASSERT(fx.req[i].h3r->body_buf_count
+              <= 2 * (H3BB_LIMIT + 4096) / 256 + 2);
+
+    h3bb_teardown(&fx);
+}
+
+/* a replay that leaves the body below the low-water mark (empty DATA frames
+ * carry no payload) resumes the paused request */
+void
+xqc_test_h3bb_qpack_blocked_replay_resumes(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+    uint8_t   empty[2 * 9000];
+
+    memset(empty, 0, sizeof(empty));
+    i = h3bb_open_blocked_request(&fx);
+    h3bb_feed(&fx, i, empty, sizeof(empty), 0);
+    h3bb_read(&fx, i);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+
+    h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
+
+    CU_ASSERT(fx.req[i].h3r->body_buf_bytes <= H3BB_LIMIT / 4);
+    CU_ASSERT(!(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED));
+    CU_ASSERT(fx.req[i].h3s->stream->stream_flag
+              & XQC_STREAM_FLAG_READY_TO_READ);
 
     h3bb_teardown(&fx);
 }

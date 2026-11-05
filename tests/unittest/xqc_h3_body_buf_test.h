@@ -23,5 +23,8 @@ void xqc_test_h3bb_resume_during_destroy_not_queued(void);
 void xqc_test_h3bb_resume_loop_no_empty_notify(void);
 void xqc_test_h3bb_resume_loop_no_notify_after_close(void);
 void xqc_test_h3bb_resume_loop_final_empty_data_fin(void);
+void xqc_test_h3bb_qpack_blocked_pause(void);
+void xqc_test_h3bb_tiny_data_coalesced_replay(void);
+void xqc_test_h3bb_qpack_blocked_replay_resumes(void);
 
 #endif

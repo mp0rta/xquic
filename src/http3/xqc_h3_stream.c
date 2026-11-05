@@ -1933,76 +1933,6 @@ xqc_h3_stream_get_buf(xqc_h3_stream_t *h3s, xqc_list_head_t *head, size_t expect
 }
 
 
-xqc_int_t
-xqc_h3_stream_process_blocked_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s,
-                                   xqc_bool_t *fin)
-{
-    ssize_t rcvd = 0;
-    xqc_var_buf_t *buf = NULL;
-
-    do {
-        /* check blocked buffer size limit before receiving more data */
-        if (h3s->h3c->max_blocked_buf_per_stream &&
-            (h3s->blocked_buf_size >= h3s->h3c->max_blocked_buf_per_stream)) {
-            xqc_log(
-                h3s->log, XQC_LOG_ERROR,
-                "|blocked buffer size limit reached|stream_id:%ui|size:%uz|limit:%uz|",
-                h3s->stream_id, h3s->blocked_buf_size,
-                h3s->h3c->max_blocked_buf_per_stream);
-            XQC_H3_CONN_ERR(h3s->h3c, H3_EXCESSIVE_LOAD, -XQC_H3_EPROC_REQUEST);
-            return -XQC_H3_EPROC_REQUEST;
-        }
-
-        if (h3s->h3c->max_blocked_buf_per_conn &&
-            (h3s->h3c->total_blocked_buf_size >= h3s->h3c->max_blocked_buf_per_conn)) {
-            xqc_log(h3s->log, XQC_LOG_ERROR,
-                    "|connection blocked buffer size limit reached|total:%uz|limit:%uz|",
-                    h3s->h3c->total_blocked_buf_size, h3s->h3c->max_blocked_buf_per_conn);
-            XQC_H3_CONN_ERR(h3s->h3c, H3_EXCESSIVE_LOAD, -XQC_H3_EPROC_REQUEST);
-            return -XQC_H3_EPROC_REQUEST;
-        }
-
-        buf = xqc_h3_stream_get_buf(h3s, &h3s->blocked_buf, XQC_DATA_BUF_SIZE_4K);
-        if (buf == NULL) {
-            return -XQC_EMALLOC;
-        }
-
-        /* recv from transport stream, and buffer data to blocked buf list */
-        rcvd = xqc_stream_recv(stream, buf->data + buf->data_len,
-                               buf->buf_len - buf->data_len, fin);
-        if (rcvd == -XQC_EAGAIN) {
-            break;
-
-        } else if (rcvd < 0) {
-            xqc_log(h3s->log, XQC_LOG_ERROR, "|xqc_stream_recv error|%z|", rcvd);
-            return -XQC_H3_STREAM_RECV_ERROR;
-        }
-
-        xqc_log(h3s->log, XQC_LOG_DEBUG, "|xqc_stream_recv|read:%z|fin:%ud|", rcvd,
-                (unsigned int)*fin);
-
-        buf->data_len += rcvd;
-        buf->fin_flag = *fin;
-
-        /* update blocked buffer size counters  */
-        h3s->blocked_buf_size += rcvd;
-        h3s->h3c->total_blocked_buf_size += rcvd;
-
-        if (*fin) {
-            h3s->flags |= XQC_HTTP3_STREAM_FLAG_READ_EOF;
-
-            if (h3s->type == XQC_H3_STREAM_TYPE_REQUEST) {
-                /* only request stream will be blocked */
-                xqc_h3_request_stream_fin(h3s->h3r);
-            }
-        }
-
-    } while (buf->buf_len == buf->data_len && !*fin);
-
-    return XQC_OK;
-}
-
-
 /*
  * Whether reading this request may be paused for the body limit. Not once
  * the transport stream is reset or the reliable part of a reset was read
@@ -2046,6 +1976,88 @@ xqc_h3_stream_body_buf_pause(xqc_h3_stream_t *h3s, xqc_bool_t read_called)
         xqc_stream_shutdown_read(h3s->stream);
     }
 }
+
+xqc_int_t
+xqc_h3_stream_process_blocked_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s,
+                                   xqc_bool_t *fin, xqc_bool_t read_called)
+{
+    xqc_h3_conn_t *h3c = h3s->h3c;
+    ssize_t rcvd = 0;
+    xqc_var_buf_t *buf = NULL;
+
+    do {
+        /* check blocked buffer size limit before receiving more data */
+        if (h3s->h3c->max_blocked_buf_per_stream &&
+            (h3s->blocked_buf_size >= h3s->h3c->max_blocked_buf_per_stream)) {
+            xqc_log(
+                h3s->log, XQC_LOG_ERROR,
+                "|blocked buffer size limit reached|stream_id:%ui|size:%uz|limit:%uz|",
+                h3s->stream_id, h3s->blocked_buf_size,
+                h3s->h3c->max_blocked_buf_per_stream);
+            XQC_H3_CONN_ERR(h3s->h3c, H3_EXCESSIVE_LOAD, -XQC_H3_EPROC_REQUEST);
+            return -XQC_H3_EPROC_REQUEST;
+        }
+
+        if (h3s->h3c->max_blocked_buf_per_conn &&
+            (h3s->h3c->total_blocked_buf_size >= h3s->h3c->max_blocked_buf_per_conn)) {
+            xqc_log(h3s->log, XQC_LOG_ERROR,
+                    "|connection blocked buffer size limit reached|total:%uz|limit:%uz|",
+                    h3s->h3c->total_blocked_buf_size, h3s->h3c->max_blocked_buf_per_conn);
+            XQC_H3_CONN_ERR(h3s->h3c, H3_EXCESSIVE_LOAD, -XQC_H3_EPROC_REQUEST);
+            return -XQC_H3_EPROC_REQUEST;
+        }
+
+        /* the blocked bytes will become body bytes once the block is lifted */
+        if (h3c->max_body_buf_per_stream > 0
+            && xqc_h3_stream_body_buf_can_pause(h3s)
+            && h3s->blocked_buf_size + h3s->h3r->body_buf_bytes
+               >= h3c->max_body_buf_per_stream)
+        {
+            xqc_h3_stream_body_buf_pause(h3s, read_called);
+            return XQC_OK;
+        }
+
+        buf = xqc_h3_stream_get_buf(h3s, &h3s->blocked_buf, XQC_DATA_BUF_SIZE_4K);
+        if (buf == NULL) {
+            return -XQC_EMALLOC;
+        }
+
+        /* recv from transport stream, and buffer data to blocked buf list */
+        read_called = XQC_TRUE;
+        rcvd = xqc_stream_recv(stream, buf->data + buf->data_len,
+                               buf->buf_len - buf->data_len, fin);
+        if (rcvd == -XQC_EAGAIN) {
+            break;
+
+        } else if (rcvd < 0) {
+            xqc_log(h3s->log, XQC_LOG_ERROR, "|xqc_stream_recv error|%z|", rcvd);
+            return -XQC_H3_STREAM_RECV_ERROR;
+        }
+
+        xqc_log(h3s->log, XQC_LOG_DEBUG, "|xqc_stream_recv|read:%z|fin:%ud|", rcvd,
+                (unsigned int)*fin);
+
+        buf->data_len += rcvd;
+        buf->fin_flag = *fin;
+
+        /* update blocked buffer size counters  */
+        h3s->blocked_buf_size += rcvd;
+        h3s->h3c->total_blocked_buf_size += rcvd;
+
+        if (*fin) {
+            h3s->flags |= XQC_HTTP3_STREAM_FLAG_READ_EOF;
+
+            if (h3s->type == XQC_H3_STREAM_TYPE_REQUEST) {
+                /* only request stream will be blocked */
+                xqc_h3_request_stream_fin(h3s->h3r);
+            }
+        }
+
+    } while (buf->buf_len == buf->data_len && !*fin);
+
+    return XQC_OK;
+}
+
 
 /*
  * Called once the application drained a paused request to the low-water
@@ -2136,7 +2148,7 @@ xqc_h3_stream_process_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s, xqc_bool_
         /* after process in, the stream might be blocked, read all data and add to blocked
          * list */
         if (h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED) {
-            return xqc_h3_stream_process_blocked_data(stream, h3s, fin);
+            return xqc_h3_stream_process_blocked_data(stream, h3s, fin, XQC_TRUE);
         }
 
     } while (read == buff_size && !*fin);
@@ -2258,6 +2270,17 @@ xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s)
         }
     }
 
+    /* the replay may have taken the body below the low-water mark */
+    if ((h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED)
+        && h3s->h3r != NULL
+        && !(h3s->flags & (XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED
+                           | XQC_HTTP3_STREAM_FLAG_CLOSED))
+        && h3s->h3r->body_buf_bytes
+           <= XQC_H3_BODY_BUF_LOW_WATER(h3s->h3c->max_body_buf_per_stream))
+    {
+        xqc_h3_stream_body_buf_resume(h3s);
+    }
+
     h3s->ref_cnt--;
 
     /*
@@ -2356,7 +2379,7 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
     xqc_bool_t fin = XQC_FALSE;
     /* if stream is blocked, recv and buffer data */
     if (h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED) {
-        ret = xqc_h3_stream_process_blocked_data(stream, h3s, &fin);
+        ret = xqc_h3_stream_process_blocked_data(stream, h3s, &fin, XQC_FALSE);
 
         h3s->flags &= ~XQC_HTTP3_STREAM_IN_READING;
         if (ret == -XQC_H3_STREAM_RECV_ERROR) {
