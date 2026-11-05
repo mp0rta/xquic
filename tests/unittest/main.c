@@ -963,12 +963,36 @@ main(int argc, char *argv[])
                         xqc_test_path_requeue_unacked_on_pto)
         || !CU_add_test(pSuite, "xqc_test_path_requeue_needs_a_working_path",
                         xqc_test_path_requeue_needs_a_working_path)
+        || !CU_add_test(pSuite, "xqc_test_minrtt_skips_dead_path",
+                        xqc_test_minrtt_skips_dead_path)
+        || !CU_add_test(pSuite, "xqc_test_minrtt_keeps_path_without_alternative",
+                        xqc_test_minrtt_keeps_path_without_alternative)
+        || !CU_add_test(pSuite, "xqc_test_minrtt_probes_dead_path",
+                        xqc_test_minrtt_probes_dead_path)
+        || !CU_add_test(pSuite, "xqc_test_backup_failover",
+                        xqc_test_backup_failover)
+        || !CU_add_test(pSuite, "xqc_test_backup_probes_dead_path",
+                        xqc_test_backup_probes_dead_path)
+        || !CU_add_test(pSuite, "xqc_test_dead_probe_waits_for_fired_ptos",
+                        xqc_test_dead_probe_waits_for_fired_ptos)
+        || !CU_add_test(pSuite, "xqc_test_backup_skips_dead_primary",
+                        xqc_test_backup_skips_dead_primary)
         || !CU_add_test(pSuite, "xqc_test_pmtud_smaller_ack_keeps_larger_loss",
                         xqc_test_pmtud_smaller_ack_keeps_larger_loss)
         || !CU_add_test(pSuite, "xqc_test_pmtud_ack_spill_losses_make_path_suspect",
                         xqc_test_pmtud_ack_spill_losses_make_path_suspect)
         || !CU_add_test(pSuite, "xqc_test_pmtud_smaller_spill_ack_keeps_larger_loss",
                         xqc_test_pmtud_smaller_spill_ack_keeps_larger_loss)
+        || !CU_add_test(pSuite, "xqc_test_quiet_standby_rule",
+                        xqc_test_quiet_standby_rule)
+        || !CU_add_test(pSuite, "xqc_test_two_backups_not_quiet_without_primary",
+                        xqc_test_two_backups_not_quiet_without_primary)
+        || !CU_add_test(pSuite, "xqc_test_quiet_standby_woken_once",
+                        xqc_test_quiet_standby_woken_once)
+        || !CU_add_test(pSuite, "xqc_test_keepalive_skips_quiet_standby",
+                        xqc_test_keepalive_skips_quiet_standby)
+        || !CU_add_test(pSuite, "xqc_test_idle_timer_keeps_quiet_standby",
+                        xqc_test_idle_timer_keeps_quiet_standby)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)

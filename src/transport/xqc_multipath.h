@@ -136,6 +136,8 @@ struct xqc_path_ctx_s {
 
     /* application layer path status, sync via PATH_STATUS frame */
     xqc_app_path_status_t   app_path_status;
+    /* quiet at the last send round (xqc_conn_wake_quiet_standby) */
+    xqc_bool_t              path_was_quiet_standby;
     xqc_app_path_status_t   next_app_path_state;
     uint64_t                app_path_status_send_seq_num;
     uint64_t                app_path_status_recv_seq_num;
@@ -375,6 +377,14 @@ xqc_int_t xqc_path_standby_probe(xqc_path_ctx_t *path);
 #define XQC_PATH_REQUEUE_PTO_THRESH 3
 
 void xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path);
+
+xqc_bool_t xqc_path_has_working_alternative(xqc_path_ctx_t *path);
+
+xqc_bool_t xqc_path_is_dead_with_alternative(xqc_path_ctx_t *path);
+
+xqc_bool_t xqc_path_is_quiet_standby(xqc_path_ctx_t *path);
+
+void xqc_conn_wake_quiet_standby(xqc_connection_t *conn);
 
 xqc_path_perf_class_t xqc_path_get_perf_class(xqc_path_ctx_t *path);
 
