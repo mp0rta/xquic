@@ -175,7 +175,7 @@ h3bb_leave_pass(h3bb_fx_t *fx)
  * `limit` straight from its settings; a server takes it from its engine's
  * defaults, set through xqc_server_set_conn_settings().
  */
-int
+static int
 h3bb_setup(h3bb_fx_t *fx, size_t limit, xqc_conn_type_t type)
 {
     xqc_connection_t *conn;
@@ -246,7 +246,7 @@ h3bb_setup(h3bb_fx_t *fx, size_t limit, xqc_conn_type_t type)
 }
 
 /* a consistent connection window and the credit advertised for it */
-void
+static void
 h3bb_set_conn_window(h3bb_fx_t *fx, uint64_t w)
 {
     xqc_conn_flow_ctl_t *fc = &fx->conn->conn_flow_ctl;
@@ -256,7 +256,7 @@ h3bb_set_conn_window(h3bb_fx_t *fx, uint64_t w)
 }
 
 /* a new client bidi request, wired to the real H3 stream and request */
-int
+static int
 h3bb_add_request(h3bb_fx_t *fx)
 {
     h3bb_req_t *rq;
@@ -290,7 +290,7 @@ h3bb_add_request(h3bb_fx_t *fx)
     return idx;
 }
 
-uint64_t
+static uint64_t
 h3bb_conn_credit_left(const h3bb_fx_t *fx)
 {
     return fx->conn->conn_flow_ctl.fc_max_data_can_recv
@@ -369,9 +369,9 @@ h3bb_feed_stream(h3bb_fx_t *fx, xqc_stream_t *stream, uint64_t *offset,
     h3bb_park(fx);
 }
 
-void h3bb_turn(h3bb_fx_t *fx);
+static void h3bb_turn(h3bb_fx_t *fx);
 
-void
+static void
 h3bb_feed(h3bb_fx_t *fx, int idx, const uint8_t *h3, size_t len, int fin)
 {
     h3bb_feed_stream(fx, fx->req[idx].stream, &fx->req[idx].offset, h3, len,
@@ -383,7 +383,7 @@ h3bb_feed(h3bb_fx_t *fx, int idx, const uint8_t *h3, size_t len, int fin)
  * encoder stream, a server-initiated unidirectional stream of type 0x02 that
  * is opened by the first call, and let the engine read it in one pass.
  */
-void
+static void
 h3bb_feed_encoder(h3bb_fx_t *fx, const uint8_t *ins, size_t len)
 {
     uint8_t  buf[64];
@@ -400,7 +400,7 @@ h3bb_feed_encoder(h3bb_fx_t *fx, const uint8_t *ins, size_t len)
     h3bb_turn(fx);
 }
 
-void
+static void
 h3bb_feed_headers(h3bb_fx_t *fx, int idx)
 {
     h3bb_feed(fx, idx, h3bb_valid_headers, sizeof(h3bb_valid_headers), 0);
@@ -408,7 +408,7 @@ h3bb_feed_headers(h3bb_fx_t *fx, int idx)
 
 /* H3 DATA frames of `frame_payload` bytes (pattern 0xa5) until
  * `payload_len` bytes are fed, packed into transport chunks */
-void
+static void
 h3bb_feed_data(h3bb_fx_t *fx, int idx, size_t payload_len,
     size_t frame_payload, int fin)
 {
@@ -441,14 +441,14 @@ h3bb_feed_data(h3bb_fx_t *fx, int idx, size_t payload_len,
     xqc_free(buf);
 }
 
-size_t
+static size_t
 h3bb_fed(const h3bb_fx_t *fx, int idx)
 {
     return (size_t)fx->req[idx].offset;
 }
 
 /* one direct read turn of the request's own stream */
-int
+static int
 h3bb_read(h3bb_fx_t *fx, int idx)
 {
     h3bb_req_t *rq = &fx->req[idx];
@@ -463,7 +463,7 @@ h3bb_read(h3bb_fx_t *fx, int idx)
 
 /* one emulated engine pass in production order: due timers first, then the
  * connection's read list; a timer armed during the pass fires in the next */
-void
+static void
 h3bb_turn(h3bb_fx_t *fx)
 {
     h3bb_enter_pass(fx);
@@ -474,7 +474,7 @@ h3bb_turn(h3bb_fx_t *fx)
 
 /* the production path: the engine pops the connection from its queues and
  * destroys it, which runs the H3 connection teardown */
-void
+static void
 h3bb_teardown(h3bb_fx_t *fx)
 {
     xqc_engine_destroy(fx->conn->engine);
@@ -953,12 +953,17 @@ xqc_test_h3bb_resume_in_engine_elsewhere(void)
     uint64_t    off;
     xqc_bool_t  is_set = XQC_FALSE;
     xqc_usec_t  expire = 0;
+    xqc_usec_t  wake;
 
     i = h3bb_open_request(&fx, H3BB_LIMIT);
     h3bb_fill_to_limit(&fx, i);
     CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
     off = fx.req[i].stream->stream_data_in.next_read_offset;
     CU_ASSERT(fx.h3c->body_buf_revisit_timer >= 0);
+    CU_ASSERT(!h3bb_revisit_timer_set(&fx));
+    /* no timer is due yet, so a due wakeup below can only be the revisit's */
+    wake = xqc_conn_next_wakeup_time(fx.conn);
+    CU_ASSERT(wake > xqc_monotonic_timestamp());
 
     fx.conn->engine->eng_flag |= XQC_ENG_FLAG_RUNNING;
     CU_ASSERT(h3bb_drain(&fx, i) > 0);
@@ -972,6 +977,11 @@ xqc_test_h3bb_resume_in_engine_elsewhere(void)
                     XQC_OK);
     CU_ASSERT(is_set);
     CU_ASSERT(expire <= xqc_monotonic_timestamp());
+
+    /* the engine's own choice of wakeup covers the timer */
+    wake = xqc_conn_next_wakeup_time(fx.conn);
+    CU_ASSERT(wake != 0);
+    CU_ASSERT(wake <= expire);
 
     h3bb_turn(&fx);
     CU_ASSERT(fx.req[i].stream->stream_data_in.next_read_offset > off);
