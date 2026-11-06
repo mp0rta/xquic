@@ -741,6 +741,7 @@ xqc_test_wt_extension_settings(void)
 static int wt_session_creates, wt_session_closes;
 static int wt_app_creates, wt_app_reads, wt_app_writes;
 static int wt_app_create_fail;
+static int wt_app_close_in_create;
 static int wt_app_closings, wt_app_closes, wt_request_marker;
 static int wt_app_handshakes, wt_handshakes;
 static int wt_app_conn_creates, wt_app_conn_closes, wt_app_conn_fail;
@@ -808,6 +809,9 @@ wt_app_create(xqc_h3_request_t *request, void *ctx)
     CU_ASSERT_PTR_EQUAL(xqc_h3_get_conn_user_data_by_request(request),
                         wt_app_conn_context);
     xqc_h3_request_set_user_data(request, &wt_request_marker);
+    if (wt_app_close_in_create) {
+        CU_ASSERT(xqc_h3_request_close(request) == XQC_OK);
+    }
     return wt_app_create_fail ? -XQC_ESTATE : XQC_OK;
 }
 
@@ -874,7 +878,8 @@ wt_session_closed(xqc_wt_session_t *session, xqc_http_headers_t *headers,
 static void
 wt_test_connect_request(int scenario)
 {
-    xqc_bool_t accepted = scenario == 1 || scenario == 9 || scenario >= 12;
+    xqc_bool_t accepted = scenario == 1 || scenario == 9
+        || (scenario >= 12 && scenario <= 15);
     xqc_connection_t *conn = test_engine_connect();
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
     xqc_engine_t *engine = conn->engine;
@@ -896,6 +901,11 @@ wt_test_connect_request(int scenario)
     if (scenario == 6) {
         app.h3c_cbs.h3_conn_create_notify = NULL;
     }
+    if (scenario >= 16) {
+        /* test_engine_connect() already registered one; replacing it would
+           leak the first */
+        CU_ASSERT(xqc_h3_ctx_destroy(engine) == XQC_OK);
+    }
     CU_ASSERT(xqc_h3_ctx_init(engine, &app) == XQC_OK);
     xqc_webtransport_session_callbacks_t cbs = {
         .webtransport_will_create_session_notify = wt_accept,
@@ -916,6 +926,9 @@ wt_test_connect_request(int scenario)
     CU_ASSERT(xqc_engine_get_alpn_callbacks(engine, "h3", 2,
                                             &conn->app_proto_cbs) == XQC_OK);
     conn->conn_type = XQC_CONN_TYPE_SERVER;
+    /* scenarios 16 and 17: a bounded request (non-zero body buffer limit) */
+    conn->conn_settings.max_body_buf_per_stream = scenario >= 16 ? 16384 : 0;
+    wt_app_close_in_create = scenario == 16;
     int marker;
     wt_app_conn_context = &marker;
     wt_app_creates = wt_app_reads = wt_app_writes = 0;
@@ -1011,7 +1024,7 @@ wt_test_connect_request(int scenario)
                            ":path", "origin"};
     const char *values[] = {"CONNECT", "webtransport-h3", "https", "localhost",
                             "/wt", accepted ? "allowed" : "denied"};
-    if (scenario == 2 || scenario == 8) {
+    if (scenario == 2 || scenario == 8 || scenario >= 16) {
         values[0] = "GET";
         names[1] = ":scheme";
         values[1] = "https";
@@ -1051,6 +1064,18 @@ wt_test_connect_request(int scenario)
         return;
     }
     CU_ASSERT_FATAL(xqc_h3_request_on_recv_header(request) == XQC_OK);
+    if (scenario >= 16) {
+        /* the adapter defers the application's create notify to the header
+         * notify; a request it closed there is discarded and gets no read
+         * notify, one it left open does */
+        CU_ASSERT(wt_app_creates == 1);
+        CU_ASSERT(wt_app_reads == (scenario == 16 ? 0 : 1));
+        CU_ASSERT(xqc_h3_stream_in_discard(h3s) == (scenario == 16));
+        xqc_engine_destroy(engine);
+        CU_ASSERT(wt_app_closes == 1);
+        CU_ASSERT(wt_app_conn_closes == 1);
+        return;
+    }
     if (scenario == 2) {
         CU_ASSERT(wt_app_creates == 1 && wt_app_reads == 1);
         CU_ASSERT(wt_conn->session_count == 0);
@@ -1147,6 +1172,20 @@ xqc_test_wt_request_passthrough(void)
 {
     wt_test_connect_request(2);
     wt_test_connect_request(8);
+}
+
+/* Request bounded by max_body_buf_per_stream: closed inside the create
+   notify the adapter defers, it is discarded and not read; otherwise read. */
+void
+xqc_test_wt_request_discarded_in_create(void)
+{
+    wt_test_connect_request(16);
+}
+
+void
+xqc_test_wt_request_bounded_not_discarded(void)
+{
+    wt_test_connect_request(17);
 }
 
 void

@@ -14,6 +14,8 @@ void xqc_test_wt_extension_settings(void);
 void xqc_test_wt_connect_accept(void);
 void xqc_test_wt_connect_reject(void);
 void xqc_test_wt_request_passthrough(void);
+void xqc_test_wt_request_discarded_in_create(void);
+void xqc_test_wt_request_bounded_not_discarded(void);
 void xqc_test_wt_request_incomplete(void);
 void xqc_test_wt_session_limit(void);
 void xqc_test_wt_protocol_selection(void);

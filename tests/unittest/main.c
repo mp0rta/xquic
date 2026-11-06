@@ -232,6 +232,10 @@ main(int argc, char *argv[])
                         xqc_test_wt_connect_reject)
         || !CU_add_test(pSuite, "xqc_test_wt_request_passthrough",
                         xqc_test_wt_request_passthrough)
+        || !CU_add_test(pSuite, "xqc_test_wt_request_discarded_in_create",
+                        xqc_test_wt_request_discarded_in_create)
+        || !CU_add_test(pSuite, "xqc_test_wt_request_bounded_not_discarded",
+                        xqc_test_wt_request_bounded_not_discarded)
         || !CU_add_test(pSuite, "xqc_test_wt_request_incomplete",
                         xqc_test_wt_request_incomplete)
         || !CU_add_test(pSuite, "xqc_test_wt_session_limit",
