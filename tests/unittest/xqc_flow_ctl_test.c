@@ -229,7 +229,7 @@ xqc_test_stream_fc_init_by_type(void)
 
 /*
  * Build a client connection with one active path whose smoothed RTT is
- * srtt_us, and a bidi stream carrying the given receive rate.
+ * srtt_us, the given connection receive rate and connection window W.
  */
 static xqc_connection_t *
 xqc_test_rate_share_conn(xqc_engine_t **engine, uint64_t conn_rate,
@@ -264,9 +264,10 @@ xqc_test_rate_share_conn(xqc_engine_t **engine, uint64_t conn_rate,
 
 
 /*
- * Test (F14): with both a connection rate and a stream rate, the stream window
- * is capped at W * stream rate / connection rate at all three places that
- * compute it; without a connection rate it is the plain rate clamp.
+ * Test: with both a connection rate and a stream rate, the stream window is
+ * capped at W * stream rate / connection rate at all three places that
+ * compute it, but never falls below init_recv_window; without a connection
+ * rate it is the plain rate clamp.
  */
 void
 xqc_test_stream_rate_window_share(void)
@@ -330,8 +331,9 @@ xqc_test_stream_rate_window_share(void)
 
 /*
  * Test: the exact integer share arithmetic, reached through
- * xqc_stream_rate_window(). max_srtt of 16 us makes the preliminary window
- * reach the 16 MiB clamp for every rate used, so the share is what binds.
+ * xqc_stream_rate_window(). max_srtt of 16 us makes the rate window at least
+ * 16 MiB for every rate used, so the share (or, for the last vector, the
+ * init_recv_window floor) is what decides.
  */
 void
 xqc_test_stream_rate_window_share_arith(void)
