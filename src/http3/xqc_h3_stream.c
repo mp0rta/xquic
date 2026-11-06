@@ -2101,11 +2101,17 @@ xqc_h3_stream_process_blocked_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s,
             return -XQC_H3_EPROC_REQUEST;
         }
 
-        /* the blocked bytes will become body bytes once the block is lifted */
+        /*
+         * The blocked bytes will become body bytes once the block is lifted.
+         * A paused request stays unread until the application drains it to
+         * the low-water mark, which clears the flag; an arrival must not
+         * read it earlier.
+         */
         if (h3c->max_body_buf_per_stream > 0
             && xqc_h3_stream_body_buf_can_pause(h3s)
-            && h3s->blocked_buf_size + h3s->h3r->body_buf_bytes
-               >= h3c->max_body_buf_per_stream)
+            && ((h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED)
+                || h3s->blocked_buf_size + h3s->h3r->body_buf_bytes
+                   >= h3c->max_body_buf_per_stream))
         {
             xqc_h3_stream_body_buf_pause(h3s, read_called);
             return XQC_OK;
@@ -2212,12 +2218,14 @@ xqc_h3_stream_process_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s, xqc_bool_
          * here as well keeps the bytes kept for a blocked field section
          * inside the limit when the resume loop reads a still-blocked
          * stream (RFC 9204 Section 2.2.1: blocked data should stay in the
-         * flow-control window, not move into unbounded buffers).
+         * flow-control window, not move into unbounded buffers). A paused
+         * request stays unread until it drains to the low-water mark.
          */
         if (h3c->max_body_buf_per_stream > 0
             && xqc_h3_stream_body_buf_can_pause(h3s)
-            && h3s->blocked_buf_size + h3s->h3r->body_buf_bytes
-               >= h3c->max_body_buf_per_stream)
+            && ((h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED)
+                || h3s->blocked_buf_size + h3s->h3r->body_buf_bytes
+                   >= h3c->max_body_buf_per_stream))
         {
             xqc_h3_stream_body_buf_pause(h3s, read_called);
             return XQC_OK;

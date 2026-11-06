@@ -2718,9 +2718,9 @@ xqc_test_h3bb_close_cycles_exceed_window(void)
     }
 }
 
-/* packets in the send queues that carry a MAX_DATA frame */
+/* packets in the send queues that carry a frame of the types in `bits` */
 static unsigned
-h3bb_max_data_queued(xqc_connection_t *conn)
+h3bb_frames_queued(xqc_connection_t *conn, xqc_frame_type_bit_t bits)
 {
     xqc_list_head_t *heads[] = {
         &conn->conn_send_queue->sndq_send_packets,
@@ -2735,10 +2735,16 @@ h3bb_max_data_queued(xqc_connection_t *conn)
         xqc_list_for_each(pos, heads[k]) {
             xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t,
                                                   po_list);
-            count += !!(po->po_frame_types & XQC_FRAME_BIT_MAX_DATA);
+            count += !!(po->po_frame_types & bits);
         }
     }
     return count;
+}
+
+static unsigned
+h3bb_max_data_queued(xqc_connection_t *conn)
+{
+    return h3bb_frames_queued(conn, XQC_FRAME_BIT_MAX_DATA);
 }
 
 /*
@@ -3280,4 +3286,61 @@ xqc_test_h3bb_body_node_freed_when_append_fails(void)
         CU_ASSERT_EQUAL(h3bb_small_data_leftovers(n), 0);
     }
 #endif
+}
+
+/*
+ * A paused request is read again only after the application drained it to
+ * the low-water mark (L / 4): between L / 4 and L an arrival, and the read
+ * turn it causes, read nothing and extend no stream credit. The stream
+ * credit 80000 and window 110000 make a MAX_STREAM_DATA due as soon as the
+ * read offset passes about 25000.
+ */
+void
+xqc_test_h3bb_paused_stays_unread_until_low_water(void)
+{
+    unsigned char buf[512];
+    uint8_t       fin;
+    h3bb_fx_t     fx;
+    int           i;
+    uint64_t      off0, cred0;
+    unsigned      msd0;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    fx.req[i].stream->stream_flow_ctl.fc_max_stream_data_can_recv = 80000;
+    fx.req[i].stream->stream_flow_ctl.fc_stream_recv_window_size = 110000;
+    h3bb_fill_to_limit(&fx, i);
+    CU_ASSERT_FATAL(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+    off0 = fx.req[i].stream->stream_data_in.next_read_offset;
+    cred0 = fx.req[i].stream->stream_flow_ctl.fc_max_stream_data_can_recv;
+    msd0 = h3bb_frames_queued(fx.conn, XQC_FRAME_BIT_MAX_STREAM_DATA);
+
+    /* drained to L / 2: above the low-water mark */
+    while (fx.req[i].h3r->body_buf_bytes > H3BB_LIMIT / 2) {
+        CU_ASSERT_FATAL(xqc_h3_request_recv_body(fx.req[i].h3r, buf,
+                                                 sizeof(buf), &fin) > 0);
+    }
+    CU_ASSERT(fx.req[i].h3r->body_buf_bytes > H3BB_LIMIT / 4);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+
+    h3bb_feed_data(&fx, i, 1400, 1400, 0);
+    h3bb_turn(&fx);
+
+    CU_ASSERT_EQUAL(fx.req[i].stream->stream_data_in.next_read_offset, off0);
+    CU_ASSERT_EQUAL(fx.req[i].stream->stream_flow_ctl
+                    .fc_max_stream_data_can_recv, cred0);
+    CU_ASSERT_EQUAL(h3bb_frames_queued(fx.conn, XQC_FRAME_BIT_MAX_STREAM_DATA),
+                    msd0);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+
+    /* at L / 4 the request resumes and the next pass reads */
+    while (fx.req[i].h3r->body_buf_bytes > H3BB_LIMIT / 4) {
+        CU_ASSERT_FATAL(xqc_h3_request_recv_body(fx.req[i].h3r, buf,
+                                                 sizeof(buf), &fin) > 0);
+    }
+    CU_ASSERT_EQUAL(fx.req[i].h3s->flags
+                    & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED, 0);
+    h3bb_turn(&fx);
+    CU_ASSERT(fx.req[i].stream->stream_data_in.next_read_offset > off0);
+
+    h3bb_teardown(&fx);
 }
