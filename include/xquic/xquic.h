@@ -1889,19 +1889,21 @@ typedef struct xqc_conn_settings_s {
      * 32768 frames in any case, or max_stream_frame_buffered_cnt when that
      * is non-zero. A peer that writes small frames (below about 512 bytes
      * against the default 16 MiB stream window) into a paused request can
-     * reach the cap first. From then on the transport refuses further
-     * small frames for that request (every frame, at 32768): it stops
-     * processing that short-header packet at the refused frame and does
-     * not acknowledge it, so the frames after it, DATAGRAMs included, are
-     * lost, and the peer treats the whole packet as lost. This repeats
-     * until the application drains or closes the request. The stream
-     * resumes once the application has drained the request to a quarter
-     * of the limit. A request whose FIN the HTTP/3 layer has already
-     * read is not paused, and neither is one
-     * whose stream the peer has reset, or whose reliable part (RESET_STREAM_AT)
-     * has been read, since the next read completes the reset (RFC 9000
-     * Section 3.2). A request reset with RESET_STREAM_AT can still pause
-     * until that reliable part has been read.
+     * reach the cap first. From then on every further frame for that
+     * request is refused: at 32768 frames, or at a configured cap, always;
+     * at 8192 frames only a frame that alone lifts the average back to 256
+     * bytes would be taken, and no frame that fits in a packet can. The
+     * transport stops processing that short-header packet at the refused
+     * frame and does not acknowledge it, so the frames after it, DATAGRAMs
+     * included, are lost, and the peer treats the whole packet as lost.
+     * This repeats until the application drains or closes the request.
+     * The stream resumes once the application has drained the request to a
+     * quarter of the limit. A request whose FIN the HTTP/3 layer has
+     * already read is not paused, and neither is one whose stream the peer
+     * has reset, or whose reliable part (RESET_STREAM_AT) has been read,
+     * since the next read completes the reset (RFC 9000 Section 3.2). A
+     * request reset with RESET_STREAM_AT can still pause until that
+     * reliable part has been read.
      *
      * A request the application closes with xqc_h3_request_close() while
      * this is non-zero is discarded: its remaining input is read and
@@ -1923,10 +1925,9 @@ typedef struct xqc_conn_settings_s {
      * DATA_BLOCKED, RFC 9000 Section 4.2); once U reaches W no credit is
      * extended until the application reads. A peer's RESET_STREAM returns
      * its unread bytes to the connection credit (RFC 9000 Section 4.5).
-     * When this setting or
-     * enable_stream_rate_limit is on, the connection window also never
-     * shrinks, since credit once granted cannot be withdrawn (RFC 9000
-     * Section 4.1).
+     * When this setting or enable_stream_rate_limit is on, the connection
+     * window also never shrinks, since credit once granted cannot be
+     * withdrawn (RFC 9000 Section 4.1).
      *
      * What the transport buffers for a paused request counts against the
      * connection's receive window too. With the default windows one request

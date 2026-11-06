@@ -992,15 +992,18 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     } else if (ret == -XQC_ELIMIT
                && packet_in->pi_pkt.pkt_type == XQC_PTYPE_SHORT_HEADER)
     {
-        /* Reassembly buffer at capacity and this frame does not extend the
-         * contiguous prefix (see xqc_insert_stream_frame). Treat the whole
-         * packet as if it were lost instead of tearing down the
-         * connection: returning a tolerant error makes
-         * xqc_conn_process_packet skip xqc_conn_on_pkt_processed, so the
+        /* Reassembly buffer at capacity: this frame does not extend the
+         * contiguous prefix, or it does and the buffer is full of small
+         * frames (a paused request leaves in-order frames unread; see
+         * xqc_insert_stream_frame). Treat the whole packet as if it were
+         * lost instead of tearing down the connection: returning a
+         * tolerant error makes xqc_conn_process_packet skip
+         * xqc_conn_on_pkt_processed, so the
          * packet is never acknowledged — required by RFC 9000 §13.1 (a
          * packet must not be acked until its STREAM data has been
          * enqueued) — and the peer retransmits it later, by which time
-         * the buffer has drained via prefix-extending frames. This is a
+         * the buffer has drained via prefix-extending frames or, for a
+         * paused request, because the application read. This is a
          * §21.7 resource-exhaustion mitigation; the previous escalation
          * closed healthy multipath connections with a bogus
          * FRAME_ENCODING_ERROR (generic engine error path) under
@@ -3421,9 +3424,9 @@ xqc_process_reset_stream_at_frame(xqc_connection_t *conn,
         stream->stream_data_in.merged_offset_end >= reliable_size
             ? XQC_RECV_STREAM_ST_DATA_RECVD
             : XQC_RECV_STREAM_ST_SIZE_KNOWN);
-    /* RFC 9000 Section 4.2: the final size used credit and the reset does not
-     * complete yet, so nothing else evaluates it (the paths that complete the
-     * reset do, once, after fc_data_read has moved). */
+    /* RFC 9000 Section 4.2: the final size may have used credit, and the
+     * reset does not complete yet, so nothing else evaluates it (the paths
+     * that complete the reset do, once, after fc_data_read has moved). */
     xqc_stream_do_recv_conn_flow_ctl(stream);
     xqc_stream_ready_to_read(stream);
     return XQC_OK;

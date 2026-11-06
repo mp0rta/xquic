@@ -2694,7 +2694,7 @@ xqc_test_h3bb_close_cycles_exceed_window(void)
     }
 }
 
-/* MAX_DATA frames waiting in the send queues */
+/* packets in the send queues that carry a MAX_DATA frame */
 static unsigned
 h3bb_max_data_queued(xqc_connection_t *conn)
 {

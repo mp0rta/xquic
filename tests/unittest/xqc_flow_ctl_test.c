@@ -290,7 +290,7 @@ xqc_test_conn_credit_reset_extends(void)
     xqc_engine_destroy(conn->engine);
 }
 
-/* MAX_DATA frames waiting in the send queues */
+/* packets in the send queues that carry a MAX_DATA frame */
 static unsigned
 xqc_test_fc_max_data_queued(xqc_connection_t *conn)
 {
