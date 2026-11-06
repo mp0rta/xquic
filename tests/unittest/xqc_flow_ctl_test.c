@@ -13,6 +13,7 @@
 #include "src/transport/xqc_frame.h"
 #include "src/transport/xqc_send_queue.h"
 #include "src/transport/xqc_packet_out.h"
+#include "src/common/utils/vint/xqc_variable_len_int.h"
 #include "xqc_common_test.h"
 
 /*
@@ -170,6 +171,7 @@ xqc_test_fc_try(xqc_connection_t *conn, xqc_stream_t *stream, uint64_t w,
 
     fc->fc_recv_windows_size = w;
     fc->fc_last_window_update_time = 0;
+    fc->fc_last_window_update_read = 0;
     fc->fc_data_read = 30000;
     fc->fc_data_recved = 30000 + unread;
     fc->fc_max_data_can_recv = fc->fc_data_recved + avail;
@@ -373,9 +375,9 @@ xqc_test_conn_credit_reset_at_final_size_extends(void)
 }
 
 /* A RESET_STREAM that completes the reset checks connection credit once,
-   after the discarded bytes count as read; a second check inside 2 * srtt
-   would double the window. Both reliable-reset settings run, as they select
-   the handler. */
+   after the discarded bytes count as read; a second check would queue a
+   second MAX_DATA, which the count assert catches. Both reliable-reset
+   settings run, as they select the handler. */
 void
 xqc_test_conn_credit_reset_checks_once(void)
 {
@@ -395,8 +397,6 @@ xqc_test_conn_credit_reset_checks_once(void)
         stream = xqc_test_fc_stream(conn);
         fc = &conn->conn_flow_ctl;
         id = stream->stream_id;
-        CU_ASSERT_PTR_NOT_NULL_FATAL(conn->conn_initial_path);
-        conn->conn_initial_path->path_send_ctl->ctl_srtt = 60000;
         conn->local_settings.reset_stream_at = pass == 1;
         conn->remote_settings.reset_stream_at = pass == 1;
 
@@ -476,7 +476,8 @@ xqc_test_conn_window_monotone(void)
     conn->conn_settings.enable_stream_rate_limit = 0;
     conn->conn_settings.recv_rate_bytes_per_sec = 0;
     path->path_send_ctl->ctl_srtt = 10 * 1000 * 1000;
-    /* 20 MiB read: more than half a window since the last resize, so it resizes */
+    /* 20 MiB read: more than half a window since the last resize, so it
+       resizes */
     fc->fc_recv_windows_size = 32 * 1024 * 1024;
     fc->fc_last_window_update_time = 0;
     fc->fc_last_window_update_read = 0;
@@ -497,55 +498,51 @@ xqc_test_conn_window_monotone(void)
     xqc_engine_destroy(conn->engine);
 }
 
-static size_t
-xqc_test_fc_varint(uint8_t *p, uint64_t v)
-{
-    if (v < 64) {
-        p[0] = (uint8_t)v;
-        return 1;
-    }
-    p[0] = (uint8_t)(0x80 | (v >> 24));
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-    return 4;
-}
-
-/* The peer sends one STREAM frame of len bytes at off through the frame parser. */
+/* The peer sends one STREAM frame of len bytes at off through the parser. */
 static int
-xqc_test_fc_peer_frame(xqc_connection_t *conn, xqc_stream_t *stream, uint64_t off,
-    uint64_t len)
+xqc_test_fc_peer_frame(xqc_connection_t *conn, xqc_stream_t *stream,
+    uint64_t off, uint64_t len)
 {
     static uint8_t  pkt[1300];
-    size_t          n = 0;
+    uint8_t        *p = pkt;
     xqc_packet_in_t pi;
 
-    pkt[n++] = 0x0e;    /* STREAM with OFF, LEN */
-    n += xqc_test_fc_varint(pkt + n, stream->stream_id);
-    n += xqc_test_fc_varint(pkt + n, off);
-    n += xqc_test_fc_varint(pkt + n, len);
-    memset(pkt + n, 0x5a, len);
-    n += len;
+    *p++ = 0x0e;    /* STREAM with OFF, LEN */
+    p = xqc_put_varint(p, stream->stream_id);
+    p = xqc_put_varint(p, off);
+    p = xqc_put_varint(p, len);
+    CU_ASSERT_FATAL(len <= sizeof(pkt) - (size_t)(p - pkt));
+    memset(p, 0x5a, len);
+    p += len;
     memset(&pi, 0, sizeof(pi));
     pi.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
     pi.pos = pkt;
-    pi.last = pkt + n;
+    pi.last = p;
     return xqc_process_frames(conn, &pi);
 }
 
-/* The peer spends all its connection credit in 1200-byte frames; returns the new offset. */
+/* The peer sends 1200-byte frames until the connection or the stream credit
+   is spent; returns the new offset. */
 static uint64_t
-xqc_test_fc_peer_spend(xqc_connection_t *conn, xqc_stream_t *stream, uint64_t off)
+xqc_test_fc_peer_spend(xqc_connection_t *conn, xqc_stream_t *stream,
+    uint64_t off)
 {
     xqc_conn_flow_ctl_t *fc = &conn->conn_flow_ctl;
 
-    while (fc->fc_max_data_can_recv > fc->fc_data_recved) {
-        uint64_t len = fc->fc_max_data_can_recv - fc->fc_data_recved;
+    for (;;) {
+        uint64_t conn_left = fc->fc_max_data_can_recv - fc->fc_data_recved;
+        uint64_t strm_left =
+            stream->stream_flow_ctl.fc_max_stream_data_can_recv - off;
+        uint64_t len = xqc_min(conn_left, strm_left);
 
+        if (len == 0) {
+            break;
+        }
         if (len > 1200) {
             len = 1200;
         }
-        CU_ASSERT_EQUAL_FATAL(xqc_test_fc_peer_frame(conn, stream, off, len), XQC_OK);
+        CU_ASSERT_EQUAL_FATAL(xqc_test_fc_peer_frame(conn, stream, off, len),
+                              XQC_OK);
         off += len;
     }
     return off;
@@ -553,7 +550,7 @@ xqc_test_fc_peer_spend(xqc_connection_t *conn, xqc_stream_t *stream, uint64_t of
 
 /*
  * Arrival of data does not resize the connection window; reading half a
- * window does, even when arrivals extend the credit in between.
+ * window does, even when the credit is extended in between.
  */
 void
 xqc_test_conn_window_resized_by_reads_not_arrivals(void)
@@ -580,7 +577,8 @@ xqc_test_conn_window_resized_by_reads_not_arrivals(void)
     fc->fc_last_window_update_time = 0;
     fc->fc_last_window_update_read = 0;
 
-    /* the peer sends 1 byte, the application reads it, the peer spends its credit */
+    /* the peer sends 1 byte, the application reads it, the peer spends its
+       credit */
     CU_ASSERT_EQUAL_FATAL(xqc_test_fc_peer_frame(conn, stream, off, 1), XQC_OK);
     off += 1;
     CU_ASSERT_EQUAL_FATAL(xqc_stream_recv(stream, buf, 1, &fin), 1);
@@ -590,8 +588,8 @@ xqc_test_conn_window_resized_by_reads_not_arrivals(void)
     CU_ASSERT_EQUAL(fc->fc_max_data_can_recv, fc->fc_data_read + w);
     CU_ASSERT_EQUAL(fc->fc_data_recved - fc->fc_data_read, w);
 
-    /* 4096-byte reads, each followed by the peer spending the new credit; the window
-       stays until more than half of it (524288 bytes) has been read */
+    /* 4096-byte reads, each followed by the peer spending the new credit; the
+       window stays until more than half of it (524288 bytes) has been read */
     for (;;) {
         CU_ASSERT_EQUAL_FATAL(xqc_stream_recv(stream, buf, sizeof(buf), &fin),
                               sizeof(buf));
@@ -626,13 +624,15 @@ xqc_test_conn_window_doubling_from_last_resize(void)
     stream = xqc_test_fc_stream(conn);
     fc = &conn->conn_flow_ctl;
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn->conn_initial_path);
-    conn->conn_initial_path->path_send_ctl->ctl_srtt = 60000;
+    /* 10 s, as in the monotone test, so the second resize is well within
+       2 x srtt */
+    conn->conn_initial_path->path_send_ctl->ctl_srtt = 10 * 1000 * 1000;
 
     fc->fc_recv_windows_size = w;
     fc->fc_last_window_update_time = 0;
     fc->fc_last_window_update_read = 0;
 
-    /* 30000 read, credit spent: extended, but less than half a window was read */
+    /* 30000 read, credit spent: extended, but under half a window read */
     fc->fc_data_read = 30000;
     fc->fc_data_recved = 90000;
     fc->fc_max_data_can_recv = 90000;
