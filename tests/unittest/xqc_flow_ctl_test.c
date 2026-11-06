@@ -9,6 +9,8 @@
 #include "src/transport/xqc_conn.h"
 #include "src/transport/xqc_engine.h"
 #include "src/transport/xqc_frame.h"
+#include "src/transport/xqc_packet_out.h"
+#include "src/transport/xqc_send_ctl.h"
 #include "src/transport/xqc_stream.h"
 #include "xqc_common_test.h"
 
@@ -213,6 +215,137 @@ xqc_test_stream_fc_init_by_type(void)
     ret = xqc_process_stream_frame(conn, &pi);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, 0);
+
+    xqc_engine_destroy(engine);
+}
+
+
+/*
+ * Build a client connection with one active path whose smoothed RTT is
+ * srtt_us, and a bidi stream carrying the given receive rate.
+ */
+static xqc_connection_t *
+xqc_test_rate_share_conn(xqc_engine_t **engine, uint64_t conn_rate,
+    uint64_t window, xqc_usec_t srtt_us)
+{
+    xqc_conn_settings_t cs;
+    xqc_conn_ssl_config_t ssl;
+    xqc_connection_t *conn;
+    const xqc_cid_t *cid;
+
+    *engine = test_create_engine();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(*engine);
+
+    memset(&cs, 0, sizeof(cs));
+    memset(&ssl, 0, sizeof(ssl));
+    cs.proto_version = XQC_VERSION_V1;
+    cs.enable_stream_rate_limit = 1;
+    cs.init_recv_window = 15360;
+    cs.recv_rate_bytes_per_sec = conn_rate;
+
+    cid = xqc_connect(*engine, &cs, NULL, 0, "", 0, &ssl, NULL, 0,
+                      "transport", NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(cid);
+    conn = xqc_engine_conns_hash_find(*engine, cid, 's');
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    conn->conn_initial_path->path_state = XQC_PATH_STATE_ACTIVE;
+    conn->conn_initial_path->path_send_ctl->ctl_srtt = srtt_us;
+    conn->conn_flow_ctl.fc_recv_windows_size = window;
+    return conn;
+}
+
+
+/*
+ * Test (F14): with both a connection rate and a stream rate, the stream window
+ * is capped at W * stream rate / connection rate at all three places that
+ * compute it; without a connection rate it is the plain rate clamp.
+ */
+void
+xqc_test_stream_rate_window_share(void)
+{
+    xqc_engine_t *engine;
+    xqc_connection_t *conn;
+    xqc_stream_t *stream;
+    xqc_stream_settings_t ss;
+    size_t written = 0;
+    const uint64_t crate = 125000000, srate = 31250000;
+    const uint64_t quarter = XQC_MAX_RECV_WINDOW / 4;
+
+    conn = xqc_test_rate_share_conn(&engine, crate, XQC_MAX_RECV_WINDOW,
+                                    400000);
+    stream = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+    stream->recv_rate_bytes_per_sec = srate;
+
+    /* 400 ms: uncapped 12.5 MB, share 4 MiB */
+    CU_ASSERT_EQUAL(xqc_stream_rate_window(stream, 400000), quarter);
+    /* 31 ms: 968750 is below the share */
+    CU_ASSERT_EQUAL(xqc_stream_rate_window(stream, 31000), 968750);
+    /* no connection rate: unchanged */
+    conn->conn_settings.recv_rate_bytes_per_sec = 0;
+    CU_ASSERT_EQUAL(xqc_stream_rate_window(stream, 400000), 12500000);
+    conn->conn_settings.recv_rate_bytes_per_sec = crate;
+
+    /* site 1: first STREAM frame of a client bidi stream */
+    stream->stream_flow_ctl.fc_stream_recv_window_size = 0;
+    xqc_write_stream_frame_to_packet(conn, stream, XQC_PTYPE_SHORT_HEADER, 0,
+                                     (const unsigned char *)"x", 1, &written);
+    CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_stream_recv_window_size,
+                    quarter);
+
+    /* site 2: xqc_stream_update_settings */
+    stream->stream_flow_ctl.fc_stream_recv_window_size = 0;
+    memset(&ss, 0, sizeof(ss));
+    ss.recv_rate_bytes_per_sec = srate;
+    CU_ASSERT_EQUAL(xqc_stream_update_settings(stream, &ss), XQC_OK);
+    CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_stream_recv_window_size,
+                    quarter);
+
+    /* site 3: xqc_stream_do_recv_flow_ctl, window fully consumed */
+    stream->stream_flow_ctl.fc_stream_recv_window_size = 1 << 20;
+    stream->stream_flow_ctl.fc_max_stream_data_can_recv =
+        stream->stream_data_in.next_read_offset;
+    xqc_stream_do_recv_flow_ctl(stream);
+    CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_stream_recv_window_size,
+                    quarter);
+
+    xqc_engine_destroy(engine);
+}
+
+
+/*
+ * Test: the exact integer share arithmetic, reached through
+ * xqc_stream_rate_window(). max_srtt of 16 us makes the preliminary window
+ * reach the 16 MiB clamp for every rate used, so the share is what binds.
+ */
+void
+xqc_test_stream_rate_window_share_arith(void)
+{
+    xqc_engine_t *engine;
+    xqc_connection_t *conn;
+    xqc_stream_t *stream;
+    const uint64_t w = XQC_MAX_RECV_WINDOW;
+    const uint64_t big = ((uint64_t)1 << 53) - 1;
+
+    conn = xqc_test_rate_share_conn(&engine, (uint64_t)1 << 42, w, 0);
+    stream = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+
+    stream->recv_rate_bytes_per_sec = (uint64_t)1 << 40;
+    CU_ASSERT_EQUAL(xqc_stream_rate_window(stream, 16), (uint64_t)1 << 22);
+
+    /* stream/conn ratio of 2^40: capped without overflow */
+    conn->conn_settings.recv_rate_bytes_per_sec = 1;
+    CU_ASSERT_EQUAL(xqc_stream_rate_window(stream, 16), w);
+
+    /* floor, not round: double arithmetic would give 4194304 */
+    stream->recv_rate_bytes_per_sec = big;
+    conn->conn_settings.recv_rate_bytes_per_sec = 4 * big + 1;
+    CU_ASSERT_EQUAL(xqc_stream_rate_window(stream, 16), 4194303);
+
+    conn->conn_flow_ctl.fc_recv_windows_size = 0;
+    CU_ASSERT_EQUAL(xqc_stream_rate_window(stream, 16), 0);
 
     xqc_engine_destroy(engine);
 }

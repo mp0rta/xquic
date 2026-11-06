@@ -443,6 +443,8 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_conn_flow_ctl_clamp", xqc_test_conn_flow_ctl_clamp)
         || !CU_add_test(pSuite, "xqc_test_flow_ctl_normal_no_clamp", xqc_test_flow_ctl_normal_no_clamp)
         || !CU_add_test(pSuite, "xqc_test_stream_fc_init_by_type", xqc_test_stream_fc_init_by_type)
+        || !CU_add_test(pSuite, "xqc_test_stream_rate_window_share", xqc_test_stream_rate_window_share)
+        || !CU_add_test(pSuite, "xqc_test_stream_rate_window_share_arith", xqc_test_stream_rate_window_share_arith)
         || !CU_add_test(pSuite, "xqc_test_recv_record", xqc_test_recv_record)
         || !CU_add_test(pSuite, "xqc_test_reno", xqc_test_reno)
         || !CU_add_test(pSuite, "xqc_test_reno_loss_ssthresh",

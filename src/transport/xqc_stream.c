@@ -408,6 +408,91 @@ xqc_stream_do_send_flow_ctl(xqc_stream_t *stream)
     return ret;
 }
 
+/*
+ * floor(w * s / c) capped at cap, in exact 64-bit arithmetic (the fork builds
+ * with MSVC, which has no 128-bit integer). s = q * c + r, so the result is
+ * w * q + floor(w * r / c). The second term is computed by binary long
+ * multiplication over the bits of w with a remainder kept below c; "x + y
+ * reaches c" is tested as x >= c - y, so no sum exceeds c and nothing wraps.
+ * The quotient of the second term is below w, so acc stays within
+ * cap + w and cannot wrap for w <= XQC_MAX_RECV_WINDOW.
+ */
+static uint64_t
+xqc_mul_div_floor_capped(uint64_t w, uint64_t s, uint64_t c, uint64_t cap)
+{
+    uint64_t q, r, acc, quot, rem;
+    int i;
+
+    if (w == 0 || c == 0) {
+        return 0;
+    }
+
+    q = s / c;
+    r = s % c;
+    if (q > cap / w) {
+        return cap;
+    }
+
+    acc = w * q;
+    quot = 0;
+    rem = 0;
+    for (i = 63; i >= 0; i--) {
+        quot <<= 1;
+        if (rem >= c - rem) {
+            rem -= c - rem;
+            quot++;
+
+        } else {
+            rem += rem;
+        }
+
+        if ((w >> i) & 1) {
+            if (rem >= c - r) {
+                rem -= c - r;
+                quot++;
+
+            } else {
+                rem += r;
+            }
+        }
+    }
+
+    acc += quot;
+    return xqc_min(acc, cap);
+}
+
+
+/*
+ * Receive window of a rate-limited stream. Without a connection rate this is
+ * clamp(rate * max_srtt, init_recv_window, XQC_MAX_RECV_WINDOW). With one it
+ * is also capped at the stream's share of the connection window,
+ * W * stream rate / connection rate, so one stalled stream cannot hold more
+ * than its share of the connection credit (RFC 9000 Section 4.1: both limits
+ * apply to the sender; granted credit cannot be revoked, so the cap is
+ * applied when the credit is granted, using the current W).
+ */
+uint64_t
+xqc_stream_rate_window(xqc_stream_t *stream, xqc_usec_t max_srtt)
+{
+    xqc_connection_t *conn = stream->stream_conn;
+    uint64_t win, share;
+
+    win = stream->recv_rate_bytes_per_sec * max_srtt / 1000000;
+    win = xqc_max(conn->conn_settings.init_recv_window, win);
+    win = xqc_min(XQC_MAX_RECV_WINDOW, win);
+
+    if (conn->conn_settings.recv_rate_bytes_per_sec) {
+        share = xqc_mul_div_floor_capped(
+            conn->conn_flow_ctl.fc_recv_windows_size,
+            stream->recv_rate_bytes_per_sec,
+            conn->conn_settings.recv_rate_bytes_per_sec, XQC_MAX_RECV_WINDOW);
+        win = xqc_min(win, share);
+    }
+
+    return win;
+}
+
+
 int
 xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
 {
@@ -440,12 +525,7 @@ xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
 
             old_fc_win = stream->stream_flow_ctl.fc_stream_recv_window_size;
             stream->stream_flow_ctl.fc_stream_recv_window_size =
-                stream->recv_rate_bytes_per_sec * max_srtt / 1000000;
-            stream->stream_flow_ctl.fc_stream_recv_window_size =
-                xqc_max(conn->conn_settings.init_recv_window,
-                        stream->stream_flow_ctl.fc_stream_recv_window_size);
-            stream->stream_flow_ctl.fc_stream_recv_window_size = xqc_min(
-                XQC_MAX_RECV_WINDOW, stream->stream_flow_ctl.fc_stream_recv_window_size);
+                xqc_stream_rate_window(stream, max_srtt);
             xqc_log(conn->log, XQC_LOG_DEBUG,
                     "|stream_level|fc_win_update|old_fc_win:%ui|fc_win:%ui|", old_fc_win,
                     stream->stream_flow_ctl.fc_stream_recv_window_size);
@@ -1198,12 +1278,7 @@ xqc_stream_update_settings(xqc_stream_t *stream, xqc_stream_settings_t *settings
             max_srtt = xqc_conn_get_max_srtt(conn);
             old_fc_win = stream->stream_flow_ctl.fc_stream_recv_window_size;
             stream->stream_flow_ctl.fc_stream_recv_window_size =
-                stream->recv_rate_bytes_per_sec * max_srtt / 1000000;
-            stream->stream_flow_ctl.fc_stream_recv_window_size =
-                xqc_max(conn->conn_settings.init_recv_window,
-                        stream->stream_flow_ctl.fc_stream_recv_window_size);
-            stream->stream_flow_ctl.fc_stream_recv_window_size = xqc_min(
-                XQC_MAX_RECV_WINDOW, stream->stream_flow_ctl.fc_stream_recv_window_size);
+                xqc_stream_rate_window(stream, max_srtt);
             xqc_log(conn->log, XQC_LOG_DEBUG, "|fc_win_update|old_fc_win:%ui|fc_win:%ui|",
                     old_fc_win, stream->stream_flow_ctl.fc_stream_recv_window_size);
             new_offset = xqc_clamp_to_max_flow_ctl(
