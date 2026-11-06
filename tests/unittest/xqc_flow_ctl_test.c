@@ -287,6 +287,13 @@ xqc_test_stream_rate_window_share(void)
     CU_ASSERT_EQUAL(xqc_stream_rate_window(stream, 400000), 12500000);
     conn->conn_settings.recv_rate_bytes_per_sec = crate;
 
+    /* a tiny share keeps the init_recv_window floor (RFC 9000 Section 4.2) */
+    conn->conn_flow_ctl.fc_recv_windows_size = 63000;
+    stream->recv_rate_bytes_per_sec = 1000;
+    CU_ASSERT_EQUAL(xqc_stream_rate_window(stream, 400000), 15360);
+    conn->conn_flow_ctl.fc_recv_windows_size = XQC_MAX_RECV_WINDOW;
+    stream->recv_rate_bytes_per_sec = srate;
+
     /* site 1: first STREAM frame of a client bidi stream */
     stream->stream_flow_ctl.fc_stream_recv_window_size = 0;
     xqc_write_stream_frame_to_packet(conn, stream, XQC_PTYPE_SHORT_HEADER, 0,
@@ -344,8 +351,15 @@ xqc_test_stream_rate_window_share_arith(void)
     conn->conn_settings.recv_rate_bytes_per_sec = 4 * big + 1;
     CU_ASSERT_EQUAL(xqc_stream_rate_window(stream, 16), 4194303);
 
+    /* W with many set bits: exercises the carry/reduction steps */
+    conn->conn_flow_ctl.fc_recv_windows_size = 0xFFFFFF;
+    stream->recv_rate_bytes_per_sec = (uint64_t)3 << 40;
+    conn->conn_settings.recv_rate_bytes_per_sec = ((uint64_t)7 << 40) + 5;
+    CU_ASSERT_EQUAL(xqc_stream_rate_window(stream, 16), 7190234);
+
+    /* a zero window still yields the init_recv_window floor */
     conn->conn_flow_ctl.fc_recv_windows_size = 0;
-    CU_ASSERT_EQUAL(xqc_stream_rate_window(stream, 16), 0);
+    CU_ASSERT_EQUAL(xqc_stream_rate_window(stream, 16), 15360);
 
     xqc_engine_destroy(engine);
 }

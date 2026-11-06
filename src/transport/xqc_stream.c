@@ -416,6 +416,7 @@ xqc_stream_do_send_flow_ctl(xqc_stream_t *stream)
  * reaches c" is tested as x >= c - y, so no sum exceeds c and nothing wraps.
  * The quotient of the second term is below w, so acc stays within
  * cap + w and cannot wrap for w <= XQC_MAX_RECV_WINDOW.
+ * Precondition (guaranteed by the caller): c > 0.
  */
 static uint64_t
 xqc_mul_div_floor_capped(uint64_t w, uint64_t s, uint64_t c, uint64_t cap)
@@ -423,7 +424,7 @@ xqc_mul_div_floor_capped(uint64_t w, uint64_t s, uint64_t c, uint64_t cap)
     uint64_t q, r, acc, quot, rem;
     int i;
 
-    if (w == 0 || c == 0) {
+    if (w == 0) {
         return 0;
     }
 
@@ -464,32 +465,35 @@ xqc_mul_div_floor_capped(uint64_t w, uint64_t s, uint64_t c, uint64_t cap)
 
 /*
  * Receive window of a rate-limited stream. Without a connection rate this is
- * clamp(rate * max_srtt, init_recv_window, XQC_MAX_RECV_WINDOW). With one it
- * is also capped at the stream's share of the connection window,
- * W * stream rate / connection rate, so one stalled stream cannot hold more
- * than its share of the connection credit (RFC 9000 Section 4.1: both limits
- * apply to the sender; granted credit cannot be revoked, so the cap is
- * applied when the credit is granted, using the current W).
+ * clamp(rate * max_srtt, init_recv_window, XQC_MAX_RECV_WINDOW). With one,
+ * the rate window is first capped at the stream's share of the connection
+ * window, W * stream rate / connection rate, so one stalled stream cannot
+ * hold more than its share of the connection credit (RFC 9000 Section 4.1:
+ * the sender must stay within both limits; granted credit cannot be revoked,
+ * so the cap is applied when the credit is granted, using the current W).
+ * The share is applied before the floor: the window must never fall below
+ * init_recv_window, otherwise the read-side trigger (window / 2) can never
+ * fire and credit would only follow STREAM_DATA_BLOCKED, which a receiver
+ * MUST NOT wait for (RFC 9000 Section 4.2).
  */
 uint64_t
 xqc_stream_rate_window(xqc_stream_t *stream, xqc_usec_t max_srtt)
 {
     xqc_connection_t *conn = stream->stream_conn;
-    uint64_t win, share;
+    uint64_t win;
 
     win = stream->recv_rate_bytes_per_sec * max_srtt / 1000000;
-    win = xqc_max(conn->conn_settings.init_recv_window, win);
-    win = xqc_min(XQC_MAX_RECV_WINDOW, win);
 
     if (conn->conn_settings.recv_rate_bytes_per_sec) {
-        share = xqc_mul_div_floor_capped(
-            conn->conn_flow_ctl.fc_recv_windows_size,
-            stream->recv_rate_bytes_per_sec,
-            conn->conn_settings.recv_rate_bytes_per_sec, XQC_MAX_RECV_WINDOW);
-        win = xqc_min(win, share);
+        win = xqc_min(win, xqc_mul_div_floor_capped(
+                               conn->conn_flow_ctl.fc_recv_windows_size,
+                               stream->recv_rate_bytes_per_sec,
+                               conn->conn_settings.recv_rate_bytes_per_sec,
+                               XQC_MAX_RECV_WINDOW));
     }
 
-    return win;
+    win = xqc_max(conn->conn_settings.init_recv_window, win);
+    return xqc_min(XQC_MAX_RECV_WINDOW, win);
 }
 
 
