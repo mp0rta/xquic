@@ -156,7 +156,8 @@ xqc_test_flow_ctl_normal_no_clamp(void)
 
 
 /*
- * Connection credit net of unread data (RFC 9000 Section 4.2). Put the
+ * Connection credit net of unread data (a receiver must not wait for
+ * DATA_BLOCKED, RFC 9000 Section 4.2). Put the
  * receive side into a state with `unread` received-unread bytes, `avail`
  * credit still granted beyond what was received and window w, run the
  * connection-level update and report whether MAX_DATA grew. The stream

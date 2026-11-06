@@ -1994,7 +1994,8 @@ xqc_h3_stream_release_blocked(xqc_h3_stream_t *h3s)
  * Own read turn of a discarded request: free what the application will never
  * take, then read and drop the transport stream up to EAGAIN, FIN or an error
  * (RESET). The bytes still count towards the connection credit (RFC 9000
- * Section 4.5: all bytes of the stream count against the final size), and
+ * Section 4.5: the final size accounts for all bytes of the stream in the
+ * connection-level flow controller), and
  * reading up to FIN moves the receive side from Data Recvd to Data Read
  * (Section 3.2). Nothing is parsed and no
  * application callback runs. A connection that is closing or being destroyed
@@ -2054,8 +2055,10 @@ xqc_h3_stream_body_buf_can_pause(xqc_h3_stream_t *h3s)
 }
 
 /*
- * A read turn that called xqc_stream_recv already left the connection's read
+ * A read turn that called xqc_stream_recv normally left the connection's read
  * list; otherwise take the stream off it here, in its own read turn.
+ * xqc_stream_recv re-queues the stream after a RESET_STREAM_AT reliable read
+ * (xqc_stream.c); that is safe only because can_pause refuses that state.
  */
 static void
 xqc_h3_stream_body_buf_pause(xqc_h3_stream_t *h3s, xqc_bool_t read_called)

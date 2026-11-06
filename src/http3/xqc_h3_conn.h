@@ -118,7 +118,8 @@ typedef struct xqc_h3_conn_s {
     size_t                       max_body_buf_per_stream;
 
     /* gp timer that makes the engine process this connection again once a
-     * paused request was resumed from inside the engine; -1 until needed */
+     * paused request was resumed, or a discarded request queued, from inside
+     * the engine (both via xqc_h3_stream_ready_and_wake); -1 until needed */
     xqc_gp_timer_id_t            body_buf_revisit_timer;
 
     /* blocked buffer monitoring */

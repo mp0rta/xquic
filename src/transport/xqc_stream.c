@@ -497,10 +497,10 @@ xqc_stream_do_recv_conn_flow_ctl(xqc_stream_t *stream)
     xqc_bool_t monotone = conn->conn_settings.max_body_buf_per_stream > 0
                           || conn->conn_settings.enable_stream_rate_limit;
 
-#define XQC_CONN_RATE_WIN(c, ms)                                              \
+#define XQC_CONN_RATE_WIN(c, us)                                              \
     xqc_min(XQC_MAX_RECV_WINDOW,                                              \
             xqc_max(XQC_MIN_RECV_WINDOW,                                      \
-                    (c)->conn_settings.recv_rate_bytes_per_sec * (ms) / 1000000))
+                    (c)->conn_settings.recv_rate_bytes_per_sec * (us) / 1000000))
 
     if (monotone && conn->conn_settings.recv_rate_bytes_per_sec) {
         max_srtt = xqc_conn_get_max_srtt(conn);
@@ -508,9 +508,12 @@ xqc_stream_do_recv_conn_flow_ctl(xqc_stream_t *stream)
             xqc_max(fc->fc_recv_windows_size, XQC_CONN_RATE_WIN(conn, max_srtt));
     }
 
-    /* RFC 9000 Section 4.2: effective window = window - unread bytes. */
-    unread = fc->fc_data_recved > fc->fc_data_read
-             ? fc->fc_data_recved - fc->fc_data_read : 0;
+    /*
+     * Credit is extended net of unread bytes: a receiver MUST NOT wait for
+     * DATA_BLOCKED (RFC 9000 Section 4.2). fc_data_read <= fc_data_recved
+     * always holds (reads, RESET and reliable-reset accounting keep it).
+     */
+    unread = fc->fc_data_recved - fc->fc_data_read;
     if (unread >= fc->fc_recv_windows_size) {
         return XQC_OK;
     }

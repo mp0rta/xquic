@@ -1640,12 +1640,17 @@ typedef struct xqc_conn_settings_s {
      * NOTE: the minimal rate limitation is (63000/RTT) Bps. For instance, if RTT is 60ms,
      * the minimal valid rate limitation is about 1MBps. Any recv_rate_bytes_per_sec less
      * than the minimal valid rate limitation will not be guaranteed.
+     * With enable_stream_rate_limit or max_body_buf_per_stream non-zero, the
+     * connection receive window no longer shrinks: after an RTT spike it stays
+     * as large as that spike made it, up to 16 MiB.
      * default: 0 (no limitation).
      */
     uint64_t recv_rate_bytes_per_sec;
 
     /**
      * The switch to enable stream-level recv rate throttling. Default: off (0)
+     * Turning it on also keeps the connection receive window from shrinking:
+     * after an RTT spike it stays as large as that spike made it, up to 16 MiB.
      */
     uint8_t enable_stream_rate_limit;
 
@@ -1869,6 +1874,8 @@ typedef struct xqc_conn_settings_s {
      * Maximum HTTP/3 DATA payload buffered per request stream, in bytes:
      * payload the HTTP/3 layer has read out of the transport stream that the
      * application has not yet collected with xqc_h3_request_recv_body().
+     * Header bytes held back while the request waits for QPACK table updates
+     * count toward the limit too.
      *
      * Non-zero makes the HTTP/3 layer stop reading a request's transport
      * stream while the request holds this many bytes (checked before each
@@ -1878,21 +1885,32 @@ typedef struct xqc_conn_settings_s {
      * buffers that data. The stream resumes once the application has
      * drained the request to a quarter of the limit. A request whose FIN
      * the HTTP/3 layer has already read is not paused, and neither is one
-     * that the peer has reset (RFC 9000 Section 3.2).
+     * whose stream the peer has reset, or whose reliable part (RESET_STREAM_AT)
+     * has been read, since the next read completes the reset (RFC 9000
+     * Section 3.2). A request reset with RESET_STREAM_AT can still pause
+     * until that reliable part has been read.
      *
      * A request the application closes with xqc_h3_request_close() while
      * this is non-zero is discarded: its remaining input is read and
-     * dropped without reaching the application, which gets no further
-     * notification except the final close notification, and the QPACK
-     * decoder reports the stream as cancelled (RFC 9204 Section 4.4.2).
+     * dropped without reaching the application, which normally gets no
+     * further notification except the final close notification. Unless the
+     * connection is closing, or the QPACK dynamic table capacity is zero
+     * (RFC 9204 Section 2.2.2.2), the QPACK decoder reports the stream as
+     * cancelled (RFC 9204 Section 4.4.2), once per request. A request
+     * whose transport stream had already closed while it waited for QPACK
+     * updates is not discarded, and replaying it can still notify the
+     * application.
      * An application that stops collecting a request's body must close it
      * to release its stream.
      *
      * Independent of this setting, the connection's flow-control credit is
-     * extended counting unread data against the window, so an unread stream
-     * cannot stall the others (RFC 9000 Section 4.2), and a peer's
-     * RESET_STREAM returns its unread bytes to the connection credit
-     * (RFC 9000 Section 4.5). When this setting or
+     * extended net of the received-but-unread bytes U on the connection, so
+     * while U is below the connection window W, unread bytes do not hold
+     * back credit for the other streams (a receiver must not wait for
+     * DATA_BLOCKED, RFC 9000 Section 4.2); once U reaches W no credit is
+     * extended until the application reads. A peer's RESET_STREAM returns
+     * its unread bytes to the connection credit (RFC 9000 Section 4.5).
+     * When this setting or
      * enable_stream_rate_limit is on, the connection window also never
      * shrinks, since credit once granted cannot be withdrawn (RFC 9000
      * Section 4.1).

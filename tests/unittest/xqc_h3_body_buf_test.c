@@ -59,8 +59,8 @@ struct h3bb_fx_s {
     uint64_t          enc_offset;
 };
 
-/* RFC 9114 Section 7.2.1: DATA frame; the HEADERS frame is a minimal valid
- * field section (see xqc_h3_test.c). */
+/* RFC 9114 Section 7.2.1: DATA frame; the HEADERS frame (Section 7.2.2) is a
+ * minimal valid field section (see xqc_h3_test.c). */
 static const uint8_t h3bb_valid_headers[] = {0x01, 0x03, 0x00, 0x00, 0xC0};
 
 

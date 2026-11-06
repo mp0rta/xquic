@@ -241,7 +241,9 @@ _Static_assert(XQC_CONN_FLAG_MP_WAIT_MP_READY == ((xqc_conn_flag_t)1ULL << 38),
 _Static_assert(XQC_CONN_FLAG_MP_READY_NOTIFY == ((xqc_conn_flag_t)1ULL << 39),
                "XQC_CONN_FLAG_MP_READY_NOTIFY must be bit 39");
 _Static_assert(XQC_CONN_FLAG_RETRY_SENT == ((xqc_conn_flag_t)1ULL << 42),
-               "XQC_CONN_FLAG_RETRY_SENT must be bit 42 (highest currently-defined flag)");
+               "XQC_CONN_FLAG_RETRY_SENT must be bit 42");
+_Static_assert(XQC_CONN_FLAG_DESTROYING == ((xqc_conn_flag_t)1ULL << 43),
+               "XQC_CONN_FLAG_DESTROYING must be bit 43 (highest currently-defined flag)");
 
 
 typedef struct {
