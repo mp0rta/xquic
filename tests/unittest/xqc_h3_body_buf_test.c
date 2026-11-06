@@ -129,8 +129,9 @@ h3bb_close_notify(xqc_h3_request_t *h3r, void *user_data)
 
 /*
  * Leave the connection as xqc_engine_main_logic() does after a pass: out of
- * the active queue, TICKING clear, parked in the wakeup queue (next_tick_time
- * 0, the NO_DESTROY branch, where production would destroy it).
+ * the active queue, TICKING clear, parked in the wakeup queue. Where
+ * production would destroy the connection (no next tick) this takes the
+ * NO_DESTROY branch: parked with next_tick_time 0.
  */
 static void
 h3bb_park(h3bb_fx_t *fx)
@@ -165,10 +166,8 @@ h3bb_leave_pass(h3bb_fx_t *fx)
 }
 
 /*
- * An H3 connection the way the engine makes one: ALPN h3, H3 callbacks, the
- * setting under test, established state, control and QPACK streams. A client
- * takes `limit` from its settings; a server takes it from the engine defaults
- * set through xqc_server_set_conn_settings().
+ * An H3 connection set up the way the engine sets one up. A server takes
+ * `limit` from the engine defaults, as production does.
  */
 static int
 h3bb_setup(h3bb_fx_t *fx, size_t limit, xqc_conn_type_t type)
@@ -790,10 +789,10 @@ xqc_test_h3bb_no_pause_after_reset(void)
 }
 
 /* RESET_STREAM_AT whose reliable part is already read while the buffer is at
- * the limit: the first read ends at the reliable size and re-queues the
- * stream; the next read turn must not pause and completes the reset. 30000
- * bytes are fed (5 + 5 + 29990); the reliable size 20000 is not a multiple
- * of 4 KiB. */
+ * the limit: the reliable size 20000 is not a multiple of 4 KiB, so the first
+ * read ends short there and re-queues the stream; the next read turn
+ * (read_called false) must not pause and completes the reset. 30000 bytes are
+ * fed (5 + 5 + 29990). */
 void
 xqc_test_h3bb_no_pause_reliable_prefix_read(void)
 {
@@ -2200,8 +2199,8 @@ xqc_test_h3bb_blocked_walk_sibling_close(void)
         h3bb_turn(&fx);
 
         if (variant == 3) {
-            /* the connection is closing: A's replay stops after its close
-             * callback, B stays blocked until the teardown releases it */
+            /* the connection is closing: A's replay stops after the callback
+             * that closed it; B stays blocked until the teardown frees it */
             a_notifies = fx.req[a].n_read_notify;
             CU_ASSERT_EQUAL(h3bb_walk_closed, 1);
             CU_ASSERT_EQUAL(a_notifies, 1);
@@ -2617,7 +2616,8 @@ h3bb_data_hdr(size_t p)
 
 /* Requests closed while paused, with and without the peer's FIN, return
  * their unread bytes. Together they exceed the connection window, so a later
- * request progresses only if the credit came back; the window stays fixed. */
+ * request progresses only if the credit came back; the window stays fixed
+ * (bounded request, receive rate). */
 void
 xqc_test_h3bb_close_cycles_exceed_window(void)
 {
@@ -2908,7 +2908,8 @@ h3bb_process_small_frame(h3bb_fx_t *fx, int idx, const uint8_t *data)
  * Pins a known limit, not a goal: a paused request leaves in-order frames
  * unread, and the transport's per-stream frame cap (8192 frames averaging
  * under 256 bytes, 32768 in any case) refuses further frames and drops their
- * packet unacknowledged until the request drains.
+ * packet unacknowledged until the request drains. Coalescing in-order frames
+ * in the transport would change this test.
  */
 void
 xqc_test_h3bb_small_frames_reach_frame_cap(void)

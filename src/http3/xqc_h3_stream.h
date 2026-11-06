@@ -224,7 +224,7 @@ xqc_int_t xqc_h3_stream_send_goaway(xqc_h3_stream_t *h3s, uint64_t push_id, uint
 
 xqc_int_t xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s);
 
-/* the application drained a paused request: have the engine read it again */
+/* a paused request is at or below the low-water mark: have it read again */
 void xqc_h3_stream_body_buf_resume(xqc_h3_stream_t *h3s);
 
 /* queue the stream for reading: wake the engine from outside, or arm the
@@ -233,12 +233,13 @@ void xqc_h3_stream_ready_and_wake(xqc_h3_stream_t *h3s);
 
 /*
  * An application-closed request (only with max_body_buf_per_stream > 0): no
- * more parsing or read notifications; its read turn drops what remains so the
- * credit returns.
+ * more parsing, read or closing notifications; its read turn drops what
+ * remains so the credit returns.
  */
 xqc_bool_t xqc_h3_stream_in_discard(const xqc_h3_stream_t *h3s);
 
-/* drop all QPACK-blocked state; not while a replay of the stream runs */
+/* drop all QPACK-blocked state; only where no iteration holds a blocked_buf
+ * element across a callback */
 void xqc_h3_stream_release_blocked(xqc_h3_stream_t *h3s);
 
 xqc_var_buf_t *xqc_h3_stream_get_send_buf(xqc_h3_stream_t *h3s);

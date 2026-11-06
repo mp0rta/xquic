@@ -2017,7 +2017,8 @@ xqc_h3_stream_discard_read(xqc_h3_stream_t *h3s)
 
 /*
  * Whether reading may be paused for the body limit. Not after FIN, nor once a
- * reset was received or its reliable part read: the next read completes it.
+ * reset was received or its reliable part read: the next read completes the
+ * reset (RFC 9000 Section 3.2).
  */
 static xqc_bool_t
 xqc_h3_stream_body_buf_can_pause(xqc_h3_stream_t *h3s)
@@ -2167,7 +2168,7 @@ xqc_h3_stream_ready_and_wake(xqc_h3_stream_t *h3s)
     }
 }
 
-/* The application drained a paused request to the low-water mark. */
+/* A paused request is at or below the low-water mark: have it read again. */
 void
 xqc_h3_stream_body_buf_resume(xqc_h3_stream_t *h3s)
 {
@@ -2500,7 +2501,7 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
     }
     h3s->flags |= XQC_HTTP3_STREAM_IN_READING;
 
-    /* the read-list walk does not check for a connection a callback closed */
+    /* a callback may have closed the connection: the walk does not check */
     if (h3c->max_body_buf_per_stream > 0 && xqc_conn_is_tearing_down(h3c->conn)) {
         h3s->flags &= ~XQC_HTTP3_STREAM_IN_READING;
         return XQC_OK;
@@ -2611,7 +2612,7 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
                 /*
                  * Nothing new was read: do not notify the same leftover
                  * again. A node with no bytes (the empty DATA frame carrying
-                 * FIN) counts as new.
+                 * FIN) counts as new: only a notify delivers it.
                  */
                 if (h3s->h3r->body_buf_bytes == buffered
                     && h3s->h3r->body_buf_count == nodes)

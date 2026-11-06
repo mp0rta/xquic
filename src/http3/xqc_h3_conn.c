@@ -597,7 +597,7 @@ fail:
     return NULL;
 }
 
-/* the timer only has to expire: that pass processes the read list */
+/* empty: the pass its expiry causes processes the read list */
 static void
 xqc_h3_conn_body_buf_revisit_timeout(xqc_gp_timer_id_t gp_timer_id, xqc_usec_t now,
                                      void *user_data)
@@ -1121,9 +1121,9 @@ xqc_h3_conn_process_blocked_stream(xqc_h3_conn_t *h3c)
     /*
      * A replay runs callbacks that may destroy another blocked request, so
      * keep no entry across it: take the next from the front. A replayed entry
-     * waits on a local list and is put back in front before leaving; unblock,
-     * release and destroy take an entry off whatever list it is on, so only
-     * entries still blocked come back.
+     * waits on a local list; unblock, release and destroy take an entry off
+     * whatever list it is on, so only entries still blocked go back in front,
+     * where their ricnt (not above the known count) keeps the list sorted.
      */
     xqc_init_list_head(&replayed);
 
