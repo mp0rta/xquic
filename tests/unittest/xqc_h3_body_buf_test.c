@@ -2455,8 +2455,9 @@ xqc_test_h3bb_stream_cancel_emission(void)
 
 
 /*
- * The walk of the blocked list keeps an entry whose replay
- * leaves the stream blocked, so that a later walk, or the teardown, finds it.
+ * The walk of the blocked list keeps an entry whose replay leaves the stream
+ * blocked, so that a later walk, or the teardown, finds it; an entry whose
+ * Required Insert Count is met is taken off.
  */
 static void
 h3bb_check_blocked_count(h3bb_fx_t *fx)
@@ -2468,7 +2469,7 @@ h3bb_check_blocked_count(h3bb_fx_t *fx)
  * first chunk): the insertion that meets the Required Insert Count unblocks
  * the stream, and the rest of the section completes it */
 void
-xqc_test_h3bb_blocked_walk_keeps_unfinished_replay(void)
+xqc_test_h3bb_blocked_walk_unblocks_met_replay(void)
 {
     size_t limits[2] = {H3BB_LIMIT, 0};
     int    k;
@@ -2999,7 +3000,7 @@ xqc_test_h3bb_small_frames_reach_frame_cap(void)
 
 /*
  * Draining a paused request from another request's notify, inside the
- * engine, leaves the connection due even when an allocation fails there:
+ * engine, leaves the connection due even if an allocation there would fail:
  * the revisit timer is registered with the connection, so arming it
  * allocates nothing.
  */
@@ -3014,10 +3015,11 @@ h3bb_test_drain_p_failing_alloc(h3bb_fx_t *fx, int idx)
         return;
     }
     h3bb_revisit_done = 1;
-    /* the allocation the old lazy registration needed */
+    /* the allocation the old lazy registration needed would fail; the drain
+     * allocates nothing now, so the armed failure is never reached */
     xqc_test_af_arm(1);
     CU_ASSERT(h3bb_drain(fx, h3bb_revisit_p) > 0);
-    xqc_test_af_disarm();
+    CU_ASSERT(!xqc_test_af_disarm());
 }
 
 static xqc_bool_t

@@ -11,8 +11,8 @@ void xqc_test_conn_destroy_frees_crypto_data(void);
 
 void xqc_test_qpack_create_alloc_failures(void);
 
-/* the allocation-failure switch, for tests in other files (Linux only, with
- * XQC_TEST_ALLOC_WRAP; elsewhere these do nothing) */
+/* the allocation-failure switch, for tests in other files; defined only with
+ * XQC_TEST_ALLOC_WRAP (Linux), so callers sit under that guard */
 void xqc_test_af_arm(long fail_at);
 int  xqc_test_af_disarm(void);
 void xqc_test_af_live_begin(void);

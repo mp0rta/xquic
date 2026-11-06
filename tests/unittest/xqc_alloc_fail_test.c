@@ -397,11 +397,6 @@ xqc_test_conn_destroy_frees_crypto_data(void)
 
 #else
 
-void xqc_test_af_arm(long fail_at) {}
-int  xqc_test_af_disarm(void) { return 0; }
-void xqc_test_af_live_begin(void) {}
-long xqc_test_af_live_end(void) { return 0; }
-
 void
 xqc_test_client_connect_active_queue_full(void)
 {

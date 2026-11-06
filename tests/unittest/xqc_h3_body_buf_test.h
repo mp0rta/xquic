@@ -43,7 +43,7 @@ void xqc_test_h3bb_close_self_in_replay_headers_cb(void);
 void xqc_test_h3bb_blocked_walk_sibling_close(void);
 void xqc_test_h3bb_teardown_close_after_decoder_destroyed(void);
 void xqc_test_h3bb_stream_cancel_emission(void);
-void xqc_test_h3bb_blocked_walk_keeps_unfinished_replay(void);
+void xqc_test_h3bb_blocked_walk_unblocks_met_replay(void);
 void xqc_test_h3bb_blocked_walk_keeps_failed_replay(void);
 void xqc_test_h3bb_teardown_blocked_sibling_close(void);
 void xqc_test_h3bb_reset_while_paused(void);
