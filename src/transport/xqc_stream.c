@@ -706,13 +706,6 @@ xqc_create_stream_with_conn(xqc_connection_t *conn, xqc_stream_id_t stream_id,
      * on first packet/byte accounting per path. xqc_calloc'd stream zeroes
      * the pointer + counters already; no explicit reset needed. */
 
-    xqc_stream_set_flow_ctl(stream);
-
-    xqc_init_list_head(&stream->stream_data_in.frames_tailq);
-
-    xqc_init_list_head(&stream->stream_write_buff_list.write_buff_list);
-    xqc_init_list_head(&stream->stream_acked_ranges);
-
     if (stream_id == XQC_UNDEFINE_STREAM_ID) {
         stream->stream_type = stream_type;
         stream->stream_id = xqc_gen_stream_id(conn, stream->stream_type);
@@ -721,6 +714,14 @@ xqc_create_stream_with_conn(xqc_connection_t *conn, xqc_stream_id_t stream_id,
         stream->stream_id = stream_id;
         stream->stream_type = xqc_get_stream_type(stream_id);
     }
+
+    /* the limits depend on the stream type, so set them after it is known */
+    xqc_stream_set_flow_ctl(stream);
+
+    xqc_init_list_head(&stream->stream_data_in.frames_tailq);
+
+    xqc_init_list_head(&stream->stream_write_buff_list.write_buff_list);
+    xqc_init_list_head(&stream->stream_acked_ranges);
 
     xqc_id_hash_element_t e = {stream->stream_id, stream};
     if (xqc_id_hash_add(conn->streams_hash, e)) {
