@@ -2117,6 +2117,18 @@ h3bb_test_close_b(h3bb_fx_t *fx, int idx)
     CU_ASSERT_EQUAL(xqc_h3_request_close(fx->req[1].h3r), XQC_OK);
 }
 
+/* variant 3: the replay callback of A closes the connection instead */
+static void
+h3bb_test_conn_close_in_replay(h3bb_fx_t *fx, int idx)
+{
+    if (idx != 0 || h3bb_walk_closed) {
+        return;
+    }
+    h3bb_walk_closed = 1;
+    CU_ASSERT_EQUAL(xqc_conn_close(fx->conn->engine,
+                                   &fx->conn->scid_set.user_scid), XQC_OK);
+}
+
 /* a field section with Required Insert Count 2 (encoded 3): it waits for a
  * second table entry */
 static const uint8_t h3bb_blocked_headers_ric2[] = {
@@ -2128,9 +2140,10 @@ xqc_test_h3bb_blocked_walk_sibling_close(void)
 {
     int variant;
 
-    for (variant = 0; variant < 3; variant++) {
+    for (variant = 0; variant < 4; variant++) {
         h3bb_fx_t fx;
         int       a, b;
+        int       a_notifies;
 
         a = h3bb_open_blocked_request(&fx);
         fx.conn->engine->log->log_level = XQC_LOG_DEBUG;
@@ -2166,9 +2179,30 @@ xqc_test_h3bb_blocked_walk_sibling_close(void)
         }
 
         h3bb_walk_closed = 0;
-        fx.req[a].on_notify = h3bb_test_close_b;
+        fx.req[a].on_notify = variant == 3 ? h3bb_test_conn_close_in_replay
+                                           : h3bb_test_close_b;
         h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
         h3bb_turn(&fx);
+
+        if (variant == 3) {
+            /* the connection is closing: A's replay stops after the callback
+             * that closed it, the walk stops, B is never replayed and stays
+             * blocked until the teardown releases it */
+            a_notifies = fx.req[a].n_read_notify;
+            CU_ASSERT_EQUAL(h3bb_walk_closed, 1);
+            CU_ASSERT_EQUAL(a_notifies, 1);
+            CU_ASSERT_EQUAL(fx.req[b].n_read_notify, 0);
+            CU_ASSERT_EQUAL(fx.h3c->block_stream_count, 1);
+            CU_ASSERT_EQUAL(fx.h3c->block_stream_count,
+                            h3bb_blocked_list_len(&fx));
+            CU_ASSERT_EQUAL(fx.req[a].n_close_notify, 0);
+            CU_ASSERT_EQUAL(fx.req[b].n_close_notify, 0);
+            h3bb_teardown(&fx);
+            CU_ASSERT_EQUAL(fx.req[a].n_read_notify, a_notifies);
+            CU_ASSERT_EQUAL(fx.req[a].n_close_notify, 1);
+            CU_ASSERT_EQUAL(fx.req[b].n_close_notify, 1);
+            continue;
+        }
 
         CU_ASSERT_EQUAL(h3bb_walk_closed, 1);
         CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
