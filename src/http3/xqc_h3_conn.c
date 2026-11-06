@@ -1091,20 +1091,21 @@ xqc_h3_conn_remove_blocked_stream(xqc_h3_conn_t *h3c,
 void
 xqc_h3_conn_destroy_blocked_stream_list(xqc_h3_conn_t *h3c)
 {
-    xqc_list_head_t *pos, *next;
-
-    xqc_list_for_each_safe(pos, next, &h3c->block_stream_head)
-    {
-        xqc_h3_blocked_stream_t *blocked_stream =
-            xqc_list_entry(pos, xqc_h3_blocked_stream_t, head);
+    /*
+     * The close notify run by the destroy may close and so destroy another
+     * entry, hence no entry is kept across it: each destroy removes its own
+     * entry (xqc_h3_stream_destroy), and the next one is the new first.
+     */
+    while (!xqc_list_empty(&h3c->block_stream_head)) {
+        xqc_h3_blocked_stream_t *blocked_stream = xqc_list_entry(
+            h3c->block_stream_head.next, xqc_h3_blocked_stream_t, head);
 
         /**
          * when destroying h3 connection, and a h3 stream is still blocked, it means that
          * Transport stream was destroyed while h3 stream is still waiting for encoder
          * instructions, but connection was closed actively or some reason else.
          */
-        xqc_h3_stream_t *h3s = blocked_stream->h3s;
-        xqc_h3_stream_destroy(h3s);
+        xqc_h3_stream_destroy(blocked_stream->h3s);
     }
 }
 
@@ -1112,13 +1113,20 @@ xqc_int_t
 xqc_h3_conn_process_blocked_stream(xqc_h3_conn_t *h3c)
 {
     uint64_t known_received_count = xqc_qpack_get_dec_insert_count(h3c->qpack);
+    xqc_int_t ret = XQC_OK;
+    xqc_list_head_t replayed;
 
     /*
      * A replay runs application callbacks, and a callback may close and so
      * destroy another blocked request (one whose transport stream is gone is
-     * destroyed at once). Hence no entry is kept across a replay: the entry
-     * leaves the list first and the next one is taken from the front.
+     * destroyed at once). Hence no entry is kept across a replay: the next
+     * one is taken from the front. A replayed entry waits on a local list
+     * and is put back in front before leaving: unblock, release and destroy
+     * take an entry off whatever list it is on, so what is put back is the
+     * entries still blocked, and their ricnt is not above the known count.
      */
+    xqc_init_list_head(&replayed);
+
     while (!xqc_list_empty(&h3c->block_stream_head)) {
         xqc_h3_blocked_stream_t *blocked_stream = xqc_list_entry(
             h3c->block_stream_head.next, xqc_h3_blocked_stream_t, head);
@@ -1129,7 +1137,6 @@ xqc_h3_conn_process_blocked_stream(xqc_h3_conn_t *h3c)
         }
 
         h3s = blocked_stream->h3s;
-        xqc_list_del_init(&blocked_stream->head);
 
         if (xqc_h3_stream_in_discard(h3s)) {
             /* the application closed it: never replayed */
@@ -1137,9 +1144,12 @@ xqc_h3_conn_process_blocked_stream(xqc_h3_conn_t *h3c)
             continue;
         }
 
-        xqc_int_t ret = xqc_h3_stream_process_blocked_stream(h3s);
+        xqc_list_del(&blocked_stream->head);
+        xqc_list_add_tail(&blocked_stream->head, &replayed);
+
+        ret = xqc_h3_stream_process_blocked_stream(h3s);
         if (ret < 0) {
-            return ret;
+            break;
         }
 
         if (h3c->max_body_buf_per_stream > 0
@@ -1148,7 +1158,9 @@ xqc_h3_conn_process_blocked_stream(xqc_h3_conn_t *h3c)
             break;
         }
     }
-    return XQC_OK;
+
+    xqc_list_splice(&replayed, &h3c->block_stream_head);
+    return ret < 0 ? ret : XQC_OK;
 }
 
 void *

@@ -2384,3 +2384,130 @@ xqc_test_h3bb_stream_cancel_emission(void)
     CU_ASSERT_EQUAL(h3bb_dec_bytes(&fx) - before, 1);
     h3bb_teardown(&fx);
 }
+
+
+/*
+ * A6 fix round: the walk of the blocked list keeps an entry whose replay
+ * leaves the stream blocked, so that a later walk, or the teardown, finds it.
+ */
+static void
+h3bb_check_blocked_count(h3bb_fx_t *fx)
+{
+    CU_ASSERT_EQUAL(fx->h3c->block_stream_count, h3bb_blocked_list_len(fx));
+}
+
+/* the replay finds only a zero-length node (the section prefix ended the
+ * first chunk) and leaves the stream blocked; a later insert completes it */
+void
+xqc_test_h3bb_blocked_walk_keeps_unfinished_replay(void)
+{
+    size_t limits[2] = {H3BB_LIMIT, 0};
+    int    k;
+
+    for (k = 0; k < 2; k++) {
+        h3bb_fx_t fx;
+        int       i;
+        static const uint8_t prefix_only[] = {0x01, 0x03, 0x02, 0x00};
+        static const uint8_t rest[] = {0x80};
+        static const uint8_t second_insert[] = {0x43, 'x', '-', 'u', 0x01, '2'};
+
+        i = h3bb_open_request(&fx, limits[k]);
+        fx.h3c->max_blocked_buf_per_stream = 0;
+        fx.h3c->max_blocked_buf_per_conn = 0;
+        h3bb_feed(&fx, i, prefix_only, sizeof(prefix_only), 0);
+        h3bb_read(&fx, i);
+        h3bb_check_blocked_count(&fx);
+
+        h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
+        h3bb_check_blocked_count(&fx);
+        CU_ASSERT_EQUAL(h3bb_blocked_list_len(&fx), 1);
+
+        h3bb_feed(&fx, i, rest, sizeof(rest), 0);
+        h3bb_feed_data(&fx, i, 100, 100, 1);
+        h3bb_turn(&fx);
+        h3bb_feed_encoder(&fx, second_insert, sizeof(second_insert));
+        h3bb_check_blocked_count(&fx);
+        CU_ASSERT(fx.req[i].n_read_notify > 0);
+        CU_ASSERT_EQUAL(fx.h3c->block_stream_count, 0);
+
+        h3bb_teardown(&fx);
+        CU_ASSERT_EQUAL(fx.req[i].n_close_notify, 1);
+    }
+}
+
+/* the replay fails (a relative index that is invalid once unblocked) before
+ * its unblock: the stream stays listed and the teardown still finds it */
+void
+xqc_test_h3bb_blocked_walk_keeps_failed_replay(void)
+{
+    size_t limits[2] = {H3BB_LIMIT, 0};
+    int    k;
+
+    for (k = 0; k < 2; k++) {
+        h3bb_fx_t fx;
+        int       i;
+        static const uint8_t bad_blocked[] = {0x01, 0x03, 0x02, 0x00, 0x81};
+
+        i = h3bb_open_request(&fx, limits[k]);
+        fx.h3c->max_blocked_buf_per_stream = 0;
+        fx.h3c->max_blocked_buf_per_conn = 0;
+        h3bb_feed(&fx, i, bad_blocked, sizeof(bad_blocked), 0);
+        h3bb_feed_data(&fx, i, 100, 100, 1);
+        h3bb_read(&fx, i);
+        h3bb_check_blocked_count(&fx);
+
+        h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
+        h3bb_check_blocked_count(&fx);
+        CU_ASSERT_EQUAL(h3bb_blocked_list_len(&fx), 1);
+
+        h3bb_teardown(&fx);
+        CU_ASSERT_EQUAL(fx.req[i].n_close_notify, 1);
+    }
+}
+
+/* two requests kept for QPACK after their transport streams closed: during
+ * the teardown request 0's close notify closes request 1 */
+static void
+h3bb_test_close_kept_sibling(h3bb_fx_t *fx, int idx)
+{
+    if (idx == 0 && fx->req[1].h3r != NULL) {
+        xqc_h3_request_close(fx->req[1].h3r);
+    }
+}
+
+static void
+h3bb_detach_closed_transport(h3bb_fx_t *fx, int i)
+{
+    xqc_stream_t *st = fx->req[i].stream;
+
+    CU_ASSERT_EQUAL(h3_stream_callbacks.stream_close_notify(
+                        st, fx->req[i].h3s), XQC_OK);
+    st->stream_flag &= ~XQC_STREAM_FLAG_HAS_H3;
+    st->user_data = NULL;
+}
+
+void
+xqc_test_h3bb_teardown_blocked_sibling_close(void)
+{
+    h3bb_fx_t fx;
+    int       a, b;
+
+    a = h3bb_open_blocked_request(&fx);
+    b = h3bb_add_request(&fx);
+    CU_ASSERT_EQUAL_FATAL(b, 1);
+    fx.req[b].stream->stream_flow_ctl.fc_max_stream_data_can_recv =
+        16 * 1024 * 1024;
+    h3bb_feed(&fx, b, h3bb_blocked_headers, sizeof(h3bb_blocked_headers), 0);
+    h3bb_feed_data(&fx, a, 300, 100, 1);
+    h3bb_feed_data(&fx, b, 300, 100, 1);
+    h3bb_read(&fx, a);
+    h3bb_read(&fx, b);
+    h3bb_detach_closed_transport(&fx, a);
+    h3bb_detach_closed_transport(&fx, b);
+    CU_ASSERT_EQUAL_FATAL(fx.h3c->block_stream_count, 2);
+
+    fx.req[a].on_close = h3bb_test_close_kept_sibling;
+    h3bb_teardown(&fx);
+    CU_ASSERT_EQUAL(fx.req[a].n_close_notify, 1);
+    CU_ASSERT_EQUAL(fx.req[b].n_close_notify, 1);
+}
