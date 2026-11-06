@@ -236,6 +236,10 @@ main(int argc, char *argv[])
                         xqc_test_wt_request_discarded_in_create)
         || !CU_add_test(pSuite, "xqc_test_wt_request_bounded_not_discarded",
                         xqc_test_wt_request_bounded_not_discarded)
+        || !CU_add_test(pSuite, "xqc_test_wt_failed_capsule_closes_bounded_request",
+                        xqc_test_wt_failed_capsule_closes_bounded_request)
+        || !CU_add_test(pSuite, "xqc_test_wt_failed_capsule_unbounded_request_unchanged",
+                        xqc_test_wt_failed_capsule_unbounded_request_unchanged)
         || !CU_add_test(pSuite, "xqc_test_wt_request_incomplete",
                         xqc_test_wt_request_incomplete)
         || !CU_add_test(pSuite, "xqc_test_wt_session_limit",

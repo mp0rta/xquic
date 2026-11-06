@@ -875,11 +875,75 @@ wt_session_closed(xqc_wt_session_t *session, xqc_http_headers_t *headers,
     return XQC_OK;
 }
 
+/*
+ * The CONNECT stream of an open session has received more than the body
+ * limit, starting with a capsule that the session rejects, and its FIN.
+ * With a limit the request is paused when the session fails, so the adapter
+ * must close it: its input is then read and dropped, and the stream can
+ * finish. Without a limit the request is read as before and left open.
+ */
+static void
+wt_test_failed_capsule_unread(xqc_connection_t *conn, xqc_h3_stream_t *h3s,
+    xqc_wt_session_t *session, xqc_bool_t bounded)
+{
+    enum { PAYLOAD = 40000, TOTAL = 5 + PAYLOAD };
+    xqc_stream_t         *stream = h3s->stream;
+    xqc_stream_data_in_t *in = &stream->stream_data_in;
+    xqc_stream_frame_t   *f;
+    unsigned char        *data;
+
+    CU_ASSERT_FATAL(session->open && !session->closed);
+
+    /* a DATA frame (RFC 9114 Section 7.2.1) of PAYLOAD bytes whose first
+       capsule is a CLOSE_WEBTRANSPORT_SESSION shorter than its error code */
+    data = xqc_calloc(1, TOTAL);
+    data[0] = 0x00;
+    data[1] = 0x80;
+    data[2] = 0x00;
+    data[3] = PAYLOAD >> 8;
+    data[4] = PAYLOAD & 0xff;
+    data[5] = 0x68;
+    data[6] = 0x43;
+    data[7] = 3;
+
+    stream->stream_flow_ctl.fc_max_stream_data_can_recv = 1 << 20;
+    conn->conn_flow_ctl.fc_max_data_can_recv = 1 << 20;
+    f = xqc_calloc(1, sizeof(xqc_stream_frame_t));
+    f->data_offset = 0;
+    f->data_length = TOTAL;
+    f->fin = 1;
+    f->data = data;
+    in->stream_length = TOTAL;
+    in->stream_determined = XQC_TRUE;
+    xqc_stream_recv_state_update(stream, XQC_RECV_STREAM_ST_SIZE_KNOWN);
+    CU_ASSERT_EQUAL_FATAL(xqc_insert_stream_frame(conn, stream, f), XQC_OK);
+    stream->stream_max_recv_offset = TOTAL;
+    conn->conn_flow_ctl.fc_data_recved += TOTAL;
+    xqc_stream_recv_state_update(stream, XQC_RECV_STREAM_ST_DATA_RECVD);
+
+    /* one read turn inside an engine pass */
+    conn->engine->eng_flag |= XQC_ENG_FLAG_RUNNING;
+    conn->conn_flag |= XQC_CONN_FLAG_TICKING;
+    CU_ASSERT_EQUAL(h3_stream_callbacks.stream_read_notify(stream, h3s),
+                    XQC_OK);
+    conn->conn_flag &= ~XQC_CONN_FLAG_TICKING;
+    conn->engine->eng_flag &= ~XQC_ENG_FLAG_RUNNING;
+
+    CU_ASSERT(session->closed);
+    if (bounded) {
+        CU_ASSERT_EQUAL(in->next_read_offset, TOTAL);
+        CU_ASSERT(xqc_h3_stream_in_discard(h3s));
+    } else {
+        CU_ASSERT(!xqc_h3_stream_in_discard(h3s));
+        CU_ASSERT(!(h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED));
+    }
+}
+
 static void
 wt_test_connect_request(int scenario)
 {
     xqc_bool_t accepted = scenario == 1 || scenario == 9
-        || (scenario >= 12 && scenario <= 15);
+        || (scenario >= 12 && scenario <= 15) || scenario >= 18;
     xqc_connection_t *conn = test_engine_connect();
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
     xqc_engine_t *engine = conn->engine;
@@ -926,8 +990,10 @@ wt_test_connect_request(int scenario)
     CU_ASSERT(xqc_engine_get_alpn_callbacks(engine, "h3", 2,
                                             &conn->app_proto_cbs) == XQC_OK);
     conn->conn_type = XQC_CONN_TYPE_SERVER;
-    /* scenarios 16 and 17: a bounded request (non-zero body buffer limit) */
-    conn->conn_settings.max_body_buf_per_stream = scenario >= 16 ? 16384 : 0;
+    /* scenarios 16, 17 and 19: a bounded request (non-zero body buffer
+       limit); 18 is 19 without the limit */
+    conn->conn_settings.max_body_buf_per_stream =
+        (scenario >= 16 && scenario != 18) ? 16384 : 0;
     wt_app_close_in_create = scenario == 16;
     int marker;
     wt_app_conn_context = &marker;
@@ -1024,7 +1090,7 @@ wt_test_connect_request(int scenario)
                            ":path", "origin"};
     const char *values[] = {"CONNECT", "webtransport-h3", "https", "localhost",
                             "/wt", accepted ? "allowed" : "denied"};
-    if (scenario == 2 || scenario == 8 || scenario >= 16) {
+    if (scenario == 2 || scenario == 8 || (scenario >= 16 && scenario <= 17)) {
         values[0] = "GET";
         names[1] = ":scheme";
         values[1] = "https";
@@ -1064,7 +1130,7 @@ wt_test_connect_request(int scenario)
         return;
     }
     CU_ASSERT_FATAL(xqc_h3_request_on_recv_header(request) == XQC_OK);
-    if (scenario >= 16) {
+    if (scenario == 16 || scenario == 17) {
         /* the adapter defers the application's create notify to the header
          * notify; a request it closed there is discarded and gets no read
          * notify, one it left open does */
@@ -1113,6 +1179,11 @@ wt_test_connect_request(int scenario)
     if (scenario == 10 || scenario == 11) {
         /* RFC 9114 Section 4.3.1: '*' is only valid for OPTIONS. */
         CU_ASSERT(h3s->stream->stream_err == H3_MESSAGE_ERROR);
+    }
+    if (scenario >= 18) {
+        wt_test_failed_capsule_unread(conn, h3s, session, scenario == 19);
+        xqc_engine_destroy(engine);
+        return;
     }
     if (scenario >= 12) {
         uint32_t expected = scenario == 15 ? H3_REQUEST_CANCELLED
@@ -1186,6 +1257,19 @@ void
 xqc_test_wt_request_bounded_not_discarded(void)
 {
     wt_test_connect_request(17);
+}
+
+/* A session that fails on a capsule closes its paused CONNECT request */
+void
+xqc_test_wt_failed_capsule_closes_bounded_request(void)
+{
+    wt_test_connect_request(19);
+}
+
+void
+xqc_test_wt_failed_capsule_unbounded_request_unchanged(void)
+{
+    wt_test_connect_request(18);
 }
 
 void

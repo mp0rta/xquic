@@ -176,12 +176,27 @@ xqc_wt_request_fail(xqc_wt_session_t *session, uint64_t error)
     session->close_error = (uint32_t)error;
     xqc_wt_session_close_streams(session);
     xqc_stream_t *stream = session->request->h3_stream->stream;
+    xqc_bool_t bounded = session->request->h3_stream->h3c
+                             ->max_body_buf_per_stream > 0;
     /* A QPACK-blocked request can outlive its transport stream. */
     if (stream) {
-        xqc_write_stop_sending_to_packet(stream->stream_conn, stream, error);
+        if (xqc_write_stop_sending_to_packet(stream->stream_conn, stream,
+                                             error) == XQC_OK && bounded)
+        {
+            /* the close below must not send a second one */
+            stream->stream_flag |= XQC_STREAM_FLAG_STOP_SENDING_SENT;
+        }
         xqc_stream_reset(stream, error);
     }
     xqc_wt_session_notify_closed(session);
+    /*
+     * A bounded request that nobody reads is paused with its input unread
+     * (max_body_buf_per_stream): the session is over, so close the request,
+     * which reads and drops what is left and lets the stream finish.
+     */
+    if (bounded && session->request->h3_stream->stream) {
+        xqc_h3_request_close(session->request);
+    }
 }
 
 static xqc_bool_t
