@@ -2455,7 +2455,8 @@ h3bb_check_blocked_count(h3bb_fx_t *fx)
 }
 
 /* the replay finds only a zero-length node (the section prefix ended the
- * first chunk) and leaves the stream blocked; a later insert completes it */
+ * first chunk): the insertion that meets the Required Insert Count unblocks
+ * the stream, and the rest of the section completes it */
 void
 xqc_test_h3bb_blocked_walk_keeps_unfinished_replay(void)
 {
@@ -2478,11 +2479,18 @@ xqc_test_h3bb_blocked_walk_keeps_unfinished_replay(void)
 
         h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
         h3bb_check_blocked_count(&fx);
-        CU_ASSERT_EQUAL(h3bb_blocked_list_len(&fx), 1);
+        /* the insertion meets the section's Required Insert Count with
+         * nothing to decode: the stream is unblocked (RFC 9204
+         * Section 2.2.1) */
+        CU_ASSERT_EQUAL(h3bb_blocked_list_len(&fx), 0);
+        CU_ASSERT_EQUAL(fx.req[i].h3s->flags
+                        & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED, 0);
 
         h3bb_feed(&fx, i, rest, sizeof(rest), 0);
         h3bb_feed_data(&fx, i, 100, 100, 1);
         h3bb_turn(&fx);
+        /* the rest of the section is decoded on arrival */
+        CU_ASSERT_EQUAL(fx.req[i].h3r->completed_header_count, 1);
         h3bb_feed_encoder(&fx, second_insert, sizeof(second_insert));
         h3bb_check_blocked_count(&fx);
         CU_ASSERT(fx.req[i].n_read_notify > 0);
@@ -3100,4 +3108,127 @@ xqc_test_h3bb_revisit_timer_registered_at_creation(void)
     }
     CU_ASSERT(n > 1 && n < 400);
 #endif
+}
+
+/*
+ * RFC 9204 Section 2.2.1: a stream is unblocked once the Insert Count
+ * reaches the Required Insert Count of the field sections it started
+ * reading. HEADERS {Required Insert Count 1, Base 1, one indexed line},
+ * split right after the section prefix; `ric` selects the count (1 or 2).
+ */
+static const uint8_t h3bb_ric1_prefix[] = {0x01, 0x03, 0x02, 0x00};
+static const uint8_t h3bb_ric2_prefix[] = {0x01, 0x03, 0x03, 0x00};
+static const uint8_t h3bb_ric_rest[] = {0x80};
+static const uint8_t h3bb_ric_second_insert[] = {
+    0x43, 'x', '-', 'u', 0x01, '2'
+};
+
+static void
+h3bb_blocked_limits_off(h3bb_fx_t *fx)
+{
+    fx->h3c->max_blocked_buf_per_stream = 0;
+    fx->h3c->max_blocked_buf_per_conn = 0;
+}
+
+static void
+h3bb_replay_meets_ric(size_t limit)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    i = h3bb_open_request(&fx, limit);
+    h3bb_blocked_limits_off(&fx);
+    h3bb_feed(&fx, i, h3bb_ric1_prefix, sizeof(h3bb_ric1_prefix), 0);
+    h3bb_read(&fx, i);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED);
+    h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
+    h3bb_feed(&fx, i, h3bb_ric_rest, sizeof(h3bb_ric_rest), 0);
+    h3bb_turn(&fx);
+
+    /* complete with no second insertion */
+    CU_ASSERT_EQUAL(fx.req[i].h3r->completed_header_count, 1);
+    CU_ASSERT_EQUAL(fx.req[i].h3s->flags
+                    & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED, 0);
+    CU_ASSERT_EQUAL(h3bb_blocked_list_len(&fx), 0);
+    CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
+    h3bb_teardown(&fx);
+}
+
+/* the section's Required Insert Count (2) is not met by one insertion */
+static void
+h3bb_replay_ric_not_met(size_t limit)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    i = h3bb_open_request(&fx, limit);
+    h3bb_blocked_limits_off(&fx);
+    h3bb_feed(&fx, i, h3bb_ric2_prefix, sizeof(h3bb_ric2_prefix), 0);
+    h3bb_read(&fx, i);
+    h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED);
+    h3bb_feed(&fx, i, h3bb_ric_rest, sizeof(h3bb_ric_rest), 0);
+    h3bb_turn(&fx);
+    CU_ASSERT_EQUAL(fx.req[i].h3r->completed_header_count, 0);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED);
+    CU_ASSERT_EQUAL(h3bb_blocked_list_len(&fx), 1);
+
+    h3bb_feed_encoder(&fx, h3bb_ric_second_insert,
+                      sizeof(h3bb_ric_second_insert));
+    CU_ASSERT_EQUAL(fx.req[i].h3r->completed_header_count, 1);
+    CU_ASSERT_EQUAL(h3bb_blocked_list_len(&fx), 0);
+    CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
+    h3bb_teardown(&fx);
+}
+
+/* a paused read ends right after a trailer section's prefix, the rest of the
+ * request arrives, then the insertion: no second insertion is needed */
+static void
+h3bb_replay_paused_trailer(void)
+{
+    h3bb_fx_t      fx;
+    int            i;
+    static uint8_t data[5 + 16484];
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_blocked_limits_off(&fx);
+    h3bb_feed(&fx, i, h3bb_valid_headers, sizeof(h3bb_valid_headers), 0);
+    data[0] = 0x00;
+    data[1] = 0x80;
+    data[2] = 0x00;
+    data[3] = (uint8_t)(16484 >> 8);
+    data[4] = (uint8_t)(16484 & 0xff);
+    memset(data + 5, 0xa5, 16484);
+    h3bb_feed(&fx, i, data, sizeof(data), 0);
+    h3bb_feed(&fx, i, h3bb_ric1_prefix, sizeof(h3bb_ric1_prefix), 0);
+    h3bb_read(&fx, i);
+    CU_ASSERT_FATAL(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED);
+
+    h3bb_feed(&fx, i, h3bb_ric_rest, sizeof(h3bb_ric_rest), 1);
+    h3bb_turn(&fx);
+    h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
+    h3bb_drain(&fx, i);
+    h3bb_turn(&fx);
+
+    CU_ASSERT_EQUAL(fx.req[i].h3r->completed_header_count, 2);
+    CU_ASSERT_EQUAL(fx.req[i].h3s->flags
+                    & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED, 0);
+    CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
+    h3bb_teardown(&fx);
+}
+
+void
+xqc_test_h3bb_replay_unblocks_when_ric_met(void)
+{
+    h3bb_replay_meets_ric(0);
+    h3bb_replay_meets_ric(H3BB_LIMIT);
+    h3bb_replay_paused_trailer();
+}
+
+void
+xqc_test_h3bb_replay_keeps_block_below_ric(void)
+{
+    h3bb_replay_ric_not_met(0);
+    h3bb_replay_ric_not_met(H3BB_LIMIT);
 }

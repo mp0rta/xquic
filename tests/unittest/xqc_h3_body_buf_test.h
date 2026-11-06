@@ -53,5 +53,7 @@ void xqc_test_h3bb_conn_credit_arrival_unread_fills_window(void);
 void xqc_test_h3bb_small_frames_reach_frame_cap(void);
 void xqc_test_h3bb_revisit_timer_cannot_fail(void);
 void xqc_test_h3bb_revisit_timer_registered_at_creation(void);
+void xqc_test_h3bb_replay_unblocks_when_ric_met(void);
+void xqc_test_h3bb_replay_keeps_block_below_ric(void);
 
 #endif

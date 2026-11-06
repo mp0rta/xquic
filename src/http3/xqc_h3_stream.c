@@ -2392,6 +2392,25 @@ xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s)
         }
     }
 
+    /*
+     * A replay that had nothing to decode (the section prefix ended the last
+     * read) still unblocks the stream once the Insert Count meets the
+     * Required Insert Count (RFC 9204 Section 2.2.1), so that the rest of the
+     * section is decoded on arrival without another insertion. A section that
+     * blocked again during this replay carries a count that is not met yet.
+     */
+    if ((h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED)
+        && xqc_qpack_get_req_rqrd_insert_cnt(h3s->ctx)
+           <= xqc_qpack_get_dec_insert_count(h3s->qpack))
+    {
+        h3s->flags &= ~XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED;
+        if (h3s->blocked_stream) {
+            xqc_h3_conn_remove_blocked_stream(h3s->h3c, h3s->blocked_stream);
+            h3s->blocked_stream = NULL;
+            xqc_h3_request_unblocked(h3s->h3r);
+        }
+    }
+
     /* notify DATA to application ASAP */
     if (h3s->type == XQC_H3_STREAM_TYPE_REQUEST && !xqc_list_empty(&h3s->h3r->body_buf)) {
         /* notify DATA whenever there is data */
