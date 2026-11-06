@@ -13,5 +13,6 @@ void xqc_test_reject_dgram_at_invalid_encryption_level();
 void xqc_test_datagram_backlog_cap();
 void xqc_test_datagram_backlog_cap_ignores_stream();
 void xqc_test_datagram_backlog_cap_skips_0rtt_resend();
+void xqc_test_datagram_backlog_cap_renotify_after_send();
 
 #endif /* _XQC_DATAGRAM_TEST_H_INCLUDED_ */

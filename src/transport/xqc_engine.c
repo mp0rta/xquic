@@ -892,13 +892,19 @@ xqc_engine_dgram_notify_after_send(xqc_connection_t *conn)
     if (conn->conn_state == XQC_CONN_STATE_CLOSED) {
         return;
     }
-    if (xqc_datagram_notify_backlog_drained(conn)) {
+    /* the callback may fill the backlog to the cap again, and this send
+     * drain it again: notify again, until a send leaves more than half of
+     * the cap unsent (the window is full) or the application stops writing */
+    while (xqc_datagram_notify_backlog_drained(conn)) {
         xqc_conn_schedule_packets_to_paths(conn);
         xqc_conn_send_packets(conn);
         /* xqc_engine_process_conn() has already cleared it, and a datagram
          * the callback wrote with defer_send_flush set it again; it was
          * just sent, so nothing is left to flush */
         conn->deferred_flush_pending = 0;
+        if (conn->conn_state == XQC_CONN_STATE_CLOSED) {
+            return;
+        }
     }
 }
 

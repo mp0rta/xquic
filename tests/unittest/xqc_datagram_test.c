@@ -422,3 +422,238 @@ xqc_test_datagram_backlog_cap_skips_0rtt_resend()
 
     xqc_engine_destroy(conn->engine);
 }
+
+/*
+ * A client and a server engine in this process, packets carried between
+ * them by hand, for the DATAGRAM cap tests that need real sends.
+ */
+#define XQC_TEST_DP_MAX_PKTS 256
+
+typedef struct {
+    unsigned char   buf[XQC_TEST_DP_MAX_PKTS][XQC_PACKET_OUT_BUF_CAP];
+    size_t          len[XQC_TEST_DP_MAX_PKTS];
+    int             n;
+} xqc_test_dp_queue_t;
+
+static xqc_test_dp_queue_t  g_dp_to_server, g_dp_to_client;
+static xqc_connection_t    *g_dp_client_conn;
+static int                  g_dp_notified, g_dp_rounds;
+
+static ssize_t
+xqc_test_dp_write(xqc_test_dp_queue_t *q, const unsigned char *buf, size_t size)
+{
+    if (q->n < XQC_TEST_DP_MAX_PKTS && size <= XQC_PACKET_OUT_BUF_CAP) {
+        memcpy(q->buf[q->n], buf, size);
+        q->len[q->n++] = size;
+    }
+    return size;
+}
+
+static ssize_t
+xqc_test_dp_client_write(const unsigned char *buf, size_t size,
+    const struct sockaddr *peer_addr, socklen_t peer_addrlen, void *user_data)
+{
+    return xqc_test_dp_write(&g_dp_to_server, buf, size);
+}
+
+static ssize_t
+xqc_test_dp_server_write(const unsigned char *buf, size_t size,
+    const struct sockaddr *peer_addr, socklen_t peer_addrlen, void *user_data)
+{
+    return xqc_test_dp_write(&g_dp_to_client, buf, size);
+}
+
+static void
+xqc_test_dp_set_timer(xqc_msec_t wake_after, void *user_data)
+{
+}
+
+static void
+xqc_test_dp_save_token(const unsigned char *token, uint32_t token_len, void *user_data)
+{
+}
+
+static void
+xqc_test_dp_save_string(const char *data, size_t data_len, void *user_data)
+{
+}
+
+static int
+xqc_test_dp_conn_create(xqc_connection_t *conn, const xqc_cid_t *cid,
+    void *conn_user_data, void *conn_proto_data)
+{
+    return 0;
+}
+
+static int
+xqc_test_dp_accept(xqc_engine_t *engine, xqc_connection_t *conn,
+    const xqc_cid_t *cid, void *user_data)
+{
+    return 0;
+}
+
+/* the application's refill: write until the cap refuses, for
+ * g_dp_rounds notifies, then stop writing */
+static void
+xqc_test_dp_write_notify(xqc_connection_t *conn, void *user_data)
+{
+    unsigned char data[100] = {0};
+    uint64_t id;
+
+    if (conn != g_dp_client_conn) {
+        return;
+    }
+    if (++g_dp_notified > g_dp_rounds) {
+        return;
+    }
+    while (xqc_datagram_send(conn, data, sizeof(data), &id, XQC_DATA_QOS_HIGH) == XQC_OK) {
+    }
+}
+
+static xqc_engine_t *
+xqc_test_dp_engine(xqc_engine_type_t type)
+{
+    xqc_engine_ssl_config_t     ssl;
+    xqc_engine_callback_t       cb = {
+        .log_callbacks = xqc_null_log_cb,
+        .set_event_timer = xqc_test_dp_set_timer,
+    };
+    xqc_transport_callbacks_t   tcbs = {
+        .write_socket = type == XQC_ENGINE_CLIENT
+                        ? xqc_test_dp_client_write : xqc_test_dp_server_write,
+        .server_accept = xqc_test_dp_accept,
+        .save_token = xqc_test_dp_save_token,
+        .save_session_cb = xqc_test_dp_save_string,
+        .save_tp_cb = xqc_test_dp_save_string,
+    };
+    xqc_app_proto_callbacks_t   ap;
+
+    memset(&ssl, 0, sizeof(ssl));
+    ssl.private_key_file = "./server.key";
+    ssl.cert_file = "./server.crt";
+    ssl.ciphers = XQC_TLS_CIPHERS;
+    ssl.groups = XQC_TLS_GROUPS;
+
+    xqc_engine_t *engine = xqc_engine_create(type, NULL, &ssl, &cb, &tcbs, NULL);
+    CU_ASSERT_FATAL(engine != NULL);
+
+    memset(&ap, 0, sizeof(ap));
+    ap.conn_cbs.conn_create_notify = xqc_test_dp_conn_create;
+    ap.dgram_cbs.datagram_write_notify = xqc_test_dp_write_notify;
+    CU_ASSERT_FATAL(xqc_engine_register_alpn(engine, "transport", 9, &ap, NULL) == XQC_OK);
+    return engine;
+}
+
+/* hand every queued packet to the other engine, both ways, then run both */
+static void
+xqc_test_dp_exchange(xqc_engine_t *client, xqc_engine_t *server)
+{
+    struct sockaddr_in  srv, cli;
+
+    memset(&srv, 0, sizeof(srv));
+    srv.sin_family = AF_INET;
+    srv.sin_port = htons(4433);
+    srv.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    cli = srv;
+    cli.sin_port = htons(5555);
+
+    for (int i = 0; i < g_dp_to_server.n; i++) {
+        xqc_engine_packet_process(server, g_dp_to_server.buf[i], g_dp_to_server.len[i],
+                                  (struct sockaddr *)&srv, sizeof(srv),
+                                  (struct sockaddr *)&cli, sizeof(cli),
+                                  xqc_monotonic_timestamp(), NULL);
+    }
+    g_dp_to_server.n = 0;
+    xqc_engine_main_logic(server);
+
+    for (int i = 0; i < g_dp_to_client.n; i++) {
+        xqc_engine_packet_process(client, g_dp_to_client.buf[i], g_dp_to_client.len[i],
+                                  (struct sockaddr *)&cli, sizeof(cli),
+                                  (struct sockaddr *)&srv, sizeof(srv),
+                                  xqc_monotonic_timestamp(), NULL);
+    }
+    g_dp_to_client.n = 0;
+    xqc_engine_main_logic(client);
+}
+
+/* an established client connection with DATAGRAM support on both sides */
+static xqc_connection_t *
+xqc_test_dp_connect(xqc_engine_t **client, xqc_engine_t **server, uint32_t cap)
+{
+    xqc_conn_settings_t     settings;
+    xqc_conn_ssl_config_t   conn_ssl;
+    struct sockaddr_in      srv;
+    const xqc_cid_t        *cid;
+    xqc_connection_t       *conn;
+
+    memset(&srv, 0, sizeof(srv));
+    srv.sin_family = AF_INET;
+    srv.sin_port = htons(4433);
+    srv.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    g_dp_to_server.n = 0;
+    g_dp_to_client.n = 0;
+    g_dp_client_conn = NULL;
+    *client = xqc_test_dp_engine(XQC_ENGINE_CLIENT);
+    *server = xqc_test_dp_engine(XQC_ENGINE_SERVER);
+
+    memset(&settings, 0, sizeof(settings));
+    settings.proto_version = XQC_VERSION_V1;
+    settings.max_datagram_frame_size = 1200;
+    xqc_server_set_conn_settings(*server, &settings);
+    settings.max_dgram_unsent_packets = cap;
+
+    memset(&conn_ssl, 0, sizeof(conn_ssl));
+    cid = xqc_connect(*client, &settings, NULL, 0, "", 0, &conn_ssl,
+                      (struct sockaddr *)&srv, sizeof(srv), "transport", NULL);
+    CU_ASSERT_FATAL(cid != NULL);
+    conn = xqc_engine_conns_hash_find(*client, cid, 's');
+    CU_ASSERT_FATAL(conn != NULL);
+
+    for (int i = 0; i < 10 && !(conn->conn_flag & XQC_CONN_FLAG_HANDSHAKE_CONFIRMED); i++) {
+        xqc_test_dp_exchange(*client, *server);
+    }
+    CU_ASSERT_FATAL(conn->conn_flag & XQC_CONN_FLAG_HANDSHAKE_CONFIRMED);
+    CU_ASSERT_FATAL(conn->remote_settings.max_datagram_frame_size > 0);
+    g_dp_client_conn = conn;
+    return conn;
+}
+
+/*
+ * The application refills the backlog from dgram_write_notify, and the send
+ * after the notify drains it again: the next notify comes in the same engine
+ * pass, not on the next ACK or timer. Three refills of a cap of 4 fit the
+ * initial window.
+ */
+void
+xqc_test_datagram_backlog_cap_renotify_after_send()
+{
+    xqc_engine_t *client, *server;
+    xqc_connection_t *conn = xqc_test_dp_connect(&client, &server, 4);
+    xqc_send_queue_t *sq = conn->conn_send_queue;
+    unsigned char data[100] = {0};
+    uint64_t id;
+
+    /* fill the backlog from inside the engine, so nothing is sent yet */
+    g_dp_notified = 0;
+    g_dp_rounds = 3;
+    client->eng_flag |= XQC_ENG_FLAG_RUNNING;
+    while (xqc_datagram_send(conn, data, sizeof(data), &id, XQC_DATA_QOS_HIGH) == XQC_OK) {
+    }
+    client->eng_flag &= ~XQC_ENG_FLAG_RUNNING;
+    CU_ASSERT_EQUAL(xqc_send_queue_get_dgram_unsent_num(sq), 4);
+    CU_ASSERT(sq->sndq_dgram_backlog_full);
+
+    /* one pass: sends the 4, then 3 refills of 4, then a notify that
+     * writes nothing */
+    xqc_engine_conn_logic(client, conn);
+    CU_ASSERT_FATAL(conn->conn_state != XQC_CONN_STATE_CLOSED);
+    CU_ASSERT_EQUAL(g_dp_notified, g_dp_rounds + 1);
+    CU_ASSERT_EQUAL(xqc_send_queue_get_dgram_unsent_num(sq), 0);
+    CU_ASSERT(!sq->sndq_dgram_backlog_full);
+    CU_ASSERT(g_dp_to_server.n >= 4 * (g_dp_rounds + 1));
+
+    g_dp_client_conn = NULL;
+    xqc_engine_destroy(client);
+    xqc_engine_destroy(server);
+}
