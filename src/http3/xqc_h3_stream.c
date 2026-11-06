@@ -1259,6 +1259,7 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                         /* add data to buffer list */
                         ret = xqc_list_buf_to_tail(&h3r->body_buf, buf);
                         if (ret < 0) {
+                            xqc_var_buf_free(buf);
                             xqc_h3_frm_reset_pctx(pctx);
                             return ret;
                         }

@@ -1256,6 +1256,7 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_h3bb_revisit_timer_registered_at_creation", xqc_test_h3bb_revisit_timer_registered_at_creation)
         || !CU_add_test(pSuite, "xqc_test_h3bb_replay_unblocks_when_ric_met", xqc_test_h3bb_replay_unblocks_when_ric_met)
         || !CU_add_test(pSuite, "xqc_test_h3bb_replay_keeps_block_below_ric", xqc_test_h3bb_replay_keeps_block_below_ric)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_body_node_freed_when_append_fails", xqc_test_h3bb_body_node_freed_when_append_fails)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();

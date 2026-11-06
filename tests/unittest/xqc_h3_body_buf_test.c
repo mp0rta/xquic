@@ -3232,3 +3232,52 @@ xqc_test_h3bb_replay_keeps_block_below_ric(void)
     h3bb_replay_ric_not_met(0);
     h3bb_replay_ric_not_met(H3BB_LIMIT);
 }
+
+/*
+ * A small DATA payload whose list node cannot be allocated: the read fails,
+ * and the node already created for the payload is freed with the rest.
+ * The allocations the DATA read makes are failed in turn; nothing is left
+ * allocated after the teardown.
+ */
+#ifdef XQC_TEST_ALLOC_WRAP
+static long
+h3bb_small_data_leftovers(long fail_at)
+{
+    static const uint8_t small_data[] = {
+        0x00, 0x0a, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5
+    };
+    h3bb_fx_t fx;
+    int       i;
+
+    xqc_test_af_live_begin();
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_feed_headers(&fx, i);
+    h3bb_read(&fx, i);
+    h3bb_feed(&fx, i, small_data, sizeof(small_data), 0);
+    if (fail_at > 0) {
+        xqc_test_af_arm(fail_at);
+    }
+    h3bb_read(&fx, i);
+    if (fail_at > 0) {
+        xqc_test_af_disarm();
+    }
+    h3bb_teardown(&fx);
+    return xqc_test_af_live_end();
+}
+#endif
+
+void
+xqc_test_h3bb_body_node_freed_when_append_fails(void)
+{
+#ifdef XQC_TEST_ALLOC_WRAP
+    long n;
+
+    /* settle what the process allocates only once */
+    h3bb_small_data_leftovers(0);
+    CU_ASSERT_EQUAL(h3bb_small_data_leftovers(0), 0);
+
+    for (n = 1; n <= 8; n++) {
+        CU_ASSERT_EQUAL(h3bb_small_data_leftovers(n), 0);
+    }
+#endif
+}
