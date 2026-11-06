@@ -470,7 +470,8 @@ xqc_mul_div_floor_capped(uint64_t w, uint64_t s, uint64_t c, uint64_t cap)
  * window, W * stream rate / connection rate, so the window returned never
  * exceeds max(init_recv_window, the share of the current W) (RFC 9000
  * Section 4.1: the sender must stay within both limits; granted credit cannot
- * be revoked, so the cap is applied when the credit is granted). The floor
+ * be revoked, so the cap is applied each time the window is computed; a
+ * STREAM_DATA_BLOCKED reply reuses the last computed window). The floor
  * comes after the share: a window below 2 would leave the read-side update
  * (available < window / 2) unreachable, and credit would then follow only
  * STREAM_DATA_BLOCKED, which a receiver MUST NOT wait for (RFC 9000

@@ -266,8 +266,8 @@ xqc_test_rate_share_conn(xqc_engine_t **engine, uint64_t conn_rate,
 /*
  * Test: with both a connection rate and a stream rate, the stream window is
  * capped at W * stream rate / connection rate at all three places that
- * compute it, but never falls below init_recv_window; without a connection
- * rate it is the plain rate clamp.
+ * compute it, but never falls below init_recv_window (when that is at most
+ * 16 MiB); without a connection rate it is the plain rate clamp.
  */
 void
 xqc_test_stream_rate_window_share(void)
