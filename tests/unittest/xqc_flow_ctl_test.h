@@ -14,5 +14,7 @@ void xqc_test_conn_credit_parked_bytes(void);
 void xqc_test_conn_credit_reset_at_final_size_extends(void);
 void xqc_test_conn_credit_reset_checks_once(void);
 void xqc_test_conn_window_monotone(void);
+void xqc_test_conn_window_resized_by_reads_not_arrivals(void);
+void xqc_test_conn_window_doubling_from_last_resize(void);
 
 #endif /* _XQC_TEST_FLOW_CTL_H_INCLUDED_ */

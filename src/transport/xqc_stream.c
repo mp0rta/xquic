@@ -517,24 +517,33 @@ xqc_stream_do_recv_conn_flow_ctl(xqc_stream_t *stream)
     available_window = fc->fc_max_data_can_recv - fc->fc_data_recved;
 
     if (available_window < xqc_max(1, effective / 2)) {
-        xqc_usec_t now = xqc_monotonic_timestamp();
-
         if (!conn->conn_settings.recv_rate_bytes_per_sec) {
-            xqc_usec_t min_srtt = xqc_conn_get_min_srtt(conn, 0);
+            /*
+             * Resize only after half a window was read since the last resize;
+             * extending credit on arrival must not grow the window.
+             */
+            if (fc->fc_data_read - fc->fc_last_window_update_read
+                > fc->fc_recv_windows_size / 2)
+            {
+                xqc_usec_t now = xqc_monotonic_timestamp();
+                xqc_usec_t min_srtt = xqc_conn_get_min_srtt(conn, 0);
 
-            new_win = fc->fc_recv_windows_size;
-            if (fc->fc_last_window_update_time &&
-                (now - fc->fc_last_window_update_time < 2 * min_srtt)) {
-                new_win = xqc_min(new_win * 2, XQC_MAX_RECV_WINDOW);
+                new_win = fc->fc_recv_windows_size;
+                if (fc->fc_last_window_update_time &&
+                    (now - fc->fc_last_window_update_time < 2 * min_srtt)) {
+                    new_win = xqc_min(new_win * 2, XQC_MAX_RECV_WINDOW);
+                }
+
+                if (new_win < 1.5 * stream->stream_flow_ctl.fc_stream_recv_window_size) {
+                    new_win =
+                        (uint64_t)(1.5 * stream->stream_flow_ctl.fc_stream_recv_window_size);
+                }
+
+                fc->fc_recv_windows_size =
+                    monotone ? xqc_max(fc->fc_recv_windows_size, new_win) : new_win;
+                fc->fc_last_window_update_time = now;
+                fc->fc_last_window_update_read = fc->fc_data_read;
             }
-
-            if (new_win < 1.5 * stream->stream_flow_ctl.fc_stream_recv_window_size) {
-                new_win =
-                    (uint64_t)(1.5 * stream->stream_flow_ctl.fc_stream_recv_window_size);
-            }
-
-            fc->fc_recv_windows_size =
-                monotone ? xqc_max(fc->fc_recv_windows_size, new_win) : new_win;
 
         } else if (!monotone) {
             max_srtt = xqc_conn_get_max_srtt(conn);
@@ -544,8 +553,6 @@ xqc_stream_do_recv_conn_flow_ctl(xqc_stream_t *stream)
                     "|conn_level|fc_win_update|old_fc_win:%ui|fc_win:%ui|", old_fc_win,
                     fc->fc_recv_windows_size);
         }
-
-        fc->fc_last_window_update_time = now;
 
         available_window = fc->fc_max_data_can_recv - fc->fc_data_read;
         if (fc->fc_recv_windows_size > available_window) {

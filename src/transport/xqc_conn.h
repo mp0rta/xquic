@@ -305,6 +305,7 @@ typedef struct {
 
     uint64_t fc_recv_windows_size;
     xqc_usec_t fc_last_window_update_time;
+    uint64_t fc_last_window_update_read;
 } xqc_conn_flow_ctl_t;
 
 
