@@ -326,6 +326,12 @@ typedef enum {
 xqc_max_path_id_validation_t xqc_validate_max_path_id(xqc_connection_t *conn,
                                                       uint64_t value);
 
+/* Raise curr_max_path_id to the lower of local_max_path_id and
+ * remote_max_path_id after either grew, adding the connection ID sets of
+ * the path IDs this makes usable. Returns -XQC_EMALLOC, curr_max_path_id
+ * unchanged, when a set cannot be allocated. */
+xqc_int_t xqc_conn_update_curr_max_path_id(xqc_connection_t *conn);
+
 /* draft-21 §3.2.1 / §4.6 mp21 L2 — MAX_PATH_ID credit grant.
  * Increment applied per grant when granting auto-credit on PATHS_BLOCKED
  * receipt. Magnitude is implementation-defined (spec unspec); chosen to
@@ -340,9 +346,12 @@ xqc_max_path_id_validation_t xqc_validate_max_path_id(xqc_connection_t *conn,
 
 /* Evaluate whether a MAX_PATH_ID credit grant should fire on receipt of
  * PATHS_BLOCKED. Side-effects: when the grant fires, advances
- * conn->local_max_path_id and updates conn->last_max_path_id_grant_us.
+ * conn->local_max_path_id, then curr_max_path_id with the connection ID
+ * sets of the path IDs granted (xqc_conn_update_curr_max_path_id), and
+ * updates conn->last_max_path_id_grant_us.
  * Returns the new local_max_path_id to emit (>0) or 0 when no grant
- * fires (disabled, at cap, rate-limited, or initial path missing PTO).
+ * fires (disabled, at cap, rate-limited, initial path missing PTO, or
+ * the connection ID sets cannot be allocated).
  *
  * Caller is responsible for emitting the MAX_PATH_ID frame when the
  * return value is non-zero. Splitting state mutation from emission lets
