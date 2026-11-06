@@ -992,19 +992,20 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     } else if (ret == -XQC_ELIMIT
                && packet_in->pi_pkt.pkt_type == XQC_PTYPE_SHORT_HEADER)
     {
-        /* Reassembly buffer at capacity: this frame does not extend the
-         * contiguous prefix, or it does and the buffer is full of small
-         * frames (a paused request leaves in-order frames unread; see
-         * xqc_insert_stream_frame). Treat the whole packet as if it were
-         * lost instead of tearing down the connection: returning a
-         * tolerant error makes xqc_conn_process_packet skip
-         * xqc_conn_on_pkt_processed, so the
+        /* Reassembly buffer at capacity (see xqc_insert_stream_frame):
+         * either this frame does not extend the contiguous prefix, or the
+         * stream is at a frame cap that refuses in-order frames too, as
+         * when the application stops reading (a paused HTTP/3 request).
+         * Treat the whole packet as if it were lost instead of tearing
+         * down the connection: returning a tolerant error makes
+         * xqc_conn_process_packet skip xqc_conn_on_pkt_processed, so the
          * packet is never acknowledged — required by RFC 9000 §13.1 (a
          * packet must not be acked until its STREAM data has been
          * enqueued) — and the peer retransmits it later, by which time
-         * the buffer has drained via prefix-extending frames or, for a
-         * paused request, because the application read. This is a
-         * §21.7 resource-exhaustion mitigation; the previous escalation
+         * the application may have read the buffered data (prefix-extending
+         * frames make it readable; a paused request is read once it
+         * resumes). This is a §21.7 resource-exhaustion mitigation; the
+         * previous escalation
          * closed healthy multipath connections with a bogus
          * FRAME_ENCODING_ERROR (generic engine error path) under
          * cross-path reordering. Restricted to short-header packets: they

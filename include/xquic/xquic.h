@@ -1889,14 +1889,16 @@ typedef struct xqc_conn_settings_s {
      * 32768 frames in any case, or max_stream_frame_buffered_cnt when that
      * is non-zero. A peer that writes small frames (below about 512 bytes
      * against the default 16 MiB stream window) into a paused request can
-     * reach the cap first. From then on every further frame for that
-     * request is refused: at 32768 frames, or at a configured cap, always;
-     * at 8192 frames only a frame that alone lifts the average back to 256
-     * bytes would be taken, and no frame that fits in a packet can. The
-     * transport stops processing that short-header packet at the refused
-     * frame and does not acknowledge it, so the frames after it, DATAGRAMs
-     * included, are lost, and the peer treats the whole packet as lost.
-     * This repeats until the application drains or closes the request.
+     * reach the cap first. From then on the transport refuses further
+     * frames for that request: at 32768 frames, or at a configured cap,
+     * every frame; at 8192 frames, every frame that does not alone lift
+     * the average back to 256 bytes, which a frame that fits in a packet
+     * cannot do unless the average is already within about 0.2 bytes of
+     * 256. It stops processing that short-header packet at the refused
+     * frame and does not acknowledge it, so the frames after it,
+     * DATAGRAMs included, are lost, and the peer treats the whole packet
+     * as lost. This repeats until the application drains or closes the
+     * request.
      * The stream resumes once the application has drained the request to a
      * quarter of the limit. A request whose FIN the HTTP/3 layer has
      * already read is not paused, and neither is one whose stream the peer
@@ -1908,15 +1910,15 @@ typedef struct xqc_conn_settings_s {
      * A request the application closes with xqc_h3_request_close() while
      * this is non-zero is discarded: its remaining input is read and
      * dropped without reaching the application, which normally gets no
-     * further notification except the final close notification. Unless the
-     * connection is closing, or the decoder's maximum QPACK dynamic table
-     * capacity is zero (RFC 9204 Section 2.2.2.2), the QPACK decoder reports
-     * the stream as cancelled (RFC 9204 Section 4.4.2), once per request. A request
-     * whose transport stream had already closed while it waited for QPACK
-     * updates is not discarded, and replaying it can still notify the
-     * application.
-     * An application that stops collecting a request's body must close it
-     * to release its stream.
+     * further notification except the final close notification. Unless
+     * the connection is closing, or the decoder's maximum QPACK dynamic
+     * table capacity is zero (RFC 9204 Section 2.2.2.2), the QPACK
+     * decoder reports the stream as cancelled (RFC 9204 Section 4.4.2),
+     * once per request. A request whose transport stream had already
+     * closed while it waited for QPACK updates is not discarded, and
+     * replaying it can still notify the application. An application that
+     * stops collecting a request's body must close it to release its
+     * stream.
      *
      * Independent of this setting, the connection's flow-control credit is
      * extended net of the received-but-unread bytes U on the connection, so
