@@ -194,7 +194,7 @@ xqc_test_stream_fc_init_by_type(void)
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
     CU_ASSERT_EQUAL(conn->local_settings.max_stream_data_bidi_local, 15360);
 
-    uni = xqc_create_stream_with_conn(conn, 3, XQC_SVR_UNI, NULL, NULL);
+    uni = xqc_passive_create_stream(conn, 3, NULL);
     CU_ASSERT_PTR_NOT_NULL_FATAL(uni);
     bidi = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
     CU_ASSERT_PTR_NOT_NULL_FATAL(bidi);
@@ -205,7 +205,6 @@ xqc_test_stream_fc_init_by_type(void)
                     XQC_MAX_RECV_WINDOW);
     CU_ASSERT_EQUAL(bidi->stream_flow_ctl.fc_max_stream_data_can_recv, 15360);
 
-    conn->conn_flow_ctl.fc_max_data_can_recv = 1 << 20;
     memset(&pi, 0, sizeof(pi));
     pi.buf = frame;
     pi.buf_size = sizeof(frame);
@@ -215,6 +214,14 @@ xqc_test_stream_fc_init_by_type(void)
     ret = xqc_process_stream_frame(conn, &pi);
     CU_ASSERT_EQUAL(ret, XQC_OK);
     CU_ASSERT_EQUAL(conn->conn_err, 0);
+    CU_ASSERT_EQUAL(uni->stream_max_recv_offset, 40000);
+
+    /* the same frame on local bidi stream 0 exceeds its limit of 15360 */
+    frame[1] = 0x00;
+    pi.pos = frame;
+    ret = xqc_process_stream_frame(conn, &pi);
+    CU_ASSERT_EQUAL(ret, -XQC_EPROTO);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_FLOW_CONTROL_ERROR);
 
     xqc_engine_destroy(engine);
 }
