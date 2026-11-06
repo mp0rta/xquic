@@ -1045,9 +1045,7 @@ xqc_h3_request_on_recv_empty_fin(xqc_h3_request_t *h3r)
         return XQC_OK;
     }
 
-    if (h3r->request_if->h3_request_read_notify
-        && !xqc_h3_stream_in_discard(h3r->h3_stream))
-    {
+    if (h3r->request_if->h3_request_read_notify) {
         /* if all header and content were received by application, notify empty fin */
         ret = h3r->request_if->h3_request_read_notify(h3r, XQC_REQ_NOTIFY_READ_EMPTY_FIN,
                                                       h3r->user_data);
