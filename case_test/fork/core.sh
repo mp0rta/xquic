@@ -527,6 +527,56 @@ fi
 grep_err_log
 }
 
+case_fork_core_datagram_backlog_cap_not_reached()
+{
+# DATAGRAM backlog cap above the burst (case ID 1200): 1 MB of datagrams
+# with max_dgram_unsent_packets 4096 is never refused, and all of it is
+# sent and echoed back
+case_test_start_server ${SERVER_BIN} -l d -Q 65535 -e -U 1 -x 1200 > svr_stdlog
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "datagram backlog cap not reached ...\c"
+${CLIENT_BIN} -l d -T 1 -s 1048576 -U 1 -Q 65535 -x 1200 > stdlog
+refused=`grep -c "retry_datagram_send_later" stdlog`
+dgram_res=`grep -o "recv_dgram_bytes:[0-9]*|sent_dgram_bytes:[0-9]*|lost_dgram_bytes:[0-9]*" stdlog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ "$refused" -eq 0 ] \
+    && [ "$dgram_res" == "recv_dgram_bytes:1048576|sent_dgram_bytes:1048576|lost_dgram_bytes:0" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "datagram_backlog_cap_not_reached" "pass"
+else
+    echo ">>>>>>>> pass:0 (refused:${refused} ${dgram_res} errlog:${errlog:+y})"
+    case_print_result "datagram_backlog_cap_not_reached" "fail"
+fi
+}
+
+case_fork_core_datagram_backlog_cap_refuses_then_recovers()
+{
+# DATAGRAM backlog cap far below the burst (case ID 1203): with
+# max_dgram_unsent_packets 8, writes are refused with -XQC_EAGAIN at the
+# cap, each refusal is followed by dgram_write_notify, and the client still
+# sends all of 1 MB, which is echoed back
+case_test_start_server ${SERVER_BIN} -l d -Q 65535 -e -U 1 -x 1203 > svr_stdlog
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "datagram backlog cap refuses then recovers ...\c"
+${CLIENT_BIN} -l d -T 1 -s 1048576 -U 1 -Q 65535 -x 1203 > stdlog
+refused=`grep -c "retry_datagram_send_later" stdlog`
+notified=`grep -c "\[dgram\]|dgram_write|" stdlog`
+at_cap=`grep -a -c "|datagram backlog full|dgram_unsent:8|cap:8|" clog`
+dgram_res=`grep -o "recv_dgram_bytes:[0-9]*|sent_dgram_bytes:[0-9]*|lost_dgram_bytes:[0-9]*" stdlog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ "$refused" -gt 0 ] && [ "$at_cap" -eq "$refused" ] \
+    && [ "$notified" -ge "$refused" ] \
+    && [ "$dgram_res" == "recv_dgram_bytes:1048576|sent_dgram_bytes:1048576|lost_dgram_bytes:0" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "datagram_backlog_cap_refuses_then_recovers" "pass"
+else
+    echo ">>>>>>>> pass:0 (refused:${refused} at_cap:${at_cap} notified:${notified} ${dgram_res} errlog:${errlog:+y})"
+    case_print_result "datagram_backlog_cap_refuses_then_recovers" "fail"
+fi
+}
+
 # 1313: reliable-stream failover, also runnable independently.
 case_fork_core_MP_dead_path_stream_data_resent_on_working_path()
 {
@@ -617,6 +667,8 @@ case_test_case "pmtud_path_below_base" --id 807 --mode self-reporting --run case
 case_test_case "pmtud_outage_stays_at_base" --id 808 --mode self-reporting --run case_fork_core_pmtud_outage_stays_at_base
 case_test_case "pmtud_smaller_second_path_validates" --id 809 --mode self-reporting --run case_fork_core_pmtud_smaller_second_path_validates
 case_test_case "pmtud_new_path_starts_at_base" --id 810 --mode self-reporting --run case_fork_core_pmtud_new_path_starts_at_base
+case_test_case "datagram_backlog_cap_not_reached" --id 1200 --mode self-reporting --run case_fork_core_datagram_backlog_cap_not_reached
+case_test_case "datagram_backlog_cap_refuses_then_recovers" --id 1203 --mode self-reporting --run case_fork_core_datagram_backlog_cap_refuses_then_recovers
 
 case_test_case "MP_dead_path_stream_data_resent_on_working_path" --id 1313 --mode self-reporting --run case_fork_core_MP_dead_path_stream_data_resent_on_working_path
 case_test_case "MP_only_path_stream_data_kept_through_outage" --id 1314 --mode self-reporting --run case_fork_core_MP_only_path_stream_data_kept_through_outage
