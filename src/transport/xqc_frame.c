@@ -1005,9 +1005,8 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
          * the application may have read the buffered data (prefix-extending
          * frames make it readable; a paused request is read once it
          * resumes). This is a §21.7 resource-exhaustion mitigation; the
-         * previous escalation
-         * closed healthy multipath connections with a bogus
-         * FRAME_ENCODING_ERROR (generic engine error path) under
+         * previous escalation closed healthy multipath connections with a
+         * bogus FRAME_ENCODING_ERROR (generic engine error path) under
          * cross-path reordering. Restricted to short-header packets: they
          * are always last in a UDP datagram, so the tolerant
          * skip-rest-of-datagram handling cannot drop coalesced follow-up

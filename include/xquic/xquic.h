@@ -1898,14 +1898,16 @@ typedef struct xqc_conn_settings_s {
      * frame and does not acknowledge it, so the frames after it,
      * DATAGRAMs included, are lost, and the peer treats the whole packet
      * as lost. This repeats until the application drains or closes the
-     * request.
-     * The stream resumes once the application has drained the request to a
-     * quarter of the limit. A request whose FIN the HTTP/3 layer has
-     * already read is not paused, and neither is one whose stream the peer
-     * has reset, or whose reliable part (RESET_STREAM_AT) has been read,
-     * since the next read completes the reset (RFC 9000 Section 3.2). A
-     * request reset with RESET_STREAM_AT can still pause until that
-     * reliable part has been read.
+     * request. The stream resumes once the application has drained the
+     * request to a quarter of the limit. A request whose FIN the HTTP/3
+     * layer has already read is not paused, and neither is one whose
+     * stream the peer has reset, or whose reliable part (RESET_STREAM_AT)
+     * has been read, since the next read completes the reset (RFC 9000
+     * Section 3.2). A request reset with RESET_STREAM_AT can still pause
+     * until that reliable part has been read. Request streams avoid the
+     * connection error that the blocked buffer limit
+     * (max_blocked_buf_per_stream) raises only when that limit is at least
+     * this limit plus 4 KiB.
      *
      * A request the application closes with xqc_h3_request_close() while
      * this is non-zero is discarded: its remaining input is read and
