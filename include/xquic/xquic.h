@@ -1883,9 +1883,16 @@ typedef struct xqc_conn_settings_s {
      * Non-zero makes the HTTP/3 layer stop reading a request's transport
      * stream while the request holds this many bytes (checked before each
      * read, so the buffer can overshoot the limit by one read). While
-     * paused, the stream's receive credit is held back, so the peer is
-     * stopped once it has used what it was already granted; the transport
-     * buffers that data. The stream resumes once the application has
+     * paused, the stream's receive credit is held back, and the transport
+     * buffers what the peer was already granted, up to its per-stream cap
+     * on buffered frames: 8192 frames once they average below 256 bytes,
+     * 32768 frames in any case, or max_stream_frame_buffered_cnt when that
+     * is non-zero. A peer that writes small frames (below about 512 bytes
+     * against the default 16 MiB stream window) into a paused request can
+     * reach the cap first. Each further packet that carries such a frame
+     * is then dropped whole and not acknowledged, with the other frames
+     * and datagrams in it, until the application drains or closes the
+     * request. The stream resumes once the application has
      * drained the request to a quarter of the limit. A request whose FIN
      * the HTTP/3 layer has already read is not paused, and neither is one
      * whose stream the peer has reset, or whose reliable part (RESET_STREAM_AT)

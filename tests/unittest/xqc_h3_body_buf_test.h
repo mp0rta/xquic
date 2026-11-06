@@ -50,5 +50,6 @@ void xqc_test_h3bb_reset_while_paused(void);
 void xqc_test_h3bb_close_cycles_exceed_window(void);
 void xqc_test_h3bb_conn_credit_on_paused_arrival(void);
 void xqc_test_h3bb_conn_credit_arrival_unread_fills_window(void);
+void xqc_test_h3bb_small_frames_reach_frame_cap(void);
 
 #endif

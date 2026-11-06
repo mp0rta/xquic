@@ -1250,6 +1250,7 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_h3bb_reset_while_paused", xqc_test_h3bb_reset_while_paused)
         || !CU_add_test(pSuite, "xqc_test_h3bb_conn_credit_on_paused_arrival", xqc_test_h3bb_conn_credit_on_paused_arrival)
         || !CU_add_test(pSuite, "xqc_test_h3bb_conn_credit_arrival_unread_fills_window", xqc_test_h3bb_conn_credit_arrival_unread_fills_window)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_small_frames_reach_frame_cap", xqc_test_h3bb_small_frames_reach_frame_cap)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();

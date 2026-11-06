@@ -2798,3 +2798,161 @@ xqc_test_h3bb_conn_credit_arrival_unread_fills_window(void)
 {
     h3bb_credit_on_paused_arrival(0);
 }
+
+/*
+ * Insert in-order STREAM frames of `fsz` bytes taken from `h3` until `len`
+ * bytes are in or the transport refuses one. Flow-control accounting is the
+ * fixture's, as in h3bb_feed_stream(). Returns the first non-OK result.
+ */
+static xqc_int_t
+h3bb_insert_small_frames(h3bb_fx_t *fx, int idx, const uint8_t *h3,
+    size_t len, size_t fsz, size_t *accepted)
+{
+    xqc_connection_t *conn = fx->conn;
+    xqc_stream_t     *stream = fx->req[idx].stream;
+    size_t            done = 0;
+
+    while (done < len) {
+        size_t              n = len - done > fsz ? fsz : len - done;
+        uint64_t            off = fx->req[idx].offset;
+        uint64_t            end = off + n;
+        uint64_t            ext = end > stream->stream_max_recv_offset
+                                  ? end - stream->stream_max_recv_offset : 0;
+        xqc_stream_frame_t *f;
+        xqc_int_t           ret;
+
+        CU_ASSERT_FATAL(end <= stream->stream_flow_ctl
+                                     .fc_max_stream_data_can_recv);
+        CU_ASSERT_FATAL(conn->conn_flow_ctl.fc_data_recved + ext
+                        <= conn->conn_flow_ctl.fc_max_data_can_recv);
+
+        f = xqc_calloc(1, sizeof(xqc_stream_frame_t));
+        f->data_offset = off;
+        f->data_length = n;
+        f->data = xqc_malloc(n);
+        memcpy(f->data, h3 + done, n);
+
+        ret = xqc_insert_stream_frame(conn, stream, f);
+        if (ret != XQC_OK) {
+            xqc_free(f->data);
+            xqc_free(f);
+            *accepted = done;
+            return ret;
+        }
+        conn->conn_flow_ctl.fc_data_recved += ext;
+        if (ext) {
+            stream->stream_max_recv_offset = end;
+        }
+        fx->req[idx].offset = end;
+        done += n;
+        if (stream->stream_data_in.next_read_offset
+            < stream->stream_data_in.merged_offset_end)
+        {
+            xqc_stream_ready_to_read(stream);
+        }
+    }
+    *accepted = done;
+    return XQC_OK;
+}
+
+/* process one 200 byte STREAM frame for the request, as a packet would */
+static xqc_int_t
+h3bb_process_small_frame(h3bb_fx_t *fx, int idx, const uint8_t *data)
+{
+    xqc_packet_in_t pi;
+    uint8_t         pkt[16 + 200];
+    size_t          n = 0;
+    xqc_int_t       ret;
+
+    pkt[n++] = 0x0e;                            /* STREAM, OFF and LEN */
+    n += h3bb_put_varint(pkt + n, fx->req[idx].stream->stream_id);
+    n += h3bb_put_varint(pkt + n, fx->req[idx].offset);
+    n += h3bb_put_varint(pkt + n, 200);
+    memcpy(pkt + n, data, 200);
+    n += 200;
+    memset(&pi, 0, sizeof(pi));
+    pi.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+    pi.pos = pkt;
+    pi.last = pkt + n;
+
+    h3bb_enter_pass(fx);
+    ret = xqc_process_frames(fx->conn, &pi);
+    h3bb_leave_pass(fx);
+    return ret;
+}
+
+/*
+ * Pins a known limit, not a goal: a paused request leaves in-order frames
+ * unread, and the transport caps the frames it buffers per stream (8192 once
+ * they average below 256 bytes, 32768 in any case). A peer that writes small
+ * frames reaches the cap before it has used its stream credit, and the
+ * packet that carries the refused frame is dropped whole and not
+ * acknowledged. The request is accepted again once it is drained. Coalescing
+ * in-order frames in the transport would change this, and this test with it.
+ */
+void
+xqc_test_h3bb_small_frames_reach_frame_cap(void)
+{
+    h3bb_fx_t     fx;
+    xqc_stream_t *st;
+    int           i, iter;
+    size_t        h3len, accepted;
+    uint64_t      off;
+    xqc_int_t     ret;
+    uint8_t      *h3;
+    size_t        payload = 4 * 1024 * 1024, n = 0;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    st = fx.req[i].stream;
+    h3bb_feed_headers(&fx, i);
+
+    /* one DATA frame (RFC 9114 Section 7.2.1) with an 8-byte length */
+    h3 = xqc_malloc(payload + 9);
+    h3[n++] = 0x00;
+    h3[n++] = 0xc0;
+    memset(h3 + n, 0, 3);
+    n += 3;
+    h3[n++] = (uint8_t)(payload >> 24);
+    h3[n++] = (uint8_t)(payload >> 16);
+    h3[n++] = (uint8_t)(payload >> 8);
+    h3[n++] = (uint8_t)payload;
+    memset(h3 + n, 0x5a, payload);
+    h3len = n + payload;
+
+    CU_ASSERT_EQUAL_FATAL(h3bb_insert_small_frames(&fx, i, h3, 64 * 1024, 200,
+                                                   &accepted), XQC_OK);
+    h3bb_read(&fx, i);
+    CU_ASSERT_FATAL(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+
+    ret = h3bb_insert_small_frames(&fx, i, h3 + accepted, h3len - accepted,
+                                   200, &accepted);
+    CU_ASSERT_EQUAL(ret, -XQC_ELIMIT);
+    CU_ASSERT_EQUAL(st->stream_data_in.buffered_frame_count, 8192);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+    /* both flow-control limits still admit the refused frame */
+    CU_ASSERT(st->stream_flow_ctl.fc_max_stream_data_can_recv
+              - st->stream_max_recv_offset > 1024 * 1024);
+    CU_ASSERT(h3bb_conn_credit_left(&fx) > 1024 * 1024);
+
+    /* the same frame in a packet: dropped whole, never accounted */
+    off = fx.req[i].offset;
+    CU_ASSERT_EQUAL(h3bb_process_small_frame(&fx, i, h3 + 9),
+                    -XQC_EIGNORE_PKT);
+    CU_ASSERT_EQUAL(st->stream_max_recv_offset, off);
+    CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
+
+    /* the application drains, the request resumes and reads: the frame is
+     * accepted when it is sent again */
+    for (iter = 0; iter < 100
+         && st->stream_data_in.buffered_frame_count >= 8192; iter++)
+    {
+        h3bb_drain(&fx, i);
+        h3bb_turn(&fx);
+    }
+    CU_ASSERT(iter < 100);
+    CU_ASSERT_EQUAL(h3bb_process_small_frame(&fx, i, h3 + 9), XQC_OK);
+    CU_ASSERT_EQUAL(st->stream_max_recv_offset, off + 200);
+
+    xqc_free(h3);
+    h3bb_teardown(&fx);
+}
