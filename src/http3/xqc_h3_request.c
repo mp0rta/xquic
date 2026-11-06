@@ -140,6 +140,8 @@ xqc_h3_request_close(xqc_h3_request_t *h3_request)
      * xqc_h3_stream_close() may free h3s, so nothing of it is touched after.
      */
     if (h3s->h3c->max_body_buf_per_stream > 0 && h3s->stream != NULL) {
+        xqc_bool_t was_closed = (h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED) != 0;
+
         h3s->flags |= XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED;
         h3s->flags &= ~XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED;
 
@@ -150,9 +152,10 @@ xqc_h3_request_close(xqc_h3_request_t *h3_request)
         /*
          * Reading is abandoned: the decoder cancels the stream so that the
          * peer's encoder drops its reference (RFC 9204 Section 4.4.2).
-         * Nothing to write once the decoder stream is gone.
+         * Nothing to write once the decoder stream is gone, and one
+         * cancellation is enough for a request closed twice.
          */
-        if (h3s->h3c->qdec_stream != NULL) {
+        if (!was_closed && h3s->h3c->qdec_stream != NULL) {
             xqc_qpack_notify_stream_cancel(h3s->qpack, stream_id);
         }
 

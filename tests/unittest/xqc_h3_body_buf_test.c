@@ -2382,6 +2382,12 @@ xqc_test_h3bb_stream_cancel_emission(void)
     CU_ASSERT_EQUAL(xqc_h3_request_close(fx.req[i].h3r), XQC_OK);
     h3bb_leave_pass(&fx);
     CU_ASSERT_EQUAL(h3bb_dec_bytes(&fx) - before, 1);
+
+    /* a second close of the same request writes no further cancellation */
+    h3bb_enter_pass(&fx);
+    xqc_h3_request_close(fx.req[i].h3r);
+    h3bb_leave_pass(&fx);
+    CU_ASSERT_EQUAL(h3bb_dec_bytes(&fx) - before, 1);
     h3bb_teardown(&fx);
 }
 
