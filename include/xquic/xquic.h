@@ -1650,7 +1650,9 @@ typedef struct xqc_conn_settings_s {
     /**
      * The switch to enable stream-level recv rate throttling. Default: off (0)
      * Turning it on also keeps the connection receive window from shrinking:
-     * after an RTT spike it stays as large as that spike made it, up to 16 MiB.
+     * after an RTT spike it stays as large as that spike made it, up to 16 MiB with
+     * recv_rate_bytes_per_sec; without it the window follows 1.5 x the stream
+     * window.
      */
     uint8_t enable_stream_rate_limit;
 
@@ -1874,8 +1876,9 @@ typedef struct xqc_conn_settings_s {
      * Maximum HTTP/3 DATA payload buffered per request stream, in bytes:
      * payload the HTTP/3 layer has read out of the transport stream that the
      * application has not yet collected with xqc_h3_request_recv_body().
-     * Header bytes held back while the request waits for QPACK table updates
-     * count toward the limit too.
+     * Bytes held back while the request waits for QPACK table updates (the
+     * blocked field section and everything read after it) count toward the
+     * limit too.
      *
      * Non-zero makes the HTTP/3 layer stop reading a request's transport
      * stream while the request holds this many bytes (checked before each
@@ -1894,9 +1897,9 @@ typedef struct xqc_conn_settings_s {
      * this is non-zero is discarded: its remaining input is read and
      * dropped without reaching the application, which normally gets no
      * further notification except the final close notification. Unless the
-     * connection is closing, or the QPACK dynamic table capacity is zero
-     * (RFC 9204 Section 2.2.2.2), the QPACK decoder reports the stream as
-     * cancelled (RFC 9204 Section 4.4.2), once per request. A request
+     * connection is closing, or the decoder's maximum QPACK dynamic table
+     * capacity is zero (RFC 9204 Section 2.2.2.2), the QPACK decoder reports
+     * the stream as cancelled (RFC 9204 Section 4.4.2), once per request. A request
      * whose transport stream had already closed while it waited for QPACK
      * updates is not discarded, and replaying it can still notify the
      * application.
