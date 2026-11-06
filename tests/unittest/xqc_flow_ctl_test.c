@@ -196,7 +196,7 @@ xqc_test_fc_stream(xqc_connection_t *conn)
     return stream;
 }
 
-/* F12: unread bytes held by a paused stream do not block the others */
+/* Unread bytes held by a paused stream do not block the others. */
 void
 xqc_test_conn_credit_parked_bytes(void)
 {
@@ -232,7 +232,7 @@ xqc_test_conn_credit_parked_bytes(void)
     xqc_engine_destroy(conn->engine);
 }
 
-/* F5, transport part: a RESET_STREAM moves fc_data_read and extends the
+/* A RESET_STREAM moves fc_data_read and extends the
    credit at once (RFC 9000 Section 4.5) */
 void
 xqc_test_conn_credit_reset_extends(void)
@@ -289,7 +289,7 @@ xqc_test_conn_credit_reset_extends(void)
     xqc_engine_destroy(conn->engine);
 }
 
-/* F13: with a bound on unread data the connection window never shrinks */
+/* With a bound on unread data the connection window never shrinks. */
 void
 xqc_test_conn_window_monotone(void)
 {

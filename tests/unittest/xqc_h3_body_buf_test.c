@@ -676,7 +676,7 @@ h3bb_process_reset(h3bb_fx_t *fx, int idx, uint64_t final_size, int reliable,
     h3bb_leave_pass(fx);
 }
 
-/* F1: at the limit the normal read loop stops and the stream leaves the
+/* At the limit the normal read loop stops and the stream leaves the
  * read list */
 static void
 h3bb_fill_to_limit(h3bb_fx_t *fx, int i)
@@ -730,7 +730,7 @@ xqc_test_h3bb_paused_notify_reads_nothing(void)
     h3bb_teardown(&fx);
 }
 
-/* F2: one-byte DATA frames share nodes */
+/* One-byte DATA frames share nodes. */
 void
 xqc_test_h3bb_tiny_data_coalesced(void)
 {
@@ -750,7 +750,7 @@ xqc_test_h3bb_tiny_data_coalesced(void)
     h3bb_teardown(&fx);
 }
 
-/* F9: the read that crosses the limit also reads FIN; no pause */
+/* The read that crosses the limit also reads FIN; no pause. */
 void
 xqc_test_h3bb_no_pause_after_fin(void)
 {
@@ -769,7 +769,7 @@ xqc_test_h3bb_no_pause_after_fin(void)
     h3bb_teardown(&fx);
 }
 
-/* F9: a reset stream is never paused, the read reaches the transport */
+/* A reset stream is never paused, the read reaches the transport. */
 void
 xqc_test_h3bb_no_pause_after_reset(void)
 {
@@ -793,7 +793,7 @@ xqc_test_h3bb_no_pause_after_reset(void)
     h3bb_teardown(&fx);
 }
 
-/* F9: RESET_STREAM_AT whose reliable part is already read while the buffer
+/* RESET_STREAM_AT whose reliable part is already read while the buffer
  * is at the limit: the first read ends on a short read at the reliable size
  * and re-queues the stream; the next read turn (read_called false) must not
  * pause and completes the reset. 5 + 5 + 29990 = 30000 bytes fed; the
@@ -901,7 +901,7 @@ h3bb_drain(h3bb_fx_t *fx, int idx)
     return total;
 }
 
-/* F3a: a drain inside the body notify is followed by more reading in the same
+/* A drain inside the body notify is followed by more reading in the same
  * engine pass, until the transport is empty */
 void
 xqc_test_h3bb_resume_in_body_notify(void)
@@ -925,7 +925,7 @@ xqc_test_h3bb_resume_in_body_notify(void)
     h3bb_teardown(&fx);
 }
 
-/* F3b: a drain elsewhere inside the engine leaves a due timer, and the next
+/* A drain elsewhere inside the engine leaves a due timer, and the next
  * pass reads the stream on */
 void
 xqc_test_h3bb_resume_in_engine_elsewhere(void)
@@ -961,7 +961,7 @@ xqc_test_h3bb_resume_in_engine_elsewhere(void)
     h3bb_teardown(&fx);
 }
 
-/* F3c: a drain outside the engine fires the app's event timer at once and
+/* A drain outside the engine fires the app's event timer at once and
  * queues the connection */
 void
 xqc_test_h3bb_resume_outside_engine(void)
@@ -987,7 +987,7 @@ xqc_test_h3bb_resume_outside_engine(void)
     h3bb_teardown(&fx);
 }
 
-/* F3d: the notify drains the request and closes the connection: the read-on
+/* The notify drains the request and closes the connection: the read-on
  * loop must not read again */
 static uint64_t h3bb_off_after_first_drain;
 static int      h3bb_close_done;
@@ -1030,7 +1030,7 @@ xqc_test_h3bb_resume_loop_stops_on_conn_close(void)
     h3bb_teardown(&fx);
 }
 
-/* F11: while the connection is destroyed, a drain from a close callback does
+/* While the connection is destroyed, a drain from a close callback does
  * not queue the connection or arm the timer */
 static int h3bb_destroy_checked;
 static int h3bb_destroy_wakes;
@@ -1206,7 +1206,7 @@ h3bb_open_blocked_request(h3bb_fx_t *fx)
     return i;
 }
 
-/* F4: a QPACK-blocked request stops reading into blocked_buf at the limit;
+/* A QPACK-blocked request stops reading into blocked_buf at the limit;
  * the replay moves it to the body buffer and the drain resumes the read */
 void
 xqc_test_h3bb_qpack_blocked_pause(void)
@@ -1249,7 +1249,7 @@ xqc_test_h3bb_qpack_blocked_pause(void)
     h3bb_teardown(&fx);
 }
 
-/* F2, replay path: one-byte DATA frames kept while blocked share nodes once
+/* One-byte DATA frames kept while blocked share nodes once
  * replayed */
 void
 xqc_test_h3bb_tiny_data_coalesced_replay(void)
@@ -1333,7 +1333,7 @@ xqc_test_h3bb_qpack_blocked_trailer_bounded(void)
 
 
 /*
- * A5: a request the application closed is read and dropped by its own read
+ * A request the application closed is read and dropped by its own read
  * turn; the application hears nothing more but the final close notify.
  */
 
@@ -1352,7 +1352,7 @@ h3bb_check_drained(h3bb_fx_t *fx, int i, uint64_t max_before, int notifies)
     CU_ASSERT(xqc_list_empty(&fx->req[i].h3r->body_buf));
 }
 
-/* F6: a request closed while paused gives its credit back, also when the
+/* A request closed while paused gives its credit back, also when the
  * peer already sent FIN (no STOP_SENDING answer or RESET will come) */
 void
 xqc_test_h3bb_close_paused_drains(void)
@@ -1887,7 +1887,7 @@ xqc_test_h3bb_teardown_close_sibling(void)
     CU_ASSERT_EQUAL(fx.req[j].n_close_notify, 1);
 }
 
-/* F8, close half: without a limit the close is what it was */
+/* Without a limit the close is what it was. */
 void
 xqc_test_h3bb_limit_zero_close_unchanged(void)
 {
@@ -1977,7 +1977,7 @@ xqc_test_h3bb_close_in_create_notify(void)
 
 
 /*
- * A6: the QPACK state of an abandoned request is released at safe points,
+ * The QPACK state of an abandoned request is released at safe points,
  * and the peer's encoder is told (RFC 9204 Section 4.4.2).
  */
 
@@ -2427,7 +2427,7 @@ xqc_test_h3bb_stream_cancel_emission(void)
 
 
 /*
- * A6 fix round: the walk of the blocked list keeps an entry whose replay
+ * The walk of the blocked list keeps an entry whose replay
  * leaves the stream blocked, so that a later walk, or the teardown, finds it.
  */
 static void
@@ -2553,7 +2553,7 @@ xqc_test_h3bb_teardown_blocked_sibling_close(void)
 }
 
 
-/* F5, H3 part: a RESET_STREAM that arrives while the request is paused
+/* A RESET_STREAM that arrives while the request is paused
  * settles the connection credit in the same call (RFC 9000 Section 4.5) */
 void
 xqc_test_h3bb_reset_while_paused(void)
@@ -2595,7 +2595,7 @@ h3bb_data_hdr(size_t p)
     return p < 64 ? 2 : (p < 16384 ? 3 : 5);
 }
 
-/* F16: requests closed while paused, with and without the peer's FIN,
+/* Requests closed while paused, with and without the peer's FIN,
  * return their unread bytes; together they exceed the connection window,
  * so a later request can only make progress if the credit came back. The
  * window stays fixed (bounded request, receive rate) across every step. */
