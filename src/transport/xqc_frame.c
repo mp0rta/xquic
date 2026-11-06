@@ -1021,8 +1021,10 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     }
 
     /* receiver flow control */
+    xqc_bool_t recved_grew = XQC_FALSE;
     if (stream->stream_max_recv_offset <
         stream_frame->data_offset + stream_frame->data_length) {
+        recved_grew = XQC_TRUE;
         conn->conn_flow_ctl.fc_data_recved += stream_frame->data_offset +
                                               stream_frame->data_length -
                                               stream->stream_max_recv_offset;
@@ -1048,6 +1050,12 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
                 stream->stream_flow_ctl.fc_max_stream_data_can_recv);
         XQC_CONN_ERR(conn, TRA_FLOW_CONTROL_ERROR);
         return -XQC_EPROTO;
+    }
+
+    if (recved_grew) {
+        /* RFC 9000 Section 4.2: do not wait for DATA_BLOCKED; a paused
+         * request leaves these bytes unread. */
+        xqc_stream_do_recv_conn_flow_ctl(stream);
     }
 
     if (stream->stream_data_in.stream_determined
@@ -1717,6 +1725,10 @@ xqc_stream_account_reset_final_size(xqc_connection_t *conn,
 
     conn->conn_flow_ctl.fc_data_recved += increase;
     stream->stream_max_recv_offset = final_size;
+    if (increase) {
+        /* RFC 9000 Section 4.2: do not wait for DATA_BLOCKED. */
+        xqc_stream_do_recv_conn_flow_ctl(stream);
+    }
     return XQC_OK;
 }
 

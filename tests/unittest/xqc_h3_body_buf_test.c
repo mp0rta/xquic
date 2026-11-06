@@ -22,6 +22,8 @@
 #include "src/transport/xqc_conn.h"
 #include "src/transport/xqc_engine.h"
 #include "src/transport/xqc_frame.h"
+#include "src/transport/xqc_send_queue.h"
+#include "src/transport/xqc_packet_out.h"
 #include "src/transport/xqc_timer.h"
 #include "src/common/xqc_time.h"
 #include "xqc_common_test.h"
@@ -2690,4 +2692,109 @@ xqc_test_h3bb_close_cycles_exceed_window(void)
 
         h3bb_teardown(&fx);
     }
+}
+
+/* MAX_DATA frames waiting in the send queues */
+static unsigned
+h3bb_max_data_queued(xqc_connection_t *conn)
+{
+    xqc_list_head_t *heads[] = {
+        &conn->conn_send_queue->sndq_send_packets,
+        &conn->conn_send_queue->sndq_send_packets_high_pri,
+    };
+    unsigned         count = 0;
+    size_t           k;
+
+    for (k = 0; k < sizeof(heads) / sizeof(heads[0]); k++) {
+        xqc_list_head_t *pos;
+
+        xqc_list_for_each(pos, heads[k]) {
+            xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t,
+                                                  po_list);
+            count += !!(po->po_frame_types & XQC_FRAME_BIT_MAX_DATA);
+        }
+    }
+    return count;
+}
+
+/*
+ * The peer's last connection credit lands on a paused request: the arrival
+ * itself must extend credit (RFC 9000 Section 4.2: no waiting for
+ * DATA_BLOCKED) when the unread bytes U stay below the window W, and extend
+ * nothing once U reaches W. `spare` is W - U after the arrival.
+ */
+static void
+h3bb_credit_on_paused_arrival(uint64_t spare)
+{
+    h3bb_fx_t            fx;
+    xqc_conn_flow_ctl_t *fc;
+    xqc_packet_in_t      pi;
+    uint8_t              pkt[16 + 3000];
+    uint8_t             *filler;
+    uint64_t             last = 3000, w, before;
+    unsigned             queued;
+    size_t               n = 0;
+    int                  i;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    fc = &fx.conn->conn_flow_ctl;
+    fx.conn->conn_settings.recv_rate_bytes_per_sec = 100000;
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_data(&fx, i, 90000, 1400, 0);
+    h3bb_read(&fx, i);
+    CU_ASSERT_FATAL(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+    CU_ASSERT_FATAL(fc->fc_data_read > 0);
+
+    /* a window that the next 3000 bytes use up, leaving `spare` of it */
+    w = fc->fc_data_recved - fc->fc_data_read + last + spare;
+    CU_ASSERT_FATAL(w > XQC_MIN_RECV_WINDOW);
+    h3bb_set_conn_window(&fx, w);
+    fc->fc_max_data_can_recv = fc->fc_data_recved + last;
+    CU_ASSERT_FATAL(h3bb_conn_credit_left(&fx) == last);
+
+    /* STREAM(OFF|LEN) through the transport's own frame processing */
+    pkt[n++] = 0x0e;
+    n += h3bb_put_varint(pkt + n, fx.req[i].stream->stream_id);
+    n += h3bb_put_varint(pkt + n, fx.req[i].offset);
+    n += h3bb_put_varint(pkt + n, last);
+    filler = pkt + n;
+    memset(filler, 0x21, last);
+    n += last;
+    memset(&pi, 0, sizeof(pi));
+    pi.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+    pi.pos = pkt;
+    pi.last = pkt + n;
+
+    before = fc->fc_max_data_can_recv;
+    queued = h3bb_max_data_queued(fx.conn);
+    h3bb_enter_pass(&fx);
+    CU_ASSERT_EQUAL(xqc_process_frames(fx.conn, &pi), XQC_OK);
+    h3bb_leave_pass(&fx);
+
+    CU_ASSERT_EQUAL(fc->fc_recv_windows_size, w);
+    CU_ASSERT_EQUAL(fc->fc_data_recved - fc->fc_data_read, w - spare);
+    CU_ASSERT_EQUAL(fc->fc_data_recved, before);   /* the credit is used up */
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+    if (spare > 0) {
+        CU_ASSERT_EQUAL(fc->fc_max_data_can_recv, fc->fc_data_read + w);
+        CU_ASSERT(h3bb_max_data_queued(fx.conn) > queued);
+
+    } else {
+        CU_ASSERT_EQUAL(fc->fc_max_data_can_recv, before);
+        CU_ASSERT_EQUAL(h3bb_max_data_queued(fx.conn), queued);
+    }
+
+    h3bb_teardown(&fx);
+}
+
+void
+xqc_test_h3bb_conn_credit_on_paused_arrival(void)
+{
+    h3bb_credit_on_paused_arrival(1000);
+}
+
+void
+xqc_test_h3bb_conn_credit_arrival_unread_fills_window(void)
+{
+    h3bb_credit_on_paused_arrival(0);
 }

@@ -479,8 +479,6 @@ int
 xqc_stream_do_recv_conn_flow_ctl(xqc_stream_t *stream)
 {
     xqc_connection_t *conn = stream->stream_conn;
-    xqc_usec_t now = xqc_monotonic_timestamp();
-    xqc_usec_t min_srtt = xqc_conn_get_min_srtt(conn, 0);
     xqc_usec_t max_srtt = 0;
     uint64_t old_fc_win = 0;
     uint64_t available_window;
@@ -522,7 +520,11 @@ xqc_stream_do_recv_conn_flow_ctl(xqc_stream_t *stream)
     available_window = fc->fc_max_data_can_recv - fc->fc_data_recved;
 
     if (available_window < xqc_max(1, effective / 2)) {
+        xqc_usec_t now = xqc_monotonic_timestamp();
+
         if (!conn->conn_settings.recv_rate_bytes_per_sec) {
+            xqc_usec_t min_srtt = xqc_conn_get_min_srtt(conn, 0);
+
             new_win = fc->fc_recv_windows_size;
             if (fc->fc_last_window_update_time &&
                 (now - fc->fc_last_window_update_time < 2 * min_srtt)) {
