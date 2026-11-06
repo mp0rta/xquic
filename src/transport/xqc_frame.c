@@ -992,21 +992,20 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     } else if (ret == -XQC_ELIMIT
                && packet_in->pi_pkt.pkt_type == XQC_PTYPE_SHORT_HEADER)
     {
-        /* Reassembly buffer at capacity (see xqc_insert_stream_frame):
-         * either this frame does not extend the contiguous prefix, or the
-         * stream is at a frame cap that refuses in-order frames too, as
-         * when the application stops reading (a paused HTTP/3 request).
-         * Treat the whole packet as if it were lost instead of tearing
-         * down the connection: returning a tolerant error makes
+        /* Reassembly buffer at capacity (see xqc_insert_stream_frame): this
+         * frame does not extend the contiguous prefix, or the stream is at a
+         * frame cap that also refuses in-order frames (a paused HTTP/3
+         * request). Treat the whole packet as if it were lost instead of
+         * tearing down the connection: returning a tolerant error makes
          * xqc_conn_process_packet skip xqc_conn_on_pkt_processed, so the
          * packet is never acknowledged — required by RFC 9000 §13.1 (a
          * packet must not be acked until its STREAM data has been
          * enqueued) — and the peer retransmits it later, by which time
-         * the application may have read the buffered data (prefix-extending
-         * frames make it readable; a paused request is read once it
-         * resumes). This is a §21.7 resource-exhaustion mitigation; the
-         * previous escalation closed healthy multipath connections with a
-         * bogus FRAME_ENCODING_ERROR (generic engine error path) under
+         * the buffer has drained via prefix-extending frames or a paused
+         * request has resumed. This is a §21.7 resource-exhaustion
+         * mitigation; the previous escalation closed healthy multipath
+         * connections with a bogus FRAME_ENCODING_ERROR (generic engine
+         * error path) under
          * cross-path reordering. Restricted to short-header packets: they
          * are always last in a UDP datagram, so the tolerant
          * skip-rest-of-datagram handling cannot drop coalesced follow-up
@@ -1056,8 +1055,7 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     }
 
     if (recved_grew) {
-        /* RFC 9000 Section 4.2: do not wait for DATA_BLOCKED; a paused
-         * request leaves these bytes unread. */
+        /* RFC 9000 Section 4.2: a paused request leaves these bytes unread */
         xqc_stream_do_recv_conn_flow_ctl(stream);
     }
 
@@ -1932,7 +1930,7 @@ xqc_process_reset_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
             (int64_t)final_size - (int64_t)stream->stream_max_recv_offset;
         conn->conn_flow_ctl.fc_data_read +=
             (int64_t)final_size - (int64_t)stream->stream_data_in.next_read_offset;
-        /* RFC 9000 Section 4.5: the final size settles the connection credit. */
+        /* RFC 9000 Section 4.5: the final size settles connection credit */
         xqc_stream_do_recv_conn_flow_ctl(stream);
         xqc_destroy_frame_list(&stream->stream_data_in.frames_tailq);
         /* Both counters feed the reassembly density gate, so they have to be
@@ -3425,8 +3423,8 @@ xqc_process_reset_stream_at_frame(xqc_connection_t *conn,
             ? XQC_RECV_STREAM_ST_DATA_RECVD
             : XQC_RECV_STREAM_ST_SIZE_KNOWN);
     /* RFC 9000 Section 4.2: the final size may have used credit, and the
-     * reset does not complete yet, so nothing else evaluates it (the paths
-     * that complete the reset do, once, after fc_data_read has moved). */
+     * reset does not complete here; the paths that complete it evaluate it
+     * after fc_data_read has moved. */
     xqc_stream_do_recv_conn_flow_ctl(stream);
     xqc_stream_ready_to_read(stream);
     return XQC_OK;

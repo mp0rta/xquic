@@ -487,10 +487,8 @@ xqc_stream_do_recv_conn_flow_ctl(xqc_stream_t *stream)
     xqc_conn_flow_ctl_t *fc = &conn->conn_flow_ctl;
     uint64_t unread, effective, new_win;
     /*
-     * Received but not yet read bytes (a paused or rate limited stream may
-     * hold many) are not extendable credit, and granted credit cannot be
-     * revoked, per RFC 9000 Section 4.1: so the window must not shrink
-     * while such a receiver is configured.
+     * Granted credit cannot be revoked (RFC 9000 Section 4.1), and a paused
+     * or rate-limited stream may hold many unread bytes: never shrink.
      */
     xqc_bool_t monotone = conn->conn_settings.max_body_buf_per_stream > 0
                           || conn->conn_settings.enable_stream_rate_limit;
@@ -507,9 +505,8 @@ xqc_stream_do_recv_conn_flow_ctl(xqc_stream_t *stream)
     }
 
     /*
-     * Credit is extended net of unread bytes: a receiver MUST NOT wait for
-     * DATA_BLOCKED (RFC 9000 Section 4.2). fc_data_read <= fc_data_recved
-     * always holds (reads, RESET and reliable-reset accounting keep it).
+     * Extend credit net of unread bytes; waiting for DATA_BLOCKED is not
+     * allowed (RFC 9000 Section 4.2). fc_data_read <= fc_data_recved always.
      */
     unread = fc->fc_data_recved - fc->fc_data_read;
     if (unread >= fc->fc_recv_windows_size) {

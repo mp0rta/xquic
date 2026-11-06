@@ -3,11 +3,9 @@
  */
 
 /*
- * Tests for conn_settings.max_body_buf_per_stream, the bound on HTTP/3 DATA
- * payload buffered per request stream. The h3bb_* fixture drives the real
- * HTTP/3 stack on a connection built by test_engine_connect(): request
- * streams are fed as transport STREAM frames and read by the engine's own
- * read pass, so tests see the same ordering production code does.
+ * Tests for conn_settings.max_body_buf_per_stream. The h3bb_* fixture drives
+ * the real HTTP/3 stack on a test_engine_connect() connection: requests are
+ * fed as STREAM frames and read by the engine's own read pass.
  */
 
 #include <CUnit/CUnit.h>
@@ -130,10 +128,9 @@ h3bb_close_notify(xqc_h3_request_t *h3r, void *user_data)
 }
 
 /*
- * Leave the connection as xqc_engine_main_logic() leaves one after a pass:
- * out of the active queue, TICKING clear, parked in the wakeup queue. Where
- * production would destroy the connection (no next tick) this takes the
- * NO_DESTROY branch: parked with next_tick_time 0.
+ * Leave the connection as xqc_engine_main_logic() does after a pass: out of
+ * the active queue, TICKING clear, parked in the wakeup queue (next_tick_time
+ * 0, the NO_DESTROY branch, where production would destroy it).
  */
 static void
 h3bb_park(h3bb_fx_t *fx)
@@ -168,12 +165,10 @@ h3bb_leave_pass(h3bb_fx_t *fx)
 }
 
 /*
- * A connection that is an H3 connection the way the engine makes one: ALPN
- * h3, the H3 connection and stream callbacks, the setting under test, an
- * established state, and the control and QPACK streams. type selects which
- * way max_body_buf_per_stream reaches the connection: a client takes
- * `limit` straight from its settings; a server takes it from its engine's
- * defaults, set through xqc_server_set_conn_settings().
+ * An H3 connection the way the engine makes one: ALPN h3, H3 callbacks, the
+ * setting under test, established state, control and QPACK streams. A client
+ * takes `limit` from its settings; a server takes it from the engine defaults
+ * set through xqc_server_set_conn_settings().
  */
 static int
 h3bb_setup(h3bb_fx_t *fx, size_t limit, xqc_conn_type_t type)
@@ -188,9 +183,8 @@ h3bb_setup(h3bb_fx_t *fx, size_t limit, xqc_conn_type_t type)
     }
 
     if (type == XQC_CONN_TYPE_SERVER) {
-        /* a server connection takes its settings from the engine defaults
-         * (xqc_conn_create copies them); the connection is the client-built
-         * one, which carries a usable TLS state, relabelled as a server's */
+        /* a server takes its settings from the engine defaults; this is the
+         * client-built connection (it has a usable TLS state) relabelled */
         xqc_conn_settings_t s;
 
         fx->srv_engine = test_create_engine_server();
@@ -299,9 +293,9 @@ h3bb_conn_credit_left(const h3bb_fx_t *fx)
 
 /*
  * Hand `len` bytes to the request's transport stream as STREAM frames of at
- * most H3BB_CHUNK bytes at the stream's current receive offset, with the
- * receive accounting xqc_process_stream_frame() does, after the two flow
- * control checks it makes first (RFC 9000 Section 4.1).
+ * most H3BB_CHUNK bytes at the current receive offset, with the accounting
+ * xqc_process_stream_frame() does after its two flow-control checks
+ * (RFC 9000 Section 4.1).
  */
 static void
 h3bb_feed_stream(h3bb_fx_t *fx, xqc_stream_t *stream, uint64_t *offset,
@@ -380,8 +374,8 @@ h3bb_feed(h3bb_fx_t *fx, int idx, const uint8_t *h3, size_t len, int fin)
 
 /*
  * Deliver QPACK encoder instructions (RFC 9204 Section 4.3) on the peer's
- * encoder stream, a server-initiated unidirectional stream of type 0x02 that
- * is opened by the first call, and let the engine read it in one pass.
+ * encoder stream (server-initiated unidirectional, type 0x02, opened by the
+ * first call) and let the engine read it in one pass.
  */
 static void
 h3bb_feed_encoder(h3bb_fx_t *fx, const uint8_t *ins, size_t len)
@@ -640,9 +634,8 @@ h3bb_put_varint(uint8_t *p, uint64_t v)
 }
 
 /*
- * Run the transport's own RESET_STREAM (RFC 9000 Section 19.4) or, with
- * `reliable` set, RESET_STREAM_AT frame processing on the request's stream,
- * inside an emulated engine pass.
+ * Run the transport's RESET_STREAM (RFC 9000 Section 19.4), or with `reliable`
+ * RESET_STREAM_AT, processing on the request's stream inside an engine pass.
  */
 static void
 h3bb_process_reset(h3bb_fx_t *fx, int idx, uint64_t final_size, int reliable,
@@ -796,11 +789,11 @@ xqc_test_h3bb_no_pause_after_reset(void)
     h3bb_teardown(&fx);
 }
 
-/* RESET_STREAM_AT whose reliable part is already read while the buffer
- * is at the limit: the first read ends on a short read at the reliable size
- * and re-queues the stream; the next read turn (read_called false) must not
- * pause and completes the reset. 5 + 5 + 29990 = 30000 bytes fed; the
- * reliable size 20000 is not a multiple of 4 KiB. */
+/* RESET_STREAM_AT whose reliable part is already read while the buffer is at
+ * the limit: the first read ends at the reliable size and re-queues the
+ * stream; the next read turn must not pause and completes the reset. 30000
+ * bytes are fed (5 + 5 + 29990); the reliable size 20000 is not a multiple
+ * of 4 KiB. */
 void
 xqc_test_h3bb_no_pause_reliable_prefix_read(void)
 {
@@ -1326,9 +1319,9 @@ xqc_test_h3bb_qpack_blocked_replay_resumes(void)
     h3bb_teardown(&fx);
 }
 
-/* a blocked trailer section followed by more bytes: the body notify drains
- * and resumes, and the resume loop reads the still-blocked stream; the bytes
- * kept for the blocked section stay under the limit */
+/* a blocked trailer section followed by more bytes: after the body notify
+ * resumes it, the resume loop reads the still-blocked stream and the bytes
+ * kept for the section stay under the limit */
 static void
 h3bb_trailer_bounded(size_t limit)
 {
@@ -1360,10 +1353,8 @@ xqc_test_h3bb_qpack_blocked_trailer_bounded(void)
 }
 
 
-/*
- * A request the application closed is read and dropped by its own read
- * turn; the application hears nothing more but the final close notify.
- */
+/* A closed request is read and dropped by its own read turn; the application
+ * hears only the final close notify. */
 
 /* the credit must come back: everything received was read, the window
  * advertised more than before, and the application heard nothing */
@@ -1761,8 +1752,7 @@ xqc_test_h3bb_close_goaway(void)
 }
 
 /* a callback closes the connection after (re-)arming or closing a request:
- * the walk still reaches that request in the same pass and must neither
- * read it, nor notify, nor send credit */
+ * the walk still reaches it and must not read, notify or send credit */
 static int h3bb_conn_closed;
 static uint64_t h3bb_max_data_at_close;
 static uint64_t h3bb_offset_at_close;
@@ -1847,9 +1837,8 @@ xqc_test_h3bb_close_then_conn_close_in_callback(void)
                       & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
             notifies = fx.req[victim].n_read_notify;
 
-            /* request 0 is queued first, then the victim behind it: the
-             * walk is at 0 when the victim joins the list, and 0's
-             * successor is already the victim */
+            /* 0 is queued first, then the victim: the walk is at 0 when the
+             * victim joins, so 0's successor is the victim */
             fx.req[i].on_notify = h3bb_test_arm_then_conn_close;
             h3bb_feed_headers(&fx, i);
             h3bb_feed_data(&fx, i, 1000, 1000, 0);
@@ -2004,10 +1993,8 @@ xqc_test_h3bb_close_in_create_notify(void)
 }
 
 
-/*
- * The QPACK state of an abandoned request is released at safe points,
- * and the peer's encoder is told (RFC 9204 Section 4.4.2).
- */
+/* An abandoned request's QPACK state is released at safe points, and the
+ * peer's encoder is told (RFC 9204 Section 4.4.2). */
 
 static void
 h3bb_check_blocked_released(h3bb_fx_t *fx, int i)
@@ -2213,9 +2200,8 @@ xqc_test_h3bb_blocked_walk_sibling_close(void)
         h3bb_turn(&fx);
 
         if (variant == 3) {
-            /* the connection is closing: A's replay stops after the callback
-             * that closed it, the walk stops, B is never replayed and stays
-             * blocked until the teardown releases it */
+            /* the connection is closing: A's replay stops after its close
+             * callback, B stays blocked until the teardown releases it */
             a_notifies = fx.req[a].n_read_notify;
             CU_ASSERT_EQUAL(h3bb_walk_closed, 1);
             CU_ASSERT_EQUAL(a_notifies, 1);
@@ -2454,11 +2440,9 @@ xqc_test_h3bb_stream_cancel_emission(void)
 }
 
 
-/*
- * The walk of the blocked list keeps an entry whose replay leaves the stream
- * blocked, so that a later walk, or the teardown, finds it; an entry whose
- * Required Insert Count is met is taken off.
- */
+/* The blocked-list walk keeps an entry whose replay leaves the stream blocked
+ * (a later walk or the teardown finds it) and removes one whose Required
+ * Insert Count is met. */
 static void
 h3bb_check_blocked_count(h3bb_fx_t *fx)
 {
@@ -2490,9 +2474,8 @@ xqc_test_h3bb_blocked_walk_unblocks_met_replay(void)
 
         h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
         h3bb_check_blocked_count(&fx);
-        /* the insertion meets the section's Required Insert Count with
-         * nothing to decode: the stream is unblocked (RFC 9204
-         * Section 2.2.1) */
+        /* the insertion meets the Required Insert Count with nothing to
+         * decode: unblocked (RFC 9204 Section 2.2.1) */
         CU_ASSERT_EQUAL(h3bb_blocked_list_len(&fx), 0);
         CU_ASSERT_EQUAL(fx.req[i].h3s->flags
                         & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED, 0);
@@ -2632,10 +2615,9 @@ h3bb_data_hdr(size_t p)
     return p < 64 ? 2 : (p < 16384 ? 3 : 5);
 }
 
-/* Requests closed while paused, with and without the peer's FIN,
- * return their unread bytes; together they exceed the connection window,
- * so a later request can only make progress if the credit came back. The
- * window stays fixed (bounded request, receive rate) across every step. */
+/* Requests closed while paused, with and without the peer's FIN, return
+ * their unread bytes. Together they exceed the connection window, so a later
+ * request progresses only if the credit came back; the window stays fixed. */
 void
 xqc_test_h3bb_close_cycles_exceed_window(void)
 {
@@ -2760,9 +2742,9 @@ h3bb_max_data_queued(xqc_connection_t *conn)
 
 /*
  * The peer's last connection credit lands on a paused request: the arrival
- * itself must extend credit (RFC 9000 Section 4.2: no waiting for
- * DATA_BLOCKED) when the unread bytes U stay below the window W, and extend
- * nothing once U reaches W. `spare` is W - U after the arrival.
+ * itself must extend credit while the unread bytes U stay below the window W
+ * (RFC 9000 Section 4.2) and nothing once U reaches W. `spare` is W - U after
+ * the arrival.
  */
 static void
 h3bb_credit_on_paused_arrival(uint64_t spare)
@@ -2841,9 +2823,9 @@ xqc_test_h3bb_conn_credit_arrival_unread_fills_window(void)
 }
 
 /*
- * Insert in-order STREAM frames of `fsz` bytes taken from `h3` until `len`
- * bytes are in or the transport refuses one. Flow-control accounting is the
- * fixture's, as in h3bb_feed_stream(). Returns the first non-OK result.
+ * Insert in-order STREAM frames of `fsz` bytes from `h3` until `len` bytes
+ * are in or the transport refuses one; returns the first non-OK result.
+ * Flow-control accounting is the fixture's, as in h3bb_feed_stream().
  */
 static xqc_int_t
 h3bb_insert_small_frames(h3bb_fx_t *fx, int idx, const uint8_t *h3,
@@ -2924,12 +2906,9 @@ h3bb_process_small_frame(h3bb_fx_t *fx, int idx, const uint8_t *data)
 
 /*
  * Pins a known limit, not a goal: a paused request leaves in-order frames
- * unread, and the transport caps the frames it buffers per stream (8192 once
- * they average below 256 bytes, 32768 in any case). A peer that writes small
- * frames reaches the cap before it has used its stream credit, and the
- * packet that carries the refused frame is dropped whole and not
- * acknowledged. The request is accepted again once it is drained. Coalescing
- * in-order frames in the transport would change this, and this test with it.
+ * unread, and the transport's per-stream frame cap (8192 frames averaging
+ * under 256 bytes, 32768 in any case) refuses further frames and drops their
+ * packet unacknowledged until the request drains.
  */
 void
 xqc_test_h3bb_small_frames_reach_frame_cap(void)
@@ -2999,10 +2978,9 @@ xqc_test_h3bb_small_frames_reach_frame_cap(void)
 }
 
 /*
- * Draining a paused request from another request's notify, inside the
- * engine, leaves the connection due even if an allocation there would fail:
- * the revisit timer is registered with the connection, so arming it
- * allocates nothing.
+ * A drain from another request's notify inside the engine leaves the
+ * connection due even if an allocation there would fail: the revisit timer is
+ * registered at creation, so arming it allocates nothing.
  */
 #ifdef XQC_TEST_ALLOC_WRAP
 static int h3bb_revisit_p;
@@ -3015,8 +2993,7 @@ h3bb_test_drain_p_failing_alloc(h3bb_fx_t *fx, int idx)
         return;
     }
     h3bb_revisit_done = 1;
-    /* the allocation the old lazy registration needed would fail; the drain
-     * allocates nothing now, so the armed failure is never reached */
+    /* arming allocates nothing, so the armed failure is never reached */
     xqc_test_af_arm(1);
     CU_ASSERT(h3bb_drain(fx, h3bb_revisit_p) > 0);
     CU_ASSERT(!xqc_test_af_disarm());
@@ -3129,10 +3106,9 @@ xqc_test_h3bb_revisit_timer_registered_at_creation(void)
 }
 
 /*
- * RFC 9204 Section 2.2.1: a stream is unblocked once the Insert Count
- * reaches the Required Insert Count of the field sections it started
- * reading. HEADERS {Required Insert Count 1, Base 1, one indexed line},
- * split right after the section prefix; `ric` selects the count (1 or 2).
+ * RFC 9204 Section 2.2.1: a stream is unblocked once the Insert Count reaches
+ * the Required Insert Count of its field sections. HEADERS {RIC 1, Base 1, one
+ * indexed line} split after the section prefix; `ric` (1 or 2) is the count.
  */
 static const uint8_t h3bb_ric1_prefix[] = {0x01, 0x03, 0x02, 0x00};
 static const uint8_t h3bb_ric2_prefix[] = {0x01, 0x03, 0x03, 0x00};
@@ -3252,10 +3228,9 @@ xqc_test_h3bb_replay_keeps_block_below_ric(void)
 }
 
 /*
- * A small DATA payload whose list node cannot be allocated: the read fails,
- * and the node already created for the payload is freed with the rest.
- * The allocations the DATA read makes are failed in turn; nothing is left
- * allocated after the teardown.
+ * A small DATA payload whose list node cannot be allocated: the read fails and
+ * the node already created is freed. Each allocation of the DATA read fails in
+ * turn; nothing stays allocated after the teardown.
  */
 #ifdef XQC_TEST_ALLOC_WRAP
 static long
@@ -3301,11 +3276,10 @@ xqc_test_h3bb_body_node_freed_when_append_fails(void)
 }
 
 /*
- * A paused request is read again only after the application drained it to
- * the low-water mark (L / 4): between L / 4 and L an arrival, and the read
- * turn it causes, read nothing and extend no stream credit. The stream
- * credit 80000 and window 110000 make a MAX_STREAM_DATA due as soon as the
- * read offset passes about 25000.
+ * A paused request is read again only once drained to the low-water mark
+ * (L / 4): in between, an arrival and its read turn read nothing and extend no
+ * stream credit. Stream credit 80000 and window 110000 make a MAX_STREAM_DATA
+ * due once the read offset passes about 25000.
  */
 void
 xqc_test_h3bb_paused_stays_unread_until_low_water(void)

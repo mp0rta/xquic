@@ -1641,18 +1641,14 @@ typedef struct xqc_conn_settings_s {
      * the minimal valid rate limitation is about 1MBps. Any recv_rate_bytes_per_sec less
      * than the minimal valid rate limitation will not be guaranteed.
      * With enable_stream_rate_limit or max_body_buf_per_stream non-zero, the
-     * connection receive window no longer shrinks: after an RTT spike it stays
-     * as large as that spike made it, up to 16 MiB.
+     * connection receive window never shrinks.
      * default: 0 (no limitation).
      */
     uint64_t recv_rate_bytes_per_sec;
 
     /**
      * The switch to enable stream-level recv rate throttling. Default: off (0)
-     * Turning it on also keeps the connection receive window from shrinking:
-     * after an RTT spike it stays as large as that spike made it, up to 16 MiB with
-     * recv_rate_bytes_per_sec; without it the window follows 1.5 x the stream
-     * window.
+     * Turning it on also keeps the connection receive window from shrinking.
      */
     uint8_t enable_stream_rate_limit;
 
@@ -1873,78 +1869,48 @@ typedef struct xqc_conn_settings_s {
     xqc_bool_t                  enable_reset_stream_at;
 
     /**
-     * Maximum HTTP/3 DATA payload buffered per request stream, in bytes:
-     * payload the HTTP/3 layer has read out of the transport stream that the
-     * application has not yet collected with xqc_h3_request_recv_body().
-     * Bytes held back while the request waits for QPACK table updates (the
-     * blocked field section and everything read after it) count toward the
-     * limit too.
+     * Per-request limit, in bytes, on HTTP/3 DATA payload that the HTTP/3 layer
+     * has read but the application has not yet taken with
+     * xqc_h3_request_recv_body(); bytes held while the request waits for QPACK
+     * updates count too. 0, the default, means no limit.
      *
-     * Non-zero makes the HTTP/3 layer stop reading a request's transport
-     * stream while the request holds this many bytes (checked before each
-     * read, so the buffer can overshoot the limit by one read). While
-     * paused, the stream's receive credit is held back, and the transport
-     * buffers what the peer was already granted, up to its per-stream cap
-     * on buffered frames: 8192 frames once they average below 256 bytes,
-     * 32768 frames in any case, or max_stream_frame_buffered_cnt when that
-     * is non-zero. A peer that writes small frames (below about 512 bytes
-     * against the default 16 MiB stream window) into a paused request can
-     * reach the cap first. From then on the transport refuses further
-     * frames for that request: at 32768 frames, or at a configured cap,
-     * every frame; at 8192 frames, every frame that does not alone lift
-     * the average back to 256 bytes, which a frame that fits in a packet
-     * cannot do unless the average is already within about 0.2 bytes of
-     * 256. It stops processing that short-header packet at the refused
-     * frame and does not acknowledge it, so the frames after it,
-     * DATAGRAMs included, are lost, and the peer treats the whole packet
-     * as lost. This repeats until the application drains or closes the
-     * request. The stream resumes once the application has drained the
-     * request to a quarter of the limit. A request whose FIN the HTTP/3
-     * layer has already read is not paused, and neither is one whose
-     * stream the peer has reset, or whose reliable part (RESET_STREAM_AT)
-     * has been read, since the next read completes the reset (RFC 9000
-     * Section 3.2). A request reset with RESET_STREAM_AT can still pause
-     * until that reliable part has been read. Request streams avoid the
-     * connection error raised by the blocked buffer limit
-     * (max_blocked_buf_per_stream) only when that limit is at least this
-     * limit plus 4 KiB.
+     * At the limit the request is no longer read (checked before each read, so
+     * it can overshoot by one read, at most 4 KiB) until the application drains
+     * it to a quarter of the limit. Its stream credit is held back meanwhile,
+     * so the peer can send only what it was already granted. A request is not
+     * paused once its FIN is read, after a RESET_STREAM, or once the reliable
+     * part of a RESET_STREAM_AT is read. Set max_blocked_buf_per_stream to at
+     * least this limit plus 4 KiB, or a QPACK-blocked request can hit that
+     * limit's connection error first.
      *
-     * A request the application closes with xqc_h3_request_close() while
-     * this is non-zero is discarded: its remaining input is read and
-     * dropped without reaching the application, which normally gets no
-     * further notification except the final close notification. Unless
-     * the connection is closing, or the decoder's maximum QPACK dynamic
-     * table capacity is zero (RFC 9204 Section 2.2.2.2), the QPACK
-     * decoder reports the stream as cancelled (RFC 9204 Section 4.4.2),
-     * once per request. A request whose transport stream had already
-     * closed while it waited for QPACK updates is not discarded, and
-     * replaying it can still notify the application. An application that
-     * stops collecting a request's body must close it to release its
-     * stream.
+     * While this is non-zero, a request closed with xqc_h3_request_close() is
+     * drained and dropped: the application normally gets only the close
+     * notification, and the QPACK decoder sends Stream Cancellation once, as a
+     * best effort, unless the connection is closing or the decoder's table
+     * capacity is 0 (RFC 9204 Sections 2.2.2.2, 4.4.2). An application that
+     * stops taking a request's body must close the request. A request whose
+     * stream closed while it waited for QPACK is not drained, and its replay
+     * can still notify the application.
      *
-     * Independent of this setting, the connection's flow-control credit is
-     * extended net of the received-but-unread bytes U on the connection, so
-     * while U is below the connection window W, unread bytes do not hold
-     * back credit for the other streams (a receiver must not wait for
-     * DATA_BLOCKED, RFC 9000 Section 4.2); once U reaches W no credit is
-     * extended until the application reads. A peer's RESET_STREAM returns
-     * its unread bytes to the connection credit (RFC 9000 Section 4.5).
-     * When this setting or enable_stream_rate_limit is on, the connection
-     * window also never shrinks, since credit once granted cannot be
-     * withdrawn (RFC 9000 Section 4.1).
+     * Independent of this setting, connection credit is extended net of bytes
+     * received but not yet read (RFC 9000 Section 4.2), and a peer's
+     * RESET_STREAM returns its unread bytes (Section 4.5). With this setting or
+     * enable_stream_rate_limit the connection window never shrinks (Section
+     * 4.1).
      *
-     * What the transport buffers for a paused request counts against the
-     * connection's receive window too. With the default windows one request
-     * cannot fill the connection's, but when that window is smaller than a
-     * stream's (is_interop_mode, or recv_rate_bytes_per_sec), one paused
-     * request can, and every other stream on the connection, the peer's
-     * control and QPACK streams included, then waits until the application
-     * drains or closes that request.
+     * Limits. A peer that writes small frames (under about 512 bytes against a
+     * 16 MiB stream window) into a paused request can reach the transport's
+     * per-stream frame cap (8192 frames averaging under 256 bytes, 32768 in any
+     * case, or max_stream_frame_buffered_cnt) before using its credit. Further
+     * frames for the request are then refused, in practice every one: each
+     * packet carrying one is not acknowledged and loses the frames after it,
+     * until the request drains or is closed. When the connection window is
+     * smaller than a stream's (is_interop_mode or recv_rate_bytes_per_sec), one
+     * paused request can stall every other stream on the connection until it
+     * drains or is closed.
      *
-     * Default: 0, which means unbounded and leaves the read loop unchanged.
-     *
-     * ABI: appended last, like the fields above: source-compatible, not
-     * binary-compatible with callers built against the previous header.
+     * ABI: appended last; source-compatible, not binary-compatible with callers
+     * built against the previous header.
      */
     size_t                      max_body_buf_per_stream;
 } xqc_conn_settings_t;

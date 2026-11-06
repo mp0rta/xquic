@@ -876,11 +876,9 @@ wt_session_closed(xqc_wt_session_t *session, xqc_http_headers_t *headers,
 }
 
 /*
- * The CONNECT stream of an open session has received more than the body
- * limit, starting with a capsule that the session rejects, and its FIN.
- * With a limit the request is paused when the session fails, so the adapter
- * must close it: its input is then read and dropped, and the stream can
- * finish. Without a limit the request is read as before and left open.
+ * A session fails on a rejected capsule while its CONNECT request is paused:
+ * the adapter must close the request so the input is dropped and the stream
+ * can finish. Without a limit the request is read and left open.
  */
 static void
 wt_test_failed_capsule_unread(xqc_connection_t *conn, xqc_h3_stream_t *h3s,
@@ -1131,9 +1129,8 @@ wt_test_connect_request(int scenario)
     }
     CU_ASSERT_FATAL(xqc_h3_request_on_recv_header(request) == XQC_OK);
     if (scenario == 16 || scenario == 17) {
-        /* the adapter defers the application's create notify to the header
-         * notify; a request it closed there is discarded and gets no read
-         * notify, one it left open does */
+        /* the adapter defers the create notify to the header notify: a
+         * request closed there is discarded, one left open is read */
         CU_ASSERT(wt_app_creates == 1);
         CU_ASSERT(wt_app_reads == (scenario == 16 ? 0 : 1));
         CU_ASSERT(xqc_h3_stream_in_discard(h3s) == (scenario == 16));

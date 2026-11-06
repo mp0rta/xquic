@@ -597,8 +597,7 @@ fail:
     return NULL;
 }
 
-/* the timer only has to be due: the engine processes the connection's read
- * list in the pass its expiry causes */
+/* the timer only has to expire: that pass processes the read list */
 static void
 xqc_h3_conn_body_buf_revisit_timeout(xqc_gp_timer_id_t gp_timer_id, xqc_usec_t now,
                                      void *user_data)
@@ -1095,9 +1094,9 @@ void
 xqc_h3_conn_destroy_blocked_stream_list(xqc_h3_conn_t *h3c)
 {
     /*
-     * The close notify run by the destroy may close and so destroy another
-     * entry, hence no entry is kept across it: each destroy removes its own
-     * entry (xqc_h3_stream_destroy), and the next one is the new first.
+     * A destroy runs a close notify that may destroy another entry, so keep
+     * none across it: each destroy removes its own entry, and the next is the
+     * new first.
      */
     while (!xqc_list_empty(&h3c->block_stream_head)) {
         xqc_h3_blocked_stream_t *blocked_stream = xqc_list_entry(
@@ -1120,13 +1119,11 @@ xqc_h3_conn_process_blocked_stream(xqc_h3_conn_t *h3c)
     xqc_list_head_t replayed;
 
     /*
-     * A replay runs application callbacks, and a callback may close and so
-     * destroy another blocked request (one whose transport stream is gone is
-     * destroyed at once). Hence no entry is kept across a replay: the next
-     * one is taken from the front. A replayed entry waits on a local list
-     * and is put back in front before leaving: unblock, release and destroy
-     * take an entry off whatever list it is on, so what is put back is the
-     * entries still blocked, and their ricnt is not above the known count.
+     * A replay runs callbacks that may destroy another blocked request, so
+     * keep no entry across it: take the next from the front. A replayed entry
+     * waits on a local list and is put back in front before leaving; unblock,
+     * release and destroy take an entry off whatever list it is on, so only
+     * entries still blocked come back.
      */
     xqc_init_list_head(&replayed);
 

@@ -190,9 +190,8 @@ xqc_wt_request_fail(xqc_wt_session_t *session, uint64_t error)
     }
     xqc_wt_session_notify_closed(session);
     /*
-     * A bounded request that nobody reads is paused with its input unread
-     * (max_body_buf_per_stream): the session is over, so close the request,
-     * which reads and drops what is left and lets the stream finish.
+     * Nobody reads a bounded request any more and it may sit paused: close
+     * it so the rest is dropped and the stream can finish.
      */
     if (bounded && session->request->h3_stream->stream) {
         xqc_h3_request_close(session->request);

@@ -1218,11 +1218,8 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                 {
                     xqc_h3_request_t *h3r = h3s->h3r;
                     xqc_var_buf_t    *tail = NULL;
-                    /*
-                     * With a body limit, payloads below the minimum node size
-                     * share a node so that tiny DATA frames do not pile up
-                     * list entries.
-                     */
+                    /* with a limit, small payloads share a node: tiny DATA
+                     * frames must not pile up list entries */
                     xqc_bool_t        small = h3s->h3c->max_body_buf_per_stream > 0
                                               && len > 0
                                               && len < XQC_H3_BODY_BUF_MIN_BYTES_PER_NODE;
@@ -1969,9 +1966,7 @@ xqc_h3_stream_in_discard(const xqc_h3_stream_t *h3s)
 }
 
 /*
- * Drop the QPACK-blocked state of a stream: the flag, the connection's blocked
- * list entry (the count with it), blocked_buf and its share of
- * total_blocked_buf_size. Only at a point where no iteration holds a
+ * Drop all QPACK-blocked state. Call only where no iteration holds a
  * blocked_buf element across a callback.
  */
 void
@@ -1992,15 +1987,10 @@ xqc_h3_stream_release_blocked(xqc_h3_stream_t *h3s)
 }
 
 /*
- * Own read turn of a discarded request: free what the application will never
- * take, then read and drop the transport stream up to EAGAIN, FIN or an error
- * (RESET). The bytes still count towards the connection credit (RFC 9000
- * Section 4.5: the final size accounts for all bytes of the stream in the
- * connection-level flow controller), and
- * reading up to FIN moves the receive side from Data Recvd to Data Read
- * (Section 3.2). Nothing is parsed and no
- * application callback runs. A connection that is closing or being destroyed
- * is not read.
+ * Read turn of a discarded request: free what the application will never take,
+ * then read and drop the stream up to EAGAIN, FIN or an error. Reading keeps
+ * the connection credit flowing (RFC 9000 Section 4.5) and moves the stream to
+ * Data Read (Section 3.2). No parsing, no callbacks.
  */
 static void
 xqc_h3_stream_discard_read(xqc_h3_stream_t *h3s)
@@ -2026,9 +2016,8 @@ xqc_h3_stream_discard_read(xqc_h3_stream_t *h3s)
 }
 
 /*
- * Whether reading this request may be paused for the body limit. Not once
- * the transport stream is reset or the reliable part of a reset was read
- * (the next read completes the reset), nor after FIN.
+ * Whether reading may be paused for the body limit. Not after FIN, nor once a
+ * reset was received or its reliable part read: the next read completes it.
  */
 static xqc_bool_t
 xqc_h3_stream_body_buf_can_pause(xqc_h3_stream_t *h3s)
@@ -2056,10 +2045,10 @@ xqc_h3_stream_body_buf_can_pause(xqc_h3_stream_t *h3s)
 }
 
 /*
- * A read turn that called xqc_stream_recv normally left the connection's read
- * list; otherwise take the stream off it here, in its own read turn.
- * xqc_stream_recv re-queues the stream after a RESET_STREAM_AT reliable read
- * (xqc_stream.c); that is safe only because can_pause refuses that state.
+ * A turn that called xqc_stream_recv already left the read list; otherwise
+ * take the stream off here, in its own read turn. xqc_stream_recv re-queues
+ * the stream after a RESET_STREAM_AT reliable read; that is safe only because
+ * can_pause refuses that state.
  */
 static void
 xqc_h3_stream_body_buf_pause(xqc_h3_stream_t *h3s, xqc_bool_t read_called)
@@ -2102,10 +2091,8 @@ xqc_h3_stream_process_blocked_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s,
         }
 
         /*
-         * The blocked bytes will become body bytes once the block is lifted.
-         * A paused request stays unread until the application drains it to
-         * the low-water mark, which clears the flag; an arrival must not
-         * read it earlier.
+         * Blocked bytes become body bytes once unblocked, so they count. A
+         * paused request stays unread until it drains to the low-water mark.
          */
         if (h3c->max_body_buf_per_stream > 0
             && xqc_h3_stream_body_buf_can_pause(h3s)
@@ -2160,11 +2147,10 @@ xqc_h3_stream_process_blocked_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s,
 
 
 /*
- * The engine must read the stream (again), wherever the caller ran: inside
- * this request's own body notify the read loop there reads on; elsewhere in
- * the engine the read list walk may be past this stream and the active queue
- * refuses a connection being processed, so a due timer brings the connection
- * back; outside the engine the app's event timer is fired at once.
+ * Make the engine read the stream again. In this request's own body notify the
+ * read loop reads on; elsewhere in the engine the read-list walk may be past
+ * this stream and the active queue refuses a connection being processed, so a
+ * due timer brings it back; outside the engine the app timer fires at once.
  */
 void
 xqc_h3_stream_ready_and_wake(xqc_h3_stream_t *h3s)
@@ -2181,10 +2167,7 @@ xqc_h3_stream_ready_and_wake(xqc_h3_stream_t *h3s)
     }
 }
 
-/*
- * Called once the application drained a paused request to the low-water
- * mark: the engine must read the stream again.
- */
+/* The application drained a paused request to the low-water mark. */
 void
 xqc_h3_stream_body_buf_resume(xqc_h3_stream_t *h3s)
 {
@@ -2214,12 +2197,9 @@ xqc_h3_stream_process_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s, xqc_bool_
 
     do {
         /*
-         * blocked_buf_size is 0 unless the section is blocked. Counting it
-         * here as well keeps the bytes kept for a blocked field section
-         * inside the limit when the resume loop reads a still-blocked
-         * stream (RFC 9204 Section 2.2.1: blocked data should stay in the
-         * flow-control window, not move into unbounded buffers). A paused
-         * request stays unread until it drains to the low-water mark.
+         * blocked_buf_size is 0 unless the section is blocked; counting it
+         * keeps a still-blocked stream read by the resume loop inside the
+         * limit (RFC 9204 Section 2.2.1).
          */
         if (h3c->max_body_buf_per_stream > 0
             && xqc_h3_stream_body_buf_can_pause(h3s)
@@ -2264,8 +2244,7 @@ xqc_h3_stream_process_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s, xqc_bool_
             return ret;
         }
 
-        /* a callback closed the request: the rest of its input is dropped by
-         * its discard read */
+        /* a callback closed the request: its discard read drops the rest */
         if (xqc_h3_stream_in_discard(h3s)) {
             return XQC_OK;
         }
@@ -2387,8 +2366,8 @@ xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s)
                 goto done;
             }
 
-            /* a callback closed the request: its remaining input is never
-             * parsed; this is the end of the iteration, so it can be freed */
+            /* a callback closed the request: drop the rest; freeing is safe
+             * at the end of the iteration */
             if (xqc_h3_stream_in_discard(h3s)) {
                 xqc_h3_stream_release_blocked(h3s);
                 goto done;
@@ -2402,11 +2381,10 @@ xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s)
     }
 
     /*
-     * A replay that had nothing to decode (the section prefix ended the last
-     * read) still unblocks the stream once the Insert Count meets the
-     * Required Insert Count (RFC 9204 Section 2.2.1), so that the rest of the
-     * section is decoded on arrival without another insertion. A section that
-     * blocked again during this replay carries a count that is not met yet.
+     * A replay with nothing left to decode still unblocks once the Insert
+     * Count meets the Required Insert Count (RFC 9204 Section 2.2.1), so the
+     * rest of the section is decoded on arrival. A section that blocked again
+     * carries a count that is not met yet.
      */
     if ((h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED)
         && xqc_qpack_get_req_rqrd_insert_cnt(h3s->ctx)
@@ -2432,9 +2410,8 @@ xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s)
     }
 
     /*
-     * A replay that brought little payload (frame overhead, empty or unknown
-     * frames) leaves the application nothing to drain, and nothing else
-     * would resume the request.
+     * A replay with little payload leaves the application nothing to drain,
+     * so nothing else would resume the request.
      */
     if ((h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED)
         && !(h3s->flags & (XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED
@@ -2523,19 +2500,16 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
     }
     h3s->flags |= XQC_HTTP3_STREAM_IN_READING;
 
-    /*
-     * A callback may have closed the connection after this stream was
-     * queued: the read list walk does not check, so read nothing.
-     */
+    /* the read-list walk does not check for a connection a callback closed */
     if (h3c->max_body_buf_per_stream > 0 && xqc_conn_is_tearing_down(h3c->conn)) {
         h3s->flags &= ~XQC_HTTP3_STREAM_IN_READING;
         return XQC_OK;
     }
 
     /*
-     * A closed request is read and dropped before the GOAWAY branch, which
-     * would send STOP_SENDING and read nothing, leaving the stream's bytes
-     * (and a FIN or RESET) unprocessed for good.
+     * Drain a closed request before the GOAWAY branch, which sends
+     * STOP_SENDING and reads nothing, leaving its bytes (and FIN or RESET)
+     * unprocessed.
      */
     if (xqc_h3_stream_in_discard(h3s)) {
         xqc_h3_stream_discard_read(h3s);
@@ -2607,11 +2581,10 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
                 }
 
                 /*
-                 * The callback resumed the request: read on in this turn,
-                 * unless it closed the request or the connection. This runs
-                 * under the engine (RUNNING) with the transport stream
-                 * alive, so closing the request in the callback only marks
-                 * ACTIVELY_CLOSED and frees nothing.
+                 * The callback resumed the request: read on in this turn
+                 * unless it closed the request or connection. Closing here
+                 * only marks ACTIVELY_CLOSED (engine running, transport
+                 * stream alive), so nothing is freed.
                  */
                 if (!was_paused
                     || (h3s->flags & (XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED
@@ -2637,8 +2610,8 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
 
                 /*
                  * Nothing new was read: do not notify the same leftover
-                 * again. A node counts as new even with no bytes (the empty
-                 * DATA frame that carries FIN), as only a notify delivers it.
+                 * again. A node with no bytes (the empty DATA frame carrying
+                 * FIN) counts as new.
                  */
                 if (h3s->h3r->body_buf_bytes == buffered
                     && h3s->h3r->body_buf_count == nodes)
@@ -2650,9 +2623,8 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
         }
 
         /*
-         * The application closed the request in one of the callbacks above:
-         * read and drop the rest in this turn, as nothing else would
-         * schedule another one.
+         * Closed in a callback above: drop the rest in this turn; nothing
+         * else would schedule another.
          */
         if (xqc_h3_stream_in_discard(h3s)) {
             xqc_h3_stream_discard_read(h3s);

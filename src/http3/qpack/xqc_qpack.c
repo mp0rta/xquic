@@ -205,9 +205,8 @@ fail:
 }
 
 /*
- * Write and notify Stream Cancellation, per RFC 9204 Section 4.4.2. It may
- * be omitted only by a decoder whose maximum dynamic table capacity is zero
- * (Section 2.2.2.2): the encoder then holds no dynamic table reference.
+ * Write and notify Stream Cancellation (RFC 9204 Section 4.4.2). A decoder
+ * whose maximum table capacity is 0 may omit it (Section 2.2.2.2).
  */
 xqc_int_t
 xqc_qpack_notify_stream_cancel(xqc_qpack_t *qpk, uint64_t stream_id)

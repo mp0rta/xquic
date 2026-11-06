@@ -157,12 +157,9 @@ xqc_test_flow_ctl_normal_no_clamp(void)
 
 
 /*
- * Connection credit net of unread data (a receiver must not wait for
- * DATA_BLOCKED, RFC 9000 Section 4.2). Put the
- * receive side into a state with `unread` received-unread bytes, `avail`
- * credit still granted beyond what was received and window w, run the
- * connection-level update and report whether MAX_DATA grew. The stream
- * level is left alone: the call under test is the connection part only.
+ * Set up `unread` received-unread bytes, `avail` credit granted beyond what
+ * was received and window w, run the connection-level update only, and report
+ * whether MAX_DATA grew (RFC 9000 Section 4.2).
  */
 static int
 xqc_test_fc_try(xqc_connection_t *conn, xqc_stream_t *stream, uint64_t w,
@@ -376,9 +373,9 @@ xqc_test_conn_credit_reset_at_final_size_extends(void)
 }
 
 /* A RESET_STREAM that completes the reset checks connection credit once,
-   after the discarded bytes count as read: no second check inside 2 * srtt
-   that would double the window. xqc_process_frames picks the handler by the
-   reliable reset setting, so both settings are run. */
+   after the discarded bytes count as read; a second check inside 2 * srtt
+   would double the window. Both reliable-reset settings run, as they select
+   the handler. */
 void
 xqc_test_conn_credit_reset_checks_once(void)
 {

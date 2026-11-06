@@ -134,10 +134,9 @@ xqc_h3_request_close(xqc_h3_request_t *h3_request)
     xqc_int_t ret;
 
     /*
-     * With a body limit the closed request enters the discard state: its
-     * stream's own read turn reads and drops the rest. xqc_stream_close()
-     * below would requeue and run a connection that is being destroyed, and
-     * xqc_h3_stream_close() may free h3s, so nothing of it is touched after.
+     * With a body limit the request enters the discard state: its own read
+     * turn drops the rest. xqc_stream_close() would requeue a connection being
+     * destroyed and xqc_h3_stream_close() may free h3s, so touch neither.
      */
     if (h3s->h3c->max_body_buf_per_stream > 0 && h3s->stream != NULL) {
         xqc_bool_t was_closed = (h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED) != 0;
@@ -150,10 +149,9 @@ xqc_h3_request_close(xqc_h3_request_t *h3_request)
         }
 
         /*
-         * Reading is abandoned: the decoder cancels the stream so that the
-         * peer's encoder drops its reference (RFC 9204 Section 4.4.2).
-         * Nothing to write once the decoder stream is gone, and one
-         * cancellation is enough for a request closed twice.
+         * Cancel the stream so the peer's encoder drops its reference (RFC
+         * 9204 Section 4.4.2); once per request, and not without a decoder
+         * stream.
          */
         if (!was_closed && h3s->h3c->qdec_stream != NULL) {
             xqc_qpack_notify_stream_cancel(h3s->qpack, stream_id);

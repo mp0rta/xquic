@@ -81,9 +81,7 @@ typedef enum {
     XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED = 0x1000,
     /* FIN was sent and no data will be sent any more */
     XQC_HTTP3_STREAM_FLAG_FIN_SENT = 0x2000,
-    /* XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED indicates that reading of this
-       request was paused because the buffered body reached
-       max_body_buf_per_stream. */
+    /* reading paused: the buffered body reached max_body_buf_per_stream */
     XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED = 0x4000,
     /* the request's own body notify is running (read notify) */
     XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY = 0x8000,
@@ -226,25 +224,21 @@ xqc_int_t xqc_h3_stream_send_goaway(xqc_h3_stream_t *h3s, uint64_t push_id, uint
 
 xqc_int_t xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s);
 
-/* re-arm a request paused at max_body_buf_per_stream once the application
- * drained its buffer, and make sure the engine reads it again */
+/* the application drained a paused request: have the engine read it again */
 void xqc_h3_stream_body_buf_resume(xqc_h3_stream_t *h3s);
 
-/* put the stream on the connection's read list and make the engine read it:
- * wake the engine from outside, or arm the revisit timer inside */
+/* queue the stream for reading: wake the engine from outside, or arm the
+ * revisit timer inside */
 void xqc_h3_stream_ready_and_wake(xqc_h3_stream_t *h3s);
 
 /*
- * The discard state of an application-closed request (only with
- * max_body_buf_per_stream > 0): the parser is not run again once the close
- * is seen (it stops after the callback that closed the request), the
- * application gets no read or closing notification, and the stream's own
- * read turn reads and drops what remains so that the credit returns.
+ * An application-closed request (only with max_body_buf_per_stream > 0): no
+ * more parsing or read notifications; its read turn drops what remains so the
+ * credit returns.
  */
 xqc_bool_t xqc_h3_stream_in_discard(const xqc_h3_stream_t *h3s);
 
-/* drop the QPACK-blocked state of a stream (flag, blocked list entry and
- * count, blocked_buf, connection total); not while a replay of it runs */
+/* drop all QPACK-blocked state; not while a replay of the stream runs */
 void xqc_h3_stream_release_blocked(xqc_h3_stream_t *h3s);
 
 xqc_var_buf_t *xqc_h3_stream_get_send_buf(xqc_h3_stream_t *h3s);
