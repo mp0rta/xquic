@@ -290,6 +290,29 @@ xqc_test_conn_credit_reset_extends(void)
     xqc_engine_destroy(conn->engine);
 }
 
+/* MAX_DATA frames waiting in the send queues */
+static unsigned
+xqc_test_fc_max_data_queued(xqc_connection_t *conn)
+{
+    xqc_list_head_t *heads[] = {
+        &conn->conn_send_queue->sndq_send_packets,
+        &conn->conn_send_queue->sndq_send_packets_high_pri,
+    };
+    unsigned         count = 0;
+    size_t           k;
+
+    for (k = 0; k < sizeof(heads) / sizeof(heads[0]); k++) {
+        xqc_list_head_t *pos;
+
+        xqc_list_for_each(pos, heads[k]) {
+            xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t,
+                                                  po_list);
+            count += !!(po->po_frame_types & XQC_FRAME_BIT_MAX_DATA);
+        }
+    }
+    return count;
+}
+
 /* A RESET_STREAM_AT whose final size uses credit extends the connection
    credit at once, with unread data held (RFC 9000 Section 4.2 and 4.5) */
 void
@@ -303,8 +326,7 @@ xqc_test_conn_credit_reset_at_final_size_extends(void)
     size_t               n = 0;
     uint64_t             w = 63000;
     uint64_t             id;
-    xqc_list_head_t     *pos;
-    unsigned             queued = 0;
+    unsigned             queued;
 
     CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
     stream = xqc_test_fc_stream(conn);
@@ -347,18 +369,75 @@ xqc_test_conn_credit_reset_at_final_size_extends(void)
     CU_ASSERT_EQUAL(fc->fc_data_recved, 61000);
     CU_ASSERT_EQUAL(fc->fc_data_read, 20000);
     CU_ASSERT_EQUAL(fc->fc_max_data_can_recv, 20000 + w);
-    xqc_list_for_each(pos, &conn->conn_send_queue->sndq_send_packets) {
-        xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
-        queued += !!(po->po_frame_types & XQC_FRAME_BIT_MAX_DATA);
-    }
-    xqc_list_for_each(pos,
-                      &conn->conn_send_queue->sndq_send_packets_high_pri) {
-        xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
-        queued += !!(po->po_frame_types & XQC_FRAME_BIT_MAX_DATA);
-    }
+    queued = xqc_test_fc_max_data_queued(conn);
     CU_ASSERT(queued > 0);
 
     xqc_engine_destroy(conn->engine);
+}
+
+/* A RESET_STREAM that completes the reset checks connection credit once,
+   after the discarded bytes count as read: no second check inside 2 * srtt
+   that would double the window. xqc_process_frames picks the handler by the
+   reliable reset setting, so both settings are run. */
+void
+xqc_test_conn_credit_reset_checks_once(void)
+{
+    int pass;
+
+    for (pass = 0; pass < 2; pass++) {
+        xqc_connection_t    *conn = test_engine_connect();
+        xqc_stream_t        *stream;
+        xqc_conn_flow_ctl_t *fc;
+        xqc_packet_in_t      pi;
+        uint8_t              frame[32];
+        size_t               n = 0;
+        uint64_t             w = 63000;
+        uint64_t             id;
+
+        CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+        stream = xqc_test_fc_stream(conn);
+        fc = &conn->conn_flow_ctl;
+        id = stream->stream_id;
+        CU_ASSERT_PTR_NOT_NULL_FATAL(conn->conn_initial_path);
+        conn->conn_initial_path->path_send_ctl->ctl_srtt = 60000;
+        conn->local_settings.reset_stream_at = pass == 1;
+        conn->remote_settings.reset_stream_at = pass == 1;
+
+        stream->stream_max_recv_offset = 40000;
+        stream->stream_data_in.next_read_offset = 0;
+        stream->stream_flow_ctl.fc_max_stream_data_can_recv = 1000000;
+        fc->fc_recv_windows_size = w;
+        fc->fc_data_read = 20000;
+        fc->fc_data_recved = 60000;
+        fc->fc_max_data_can_recv = 62000;
+
+        /* RESET_STREAM: id, error 1, final size 41000 */
+        frame[n++] = XQC_FRAME_TYPE_RESET_STREAM;
+        frame[n++] = (uint8_t)(0x80 | (id >> 24));
+        frame[n++] = (uint8_t)(id >> 16);
+        frame[n++] = (uint8_t)(id >> 8);
+        frame[n++] = (uint8_t)id;
+        frame[n++] = 0x40;
+        frame[n++] = 0x01;
+        frame[n++] = 0x80;
+        frame[n++] = 0x00;
+        frame[n++] = 0xa0;
+        frame[n++] = 0x28;
+        memset(&pi, 0, sizeof(pi));
+        pi.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+        pi.pos = frame;
+        pi.last = frame + n;
+
+        CU_ASSERT_EQUAL(xqc_process_frames(conn, &pi), XQC_OK);
+
+        CU_ASSERT_EQUAL(fc->fc_data_read, 61000);
+        CU_ASSERT_EQUAL(fc->fc_data_recved, 61000);
+        CU_ASSERT_EQUAL(fc->fc_recv_windows_size, w);
+        CU_ASSERT_EQUAL(fc->fc_max_data_can_recv, 61000 + w);
+        CU_ASSERT_EQUAL(xqc_test_fc_max_data_queued(conn), 1);
+
+        xqc_engine_destroy(conn->engine);
+    }
 }
 
 /* With a bound on unread data the connection window never shrinks. */

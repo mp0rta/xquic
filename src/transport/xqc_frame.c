@@ -1725,10 +1725,6 @@ xqc_stream_account_reset_final_size(xqc_connection_t *conn,
 
     conn->conn_flow_ctl.fc_data_recved += increase;
     stream->stream_max_recv_offset = final_size;
-    if (increase) {
-        /* RFC 9000 Section 4.2: do not wait for DATA_BLOCKED. */
-        xqc_stream_do_recv_conn_flow_ctl(stream);
-    }
     return XQC_OK;
 }
 
@@ -3425,6 +3421,10 @@ xqc_process_reset_stream_at_frame(xqc_connection_t *conn,
         stream->stream_data_in.merged_offset_end >= reliable_size
             ? XQC_RECV_STREAM_ST_DATA_RECVD
             : XQC_RECV_STREAM_ST_SIZE_KNOWN);
+    /* RFC 9000 Section 4.2: the final size used credit and the reset does not
+     * complete yet, so nothing else evaluates it (the paths that complete the
+     * reset do, once, after fc_data_read has moved). */
+    xqc_stream_do_recv_conn_flow_ctl(stream);
     xqc_stream_ready_to_read(stream);
     return XQC_OK;
 }
