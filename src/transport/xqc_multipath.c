@@ -943,7 +943,9 @@ xqc_path_is_quiet_standby(xqc_path_ctx_t *path)
  * cannot reach it. Send it a PING at the first send round after it stops
  * being quiet, rather than at the next keep-alive, up to 15 s later. Like
  * the other probes, only when one packet fits its congestion window, since
- * the probe list does not check it. */
+ * the probe list does not check it. Its idle timer restarts only when a
+ * packet is received, and none came while it was quiet: restart it here,
+ * so that the peer has a full idle period to answer. */
 void
 xqc_conn_wake_quiet_standby(xqc_connection_t *conn)
 {
@@ -960,13 +962,17 @@ xqc_conn_wake_quiet_standby(xqc_connection_t *conn)
         path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
         quiet = xqc_path_is_quiet_standby(path);
         if (path->path_was_quiet_standby && !quiet
-            && path->path_state == XQC_PATH_STATE_ACTIVE
-            && path->app_path_status == XQC_APP_PATH_STATUS_STANDBY)
+            && path->path_state == XQC_PATH_STATE_ACTIVE)
         {
+            xqc_timer_set(&path->path_send_ctl->path_timer_manager,
+                          XQC_TIMER_PATH_IDLE, xqc_monotonic_timestamp(),
+                          xqc_path_get_idle_timeout(path) * 1000);
+
             memset(&probe, 0, sizeof(probe));
             probe.po_used_size = path->curr_pkt_out_size;
-            if (xqc_send_ctl_can_send(path->path_send_ctl, &probe,
-                                      path->path_schedule_bytes)
+            if (path->app_path_status == XQC_APP_PATH_STATUS_STANDBY
+                && xqc_send_ctl_can_send(path->path_send_ctl, &probe,
+                                         path->path_schedule_bytes)
                 && xqc_path_send_ping_to_probe(path, XQC_PNS_APP_DATA,
                                                XQC_PATH_SPECIFIED_BY_PQP)
                    == XQC_OK)

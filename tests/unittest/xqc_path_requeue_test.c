@@ -559,6 +559,66 @@ xqc_test_idle_timer_keeps_quiet_standby(void)
     requeue_test_teardown(&t);
 }
 
+/* A quiet backup, and a primary that goes silent: when the backup's path
+ * idle timer runs out in the same engine pass as the primary's PTO, timers
+ * run before the send round that wakes the backup, and the backup is no
+ * longer quiet. It is kept all the same, for that round to wake it. */
+void
+xqc_test_idle_timer_keeps_waking_standby(void)
+{
+    requeue_test_t t;
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    t.conn->conn_settings.standby_path_probe_timeout = 0;
+    xqc_path_ctx_t *backup = requeue_test_add_path(&t, 0);
+    CU_ASSERT_FATAL(backup != NULL);
+    backup->app_path_status = XQC_APP_PATH_STATUS_STANDBY;
+    t.conn->active_path_count = 2;
+
+    /* a send round while the backup is quiet */
+    xqc_conn_wake_quiet_standby(t.conn);
+
+    t.dead->path_send_ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    CU_ASSERT_FATAL(!xqc_path_is_quiet_standby(backup));
+    xqc_timer_path_idle_timeout(XQC_TIMER_PATH_IDLE, xqc_monotonic_timestamp(),
+                                backup->path_send_ctl);
+    CU_ASSERT_EQUAL(backup->path_state, XQC_PATH_STATE_ACTIVE);
+    CU_ASSERT_TRUE(xqc_timer_is_set(&backup->path_send_ctl->path_timer_manager,
+                                    XQC_TIMER_PATH_IDLE));
+
+    requeue_test_teardown(&t);
+}
+
+/* Nothing reached a quiet backup, so its path idle timer was not restarted
+ * while it was quiet, and it can be about to run out when the backup is
+ * woken. The wake restarts it: the peer has a full idle period to answer
+ * the PING. */
+void
+xqc_test_woken_standby_gets_idle_period(void)
+{
+    requeue_test_t t;
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    t.conn->conn_settings.standby_path_probe_timeout = 0;
+    xqc_path_ctx_t *backup = requeue_test_add_path(&t, 0);
+    CU_ASSERT_FATAL(backup != NULL);
+    backup->app_path_status = XQC_APP_PATH_STATUS_STANDBY;
+    xqc_timer_manager_t *tm = &backup->path_send_ctl->path_timer_manager;
+    xqc_usec_t idle = xqc_path_get_idle_timeout(backup) * 1000;
+    CU_ASSERT_FATAL(idle > 1000000);
+
+    /* a send round while the backup is quiet */
+    xqc_conn_wake_quiet_standby(t.conn);
+
+    /* its idle timer runs out in 1 ms, and the primary goes silent */
+    xqc_timer_set(tm, XQC_TIMER_PATH_IDLE, xqc_monotonic_timestamp(), 1000);
+    t.dead->path_send_ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    xqc_usec_t now = xqc_monotonic_timestamp();
+    xqc_conn_wake_quiet_standby(t.conn);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, backup), 1);
+    CU_ASSERT_TRUE(tm->timer[XQC_TIMER_PATH_IDLE].expire_time >= now + idle);
+
+    requeue_test_teardown(&t);
+}
+
 /* A path that counts as dead only from PTO expiries hidden by sends gets no
  * PING before its third PTO fires: the PING would re-arm its loss detection
  * timer and hold off the PTO that moves its data to the other paths. Nor

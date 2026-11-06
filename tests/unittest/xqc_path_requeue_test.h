@@ -23,5 +23,7 @@ void xqc_test_two_backups_not_quiet_without_primary(void);
 void xqc_test_quiet_standby_woken_once(void);
 void xqc_test_keepalive_skips_quiet_standby(void);
 void xqc_test_idle_timer_keeps_quiet_standby(void);
+void xqc_test_idle_timer_keeps_waking_standby(void);
+void xqc_test_woken_standby_gets_idle_period(void);
 
 #endif /* XQC_PATH_REQUEUE_TEST_H_INCLUDED */

@@ -1001,6 +1001,10 @@ main(int argc, char *argv[])
                         xqc_test_keepalive_skips_quiet_standby)
         || !CU_add_test(pSuite, "xqc_test_idle_timer_keeps_quiet_standby",
                         xqc_test_idle_timer_keeps_quiet_standby)
+        || !CU_add_test(pSuite, "xqc_test_idle_timer_keeps_waking_standby",
+                        xqc_test_idle_timer_keeps_waking_standby)
+        || !CU_add_test(pSuite, "xqc_test_woken_standby_gets_idle_period",
+                        xqc_test_woken_standby_gets_idle_period)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)
