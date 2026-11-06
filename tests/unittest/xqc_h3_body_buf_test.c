@@ -2511,3 +2511,143 @@ xqc_test_h3bb_teardown_blocked_sibling_close(void)
     CU_ASSERT_EQUAL(fx.req[a].n_close_notify, 1);
     CU_ASSERT_EQUAL(fx.req[b].n_close_notify, 1);
 }
+
+
+/* F5, H3 part: a RESET_STREAM that arrives while the request is paused
+ * settles the connection credit in the same call (RFC 9000 Section 4.5) */
+void
+xqc_test_h3bb_reset_while_paused(void)
+{
+    h3bb_fx_t            fx;
+    xqc_conn_flow_ctl_t *fc;
+    int                  i;
+    uint64_t             read_before, max_before, off, final_size;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_set_conn_window(&fx, 100000);
+    fc = &fx.conn->conn_flow_ctl;
+
+    h3bb_fill_to_limit(&fx, i);
+    CU_ASSERT_FATAL(fx.req[i].h3s->flags
+                    & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+
+    read_before = fc->fc_data_read;
+    max_before = fc->fc_max_data_can_recv;
+    off = fx.req[i].stream->stream_data_in.next_read_offset;
+    final_size = fx.req[i].stream->stream_max_recv_offset + 1000;
+
+    h3bb_process_reset(&fx, i, final_size, 0, 0);
+    CU_ASSERT_EQUAL(fc->fc_data_read, read_before + (final_size - off));
+    CU_ASSERT(fc->fc_max_data_can_recv > max_before);
+
+    h3bb_turn(&fx);
+    CU_ASSERT(fx.req[i].n_closing_notify == 1 || fx.req[i].n_close_notify == 1);
+    CU_ASSERT_EQUAL(fc->fc_data_read, fc->fc_data_recved);
+
+    h3bb_teardown(&fx);
+}
+
+/* the size of the HTTP/3 DATA frame header (RFC 9114 Section 7.2.1) the
+ * fixture writes for a payload of p bytes */
+static size_t
+h3bb_data_hdr(size_t p)
+{
+    return p < 64 ? 2 : (p < 16384 ? 3 : 5);
+}
+
+/* F16: requests closed while paused, with and without the peer's FIN,
+ * return their unread bytes; together they exceed the connection window,
+ * so a later request can only make progress if the credit came back. The
+ * window stays fixed (bounded request, receive rate) across every step. */
+void
+xqc_test_h3bb_close_cycles_exceed_window(void)
+{
+    int variant;
+
+    for (variant = 0; variant < 2; variant++) {
+        h3bb_fx_t            fx;
+        xqc_conn_flow_ctl_t *fc;
+        uint64_t             sum_u = 0;
+        int                  cycles = 0;
+        int                  i, iter;
+        size_t               remaining = 200000;
+
+        i = h3bb_open_request(&fx, H3BB_LIMIT);
+        fc = &fx.conn->conn_flow_ctl;
+        fx.conn->conn_settings.recv_rate_bytes_per_sec = 100000;
+        h3bb_set_conn_window(&fx, 200000);
+        CU_ASSERT_EQUAL(fc->fc_recv_windows_size, 200000);
+
+        while (sum_u <= 200000 && cycles < 6) {
+            xqc_stream_t *stream;
+            uint64_t      u;
+
+            i = h3bb_add_request(&fx);
+            CU_ASSERT_FATAL(i == cycles + 1);
+            stream = fx.req[i].stream;
+            stream->stream_flow_ctl.fc_max_stream_data_can_recv =
+                16 * 1024 * 1024;
+            fx.req[i].drain_in_notify = 0;
+
+            h3bb_feed_headers(&fx, i);
+            h3bb_feed_data(&fx, i, 90000, 1400, variant);
+            if (variant) {
+                CU_ASSERT_EQUAL(stream->stream_state_recv,
+                                XQC_RECV_STREAM_ST_DATA_RECVD);
+            }
+            CU_ASSERT_EQUAL(fc->fc_recv_windows_size, 200000);
+
+            h3bb_read(&fx, i);
+            CU_ASSERT_FATAL(fx.req[i].h3s->flags
+                            & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+            u = stream->stream_max_recv_offset
+                - stream->stream_data_in.next_read_offset;
+            CU_ASSERT(u > 60000);
+            sum_u += u;
+            CU_ASSERT_EQUAL(fc->fc_recv_windows_size, 200000);
+
+            /* inside a pass, so the request is queued and its own read
+             * turn drains it; the connection survives the next cycle */
+            h3bb_enter_pass(&fx);
+            CU_ASSERT_EQUAL(xqc_h3_request_close(fx.req[i].h3r), XQC_OK);
+            h3bb_leave_pass(&fx);
+            h3bb_turn(&fx);
+
+            CU_ASSERT_EQUAL(fc->fc_data_read, fc->fc_data_recved);
+            CU_ASSERT_EQUAL(fc->fc_recv_windows_size, 200000);
+            cycles++;
+        }
+        CU_ASSERT(sum_u > 200000);
+        CU_ASSERT(cycles >= 3);
+
+        /* a request that needs more than the window in total */
+        i = h3bb_add_request(&fx);
+        CU_ASSERT_FATAL(i == cycles + 1);
+        fx.req[i].stream->stream_flow_ctl.fc_max_stream_data_can_recv =
+            16 * 1024 * 1024;
+        fx.req[i].drain_in_notify = 1;
+        h3bb_feed_headers(&fx, i);
+
+        for (iter = 0; iter < 1000 && remaining > 0; iter++) {
+            uint64_t credit = h3bb_conn_credit_left(&fx);
+            size_t   p = remaining;
+            size_t   before = fx.req[i].bytes_delivered;
+
+            if (p + h3bb_data_hdr(p) > credit) {
+                p = credit > 5 ? credit - 5 : 0;
+                while (p > 0 && p + h3bb_data_hdr(p) > credit) {
+                    p--;
+                }
+            }
+            CU_ASSERT_FATAL(p > 0);
+            h3bb_feed_data(&fx, i, p, p, 0);
+            h3bb_read(&fx, i);
+            CU_ASSERT(fx.req[i].bytes_delivered > before);
+            CU_ASSERT_EQUAL(fc->fc_recv_windows_size, 200000);
+            remaining -= p;
+        }
+        CU_ASSERT_EQUAL(fx.req[i].bytes_delivered, 200000);
+
+        h3bb_teardown(&fx);
+    }
+}

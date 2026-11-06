@@ -1921,6 +1921,8 @@ xqc_process_reset_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
             (int64_t)final_size - (int64_t)stream->stream_max_recv_offset;
         conn->conn_flow_ctl.fc_data_read +=
             (int64_t)final_size - (int64_t)stream->stream_data_in.next_read_offset;
+        /* RFC 9000 Section 4.5: the final size settles the connection credit. */
+        xqc_stream_do_recv_conn_flow_ctl(stream);
         xqc_destroy_frame_list(&stream->stream_data_in.frames_tailq);
         /* Both counters feed the reassembly density gate, so they have to be
          * cleared together. Nothing reaches that gate on this stream again

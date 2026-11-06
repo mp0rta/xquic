@@ -9,6 +9,9 @@
 #include "src/transport/xqc_conn.h"
 #include "src/transport/xqc_engine.h"
 #include "src/transport/xqc_stream.h"
+#include "src/transport/xqc_send_ctl.h"
+#include "src/transport/xqc_frame.h"
+#include "src/transport/xqc_conn.h"
 #include "xqc_common_test.h"
 
 /*
@@ -100,6 +103,7 @@ xqc_test_conn_flow_ctl_clamp(void)
     conn->conn_flow_ctl.fc_last_window_update_time = 0;
     conn->conn_flow_ctl.fc_max_data_can_recv = XQC_TEST_FC_NEAR_LIMIT;
     conn->conn_flow_ctl.fc_data_read = XQC_TEST_FC_NEAR_LIMIT;
+    conn->conn_flow_ctl.fc_data_recved = XQC_TEST_FC_NEAR_LIMIT;
     conn->conn_flow_ctl.fc_recv_windows_size = XQC_MAX_RECV_WINDOW;
 
     CU_ASSERT_EQUAL(xqc_stream_do_recv_flow_ctl(stream), XQC_OK);
@@ -149,3 +153,191 @@ xqc_test_flow_ctl_normal_no_clamp(void)
 /* xqc_test_uni_stream_credit_exhausted and _not_exhausted (upstream #963)
    test the stream-count credit of upstream #555, which this fork reverts
    (48b7fc3). */
+
+
+/*
+ * Connection credit net of unread data (RFC 9000 Section 4.2). Put the
+ * receive side into a state with `unread` received-unread bytes, `avail`
+ * credit still granted beyond what was received and window w, run the
+ * connection-level update and report whether MAX_DATA grew. The stream
+ * level is left alone: the call under test is the connection part only.
+ */
+static int
+xqc_test_fc_try(xqc_connection_t *conn, xqc_stream_t *stream, uint64_t w,
+    uint64_t unread, uint64_t avail, uint64_t *new_max)
+{
+    xqc_conn_flow_ctl_t *fc = &conn->conn_flow_ctl;
+    uint64_t             before;
+
+    fc->fc_recv_windows_size = w;
+    fc->fc_last_window_update_time = 0;
+    fc->fc_data_read = 30000;
+    fc->fc_data_recved = 30000 + unread;
+    fc->fc_max_data_can_recv = fc->fc_data_recved + avail;
+    before = fc->fc_max_data_can_recv;
+
+    CU_ASSERT_EQUAL(xqc_stream_do_recv_conn_flow_ctl(stream), XQC_OK);
+    if (new_max) {
+        *new_max = fc->fc_max_data_can_recv;
+    }
+    return fc->fc_max_data_can_recv > before;
+}
+
+static xqc_stream_t *
+xqc_test_fc_stream(xqc_connection_t *conn)
+{
+    xqc_stream_t *stream = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+    /* 1.5 x this stays below every window the tests use */
+    stream->stream_flow_ctl.fc_stream_recv_window_size = 1000;
+    conn->conn_settings.recv_rate_bytes_per_sec = 0;
+    return stream;
+}
+
+/* F12: unread bytes held by a paused stream do not block the others */
+void
+xqc_test_conn_credit_parked_bytes(void)
+{
+    xqc_connection_t *conn = test_engine_connect();
+    xqc_stream_t     *stream;
+    uint64_t          max;
+    uint64_t          w = 100000;
+
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    stream = xqc_test_fc_stream(conn);
+
+    /* 60000 parked, the peer's credit is used up: extended to read + W
+       without any DATA_BLOCKED having been processed */
+    CU_ASSERT(xqc_test_fc_try(conn, stream, w, 60000, 0, &max));
+    CU_ASSERT_EQUAL(max, 30000 + w);
+
+    /* the whole window is unread: nothing to extend */
+    CU_ASSERT(!xqc_test_fc_try(conn, stream, w, w, 0, NULL));
+    CU_ASSERT(!xqc_test_fc_try(conn, stream, w, w + 5000, 0, NULL));
+
+    /* E = 1 and E = 2: extended at once */
+    CU_ASSERT(xqc_test_fc_try(conn, stream, w, w - 1, 0, &max));
+    CU_ASSERT_EQUAL(max, 30000 + w);
+    CU_ASSERT(xqc_test_fc_try(conn, stream, w, w - 2, 0, &max));
+    CU_ASSERT_EQUAL(max, 30000 + w);
+    CU_ASSERT(!xqc_test_fc_try(conn, stream, w, w - 1, 1, NULL));
+
+    /* nothing parked: extended exactly when max_data - fc_data_read < W / 2 */
+    CU_ASSERT(!xqc_test_fc_try(conn, stream, w, 0, w / 2, NULL));
+    CU_ASSERT(xqc_test_fc_try(conn, stream, w, 0, w / 2 - 1, &max));
+    CU_ASSERT_EQUAL(max, 30000 + w);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* F5, transport part: a RESET_STREAM moves fc_data_read and extends the
+   credit at once (RFC 9000 Section 4.5) */
+void
+xqc_test_conn_credit_reset_extends(void)
+{
+    xqc_connection_t    *conn = test_engine_connect();
+    xqc_stream_t        *stream;
+    xqc_conn_flow_ctl_t *fc;
+    xqc_packet_in_t      pi;
+    uint8_t              frame[16];
+    size_t               n = 0;
+    uint64_t             before;
+    uint64_t             w = 63000;
+    uint64_t             id;
+
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    stream = xqc_test_fc_stream(conn);
+    fc = &conn->conn_flow_ctl;
+    id = stream->stream_id;
+
+    /* this stream holds 40000 unread bytes; other streams read 20000 */
+    stream->stream_max_recv_offset = 40000;
+    stream->stream_data_in.next_read_offset = 0;
+    stream->stream_flow_ctl.fc_max_stream_data_can_recv = 1000000;
+    fc->fc_recv_windows_size = w;
+    fc->fc_data_read = 20000;
+    fc->fc_data_recved = 60000;
+    fc->fc_max_data_can_recv = 63000;
+    before = fc->fc_max_data_can_recv;
+
+    /* RESET_STREAM: stream id, error code, final size (4-byte varints) */
+    frame[n++] = XQC_FRAME_TYPE_RESET_STREAM;
+    frame[n++] = (uint8_t)(0x80 | (id >> 24));
+    frame[n++] = (uint8_t)(id >> 16);
+    frame[n++] = (uint8_t)(id >> 8);
+    frame[n++] = (uint8_t)id;
+    frame[n++] = 0x40;
+    frame[n++] = 0x01;
+    frame[n++] = 0x80;
+    frame[n++] = 0x00;
+    frame[n++] = 0x9c;
+    frame[n++] = 0x40;                  /* 40000 */
+    memset(&pi, 0, sizeof(pi));
+    pi.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+    pi.pos = frame;
+    pi.last = frame + n;
+
+    CU_ASSERT_EQUAL(xqc_process_reset_stream_frame(conn, &pi), XQC_OK);
+
+    CU_ASSERT_EQUAL(fc->fc_data_read, 60000);
+    CU_ASSERT_EQUAL(fc->fc_data_recved, 60000);
+    CU_ASSERT(fc->fc_max_data_can_recv > before);
+    CU_ASSERT_EQUAL(fc->fc_max_data_can_recv, 60000 + w);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* F13: with a bound on unread data the connection window never shrinks */
+void
+xqc_test_conn_window_monotone(void)
+{
+    xqc_connection_t    *conn = test_engine_connect();
+    xqc_stream_t        *stream;
+    xqc_conn_flow_ctl_t *fc;
+    xqc_path_ctx_t      *path;
+    int                  pass;
+
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    stream = xqc_test_fc_stream(conn);
+    fc = &conn->conn_flow_ctl;
+    path = conn->conn_initial_path;
+    CU_ASSERT_PTR_NOT_NULL_FATAL(path);
+
+    /* (a) L > 0, receive rate; (c) rate only; (d) stream rate limit */
+    for (pass = 0; pass < 3; pass++) {
+        conn->conn_settings.max_body_buf_per_stream = pass == 0 ? 1 : 0;
+        conn->conn_settings.enable_stream_rate_limit = pass == 2;
+        conn->conn_settings.recv_rate_bytes_per_sec = 10 * 1000 * 1000;
+
+        path->path_send_ctl->ctl_srtt = 60000;
+        CU_ASSERT_EQUAL(xqc_conn_get_max_srtt(conn), 60000);
+        fc->fc_recv_windows_size = 63000;
+        xqc_test_fc_try(conn, stream, 63000, 0, 0, NULL);
+        CU_ASSERT_EQUAL(fc->fc_recv_windows_size, 600000);
+
+        path->path_send_ctl->ctl_srtt = 5000;
+        xqc_test_fc_try(conn, stream, fc->fc_recv_windows_size, 0, 0, NULL);
+        CU_ASSERT_EQUAL(fc->fc_recv_windows_size, pass == 1 ? 63000 : 600000);
+    }
+
+    /* (b) L > 0, no rate, 32 MiB initial window, two updates within
+       2 * min_srtt: the autotune would cut it to 16 MiB */
+    conn->conn_settings.max_body_buf_per_stream = 1;
+    conn->conn_settings.enable_stream_rate_limit = 0;
+    conn->conn_settings.recv_rate_bytes_per_sec = 0;
+    path->path_send_ctl->ctl_srtt = 10 * 1000 * 1000;
+    xqc_test_fc_try(conn, stream, 32 * 1024 * 1024, 0, 0, NULL);
+    fc->fc_data_read = fc->fc_data_recved = fc->fc_max_data_can_recv;
+    CU_ASSERT(fc->fc_last_window_update_time != 0);
+    CU_ASSERT(xqc_stream_do_recv_conn_flow_ctl(stream) == XQC_OK);
+    CU_ASSERT(fc->fc_recv_windows_size >= 32 * 1024 * 1024);
+
+    /* without the bound it is cut (today's behaviour) */
+    conn->conn_settings.max_body_buf_per_stream = 0;
+    fc->fc_data_read = fc->fc_data_recved = fc->fc_max_data_can_recv;
+    CU_ASSERT(xqc_stream_do_recv_conn_flow_ctl(stream) == XQC_OK);
+    CU_ASSERT_EQUAL(fc->fc_recv_windows_size, XQC_MAX_RECV_WINDOW);
+
+    xqc_engine_destroy(conn->engine);
+}
