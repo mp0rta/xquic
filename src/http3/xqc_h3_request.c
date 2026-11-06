@@ -147,6 +147,15 @@ xqc_h3_request_close(xqc_h3_request_t *h3_request)
             return XQC_OK;
         }
 
+        /*
+         * Reading is abandoned: the decoder cancels the stream so that the
+         * peer's encoder drops its reference (RFC 9204 Section 4.4.2).
+         * Nothing to write once the decoder stream is gone.
+         */
+        if (h3s->h3c->qdec_stream != NULL) {
+            xqc_qpack_notify_stream_cancel(h3s->qpack, stream_id);
+        }
+
         /* inside its own read notify, that notify does the read */
         if (!(h3s->flags & (XQC_HTTP3_STREAM_IN_READING
                             | XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY)))

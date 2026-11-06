@@ -243,6 +243,10 @@ void xqc_h3_stream_ready_and_wake(xqc_h3_stream_t *h3s);
  */
 xqc_bool_t xqc_h3_stream_in_discard(const xqc_h3_stream_t *h3s);
 
+/* drop the QPACK-blocked state of a stream (flag, blocked list entry and
+ * count, blocked_buf, connection total); not while a replay of it runs */
+void xqc_h3_stream_release_blocked(xqc_h3_stream_t *h3s);
+
 xqc_var_buf_t *xqc_h3_stream_get_send_buf(xqc_h3_stream_t *h3s);
 
 uint64_t xqc_h3_stream_get_err(xqc_h3_stream_t *h3s);

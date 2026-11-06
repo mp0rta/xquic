@@ -17,6 +17,7 @@
 #include "src/http3/xqc_h3_conn.h"
 #include "src/http3/xqc_h3_stream.h"
 #include "src/http3/xqc_h3_request.h"
+#include "src/http3/qpack/xqc_qpack.h"
 #include "src/transport/xqc_stream.h"
 #include "src/transport/xqc_conn.h"
 #include "src/transport/xqc_engine.h"
@@ -479,6 +480,15 @@ h3bb_teardown(h3bb_fx_t *fx)
     fx->h3c = NULL;
 }
 
+
+/* bytes the decoder stream has taken so far: sent, or held back */
+static uint64_t
+h3bb_dec_bytes(h3bb_fx_t *fx)
+{
+    xqc_stream_t *st = fx->h3c->qdec_stream->stream;
+
+    return st->stream_send_offset + st->stream_write_buff_list.total_len;
+}
 
 /* the limit reaches the H3 connection from client settings and, through the
  * engine defaults, from server settings (xqc_conn_create copies them) */
@@ -1884,6 +1894,7 @@ xqc_test_h3bb_limit_zero_close_unchanged(void)
     h3bb_fx_t fx;
     int       i;
     int       notifies;
+    uint64_t  dec_before;
 
     i = h3bb_open_request(&fx, 0);
     h3bb_feed_headers(&fx, i);
@@ -1891,11 +1902,14 @@ xqc_test_h3bb_limit_zero_close_unchanged(void)
     h3bb_turn(&fx);
     notifies = fx.req[i].n_read_notify;
 
+    dec_before = h3bb_dec_bytes(&fx);
     h3bb_enter_pass(&fx);
     CU_ASSERT_EQUAL(xqc_h3_request_close(fx.req[i].h3r), XQC_OK);
     h3bb_leave_pass(&fx);
     CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED);
     CU_ASSERT(!xqc_h3_stream_in_discard(fx.req[i].h3s));
+    /* no discard state, so no Stream Cancellation either */
+    CU_ASSERT_EQUAL(h3bb_dec_bytes(&fx), dec_before);
 
     /* late DATA is parsed and delivered as before */
     h3bb_feed_data(&fx, i, 1000, 1000, 0);
@@ -1959,4 +1973,414 @@ xqc_test_h3bb_close_in_create_notify(void)
 
     h3bb_teardown(&fx);
     CU_ASSERT_EQUAL(rq->n_close_notify, 1);
+}
+
+
+/*
+ * A6: the QPACK state of an abandoned request is released at safe points,
+ * and the peer's encoder is told (RFC 9204 Section 4.4.2).
+ */
+
+static void
+h3bb_check_blocked_released(h3bb_fx_t *fx, int i)
+{
+    CU_ASSERT_EQUAL(fx->req[i].h3s->blocked_buf_size, 0);
+    CU_ASSERT_PTR_NULL(fx->req[i].h3s->blocked_stream);
+    CU_ASSERT_EQUAL(fx->req[i].h3s->flags
+                    & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED, 0);
+    CU_ASSERT(xqc_list_empty(&fx->req[i].h3s->blocked_buf));
+}
+
+static uint64_t
+h3bb_blocked_list_len(h3bb_fx_t *fx)
+{
+    uint64_t         n = 0;
+    xqc_list_head_t *pos;
+
+    xqc_list_for_each(pos, &fx->h3c->block_stream_head) {
+        n++;
+    }
+    return n;
+}
+
+/* a closed, QPACK-blocked request keeps no blocked bytes: its own read turn
+ * frees them and reads the rest of the stream, returning the credit */
+void
+xqc_test_h3bb_close_qpack_blocked_bounded(void)
+{
+    h3bb_fx_t fx;
+    int       i, turn;
+    size_t    at_close;
+
+    i = h3bb_open_blocked_request(&fx);
+    h3bb_feed_data(&fx, i, 256 * 1024, 1400, 0);
+    h3bb_read(&fx, i);
+    CU_ASSERT_FATAL(fx.req[i].h3s->flags
+                    & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED);
+    at_close = fx.req[i].h3s->blocked_buf_size;
+    CU_ASSERT(at_close >= H3BB_LIMIT);
+
+    h3bb_enter_pass(&fx);
+    CU_ASSERT_EQUAL(xqc_h3_request_close(fx.req[i].h3r), XQC_OK);
+    h3bb_leave_pass(&fx);
+    CU_ASSERT(xqc_h3_stream_in_discard(fx.req[i].h3s));
+
+    for (turn = 0; turn < 3; turn++) {
+        h3bb_turn(&fx);
+        CU_ASSERT(fx.req[i].h3s->blocked_buf_size <= at_close);
+    }
+
+    h3bb_check_blocked_released(&fx, i);
+    CU_ASSERT_EQUAL(fx.h3c->total_blocked_buf_size, 0);
+    CU_ASSERT_EQUAL(fx.h3c->block_stream_count, 0);
+    CU_ASSERT_EQUAL(h3bb_blocked_list_len(&fx), 0);
+    CU_ASSERT_EQUAL(fx.req[i].stream->stream_data_in.next_read_offset,
+                    h3bb_fed(&fx, i));
+    CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
+
+    h3bb_teardown(&fx);
+    CU_ASSERT_EQUAL(fx.req[i].n_close_notify, 1);
+}
+
+/* the HEADERS callback run by the QPACK replay closes its own request: the
+ * replay stops, and the blocked state is gone with its list entry */
+static int h3bb_self_closed;
+
+static void
+h3bb_test_close_self(h3bb_fx_t *fx, int idx)
+{
+    if (h3bb_self_closed) {
+        return;
+    }
+    h3bb_self_closed = 1;
+    CU_ASSERT_EQUAL(xqc_h3_request_close(fx->req[idx].h3r), XQC_OK);
+}
+
+void
+xqc_test_h3bb_close_self_in_replay_headers_cb(void)
+{
+    h3bb_fx_t fx;
+    int       i;
+
+    i = h3bb_open_blocked_request(&fx);
+    h3bb_feed_data(&fx, i, 5000, 1000, 0);
+    h3bb_read(&fx, i);
+    CU_ASSERT_FATAL(fx.req[i].h3s->flags
+                    & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED);
+    CU_ASSERT(fx.req[i].h3s->blocked_buf_size > 0);
+
+    h3bb_self_closed = 0;
+    fx.req[i].on_notify = h3bb_test_close_self;
+    {
+        /* read the encoder stream by itself, so that no read turn of the
+         * closed request follows: the replay must have freed the rest */
+        uint8_t ins[1 + sizeof(h3bb_first_insert)];
+
+        ins[0] = 0x02;
+        memcpy(ins + 1, h3bb_first_insert, sizeof(h3bb_first_insert));
+        fx.enc_stream = xqc_passive_create_stream(fx.conn, 3, NULL);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(fx.enc_stream);
+        h3bb_feed_stream(&fx, fx.enc_stream, &fx.enc_offset, ins, sizeof(ins),
+                         0);
+        h3bb_enter_pass(&fx);
+        CU_ASSERT_EQUAL(h3_stream_callbacks.stream_read_notify(
+                            fx.enc_stream, fx.enc_stream->user_data), XQC_OK);
+        h3bb_leave_pass(&fx);
+    }
+
+    CU_ASSERT_EQUAL(h3bb_self_closed, 1);
+    h3bb_check_blocked_released(&fx, i);
+    CU_ASSERT_EQUAL(fx.h3c->total_blocked_buf_size, 0);
+    CU_ASSERT_EQUAL(fx.h3c->block_stream_count, h3bb_blocked_list_len(&fx));
+    CU_ASSERT_EQUAL(fx.h3c->block_stream_count, 0);
+    CU_ASSERT_EQUAL(fx.req[i].n_read_notify, 1);
+    CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
+
+    h3bb_turn(&fx);
+    CU_ASSERT_EQUAL(fx.req[i].n_read_notify, 1);
+    CU_ASSERT(xqc_list_empty(&fx.req[i].h3r->body_buf));
+
+    h3bb_teardown(&fx);
+    CU_ASSERT_EQUAL(fx.req[i].n_close_notify, 1);
+}
+
+/* request 0's replay callback closes request 1 through the public API */
+static int h3bb_walk_closed;
+
+static void
+h3bb_test_close_b(h3bb_fx_t *fx, int idx)
+{
+    if (idx != 0 || h3bb_walk_closed) {
+        return;
+    }
+    h3bb_walk_closed = 1;
+    CU_ASSERT_EQUAL(xqc_h3_request_close(fx->req[1].h3r), XQC_OK);
+}
+
+/* a field section with Required Insert Count 2 (encoded 3): it waits for a
+ * second table entry */
+static const uint8_t h3bb_blocked_headers_ric2[] = {
+    0x01, 0x04, 0x03, 0x00, 0x80, 0x81
+};
+
+void
+xqc_test_h3bb_blocked_walk_sibling_close(void)
+{
+    int variant;
+
+    for (variant = 0; variant < 3; variant++) {
+        h3bb_fx_t fx;
+        int       a, b;
+
+        a = h3bb_open_blocked_request(&fx);
+        fx.conn->engine->log->log_level = XQC_LOG_DEBUG;
+        b = h3bb_add_request(&fx);
+        CU_ASSERT_EQUAL_FATAL(b, 1);
+        fx.req[b].stream->stream_flow_ctl.fc_max_stream_data_can_recv =
+            16 * 1024 * 1024;
+        if (variant == 1) {
+            h3bb_feed(&fx, b, h3bb_blocked_headers_ric2,
+                      sizeof(h3bb_blocked_headers_ric2), 0);
+
+        } else {
+            h3bb_feed(&fx, b, h3bb_blocked_headers,
+                      sizeof(h3bb_blocked_headers), 0);
+        }
+        h3bb_feed_data(&fx, a, 3000, 1000, 0);
+        h3bb_feed_data(&fx, b, 3000, 1000, variant == 2);
+        h3bb_read(&fx, a);
+        h3bb_read(&fx, b);
+        CU_ASSERT_EQUAL_FATAL(fx.h3c->block_stream_count, 2);
+        if (variant == 2) {
+            /* the transport stream closed passively while the stream waits
+             * for the encoder: the H3 stream is kept for QPACK */
+            xqc_stream_t *st = fx.req[b].stream;
+
+            CU_ASSERT(fx.req[b].h3s->flags & XQC_HTTP3_STREAM_FLAG_READ_EOF);
+            CU_ASSERT_EQUAL(h3_stream_callbacks.stream_close_notify(
+                                st, fx.req[b].h3s), XQC_OK);
+            st->stream_flag &= ~XQC_STREAM_FLAG_HAS_H3;
+            st->user_data = NULL;
+            CU_ASSERT_PTR_NULL(fx.req[b].h3s->stream);
+            CU_ASSERT_EQUAL_FATAL(fx.h3c->block_stream_count, 2);
+        }
+
+        h3bb_walk_closed = 0;
+        fx.req[a].on_notify = h3bb_test_close_b;
+        h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
+        h3bb_turn(&fx);
+
+        CU_ASSERT_EQUAL(h3bb_walk_closed, 1);
+        CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
+        CU_ASSERT_EQUAL(fx.req[a].n_read_notify > 0, 1);
+        CU_ASSERT_EQUAL(fx.h3c->block_stream_count, h3bb_blocked_list_len(&fx));
+        CU_ASSERT_EQUAL(fx.req[b].n_closing_notify, 0);
+
+        if (variant == 2) {
+            CU_ASSERT_EQUAL(fx.req[b].n_close_notify, 1);
+            CU_ASSERT_EQUAL(fx.h3c->block_stream_count, 0);
+
+        } else {
+            CU_ASSERT_EQUAL(fx.req[b].n_read_notify, 0);
+            CU_ASSERT_EQUAL(fx.req[b].n_close_notify, 0);
+            h3bb_check_blocked_released(&fx, b);
+            CU_ASSERT_EQUAL(fx.h3c->block_stream_count, 0);
+        }
+        CU_ASSERT_EQUAL(fx.h3c->total_blocked_buf_size, 0);
+
+        h3bb_teardown(&fx);
+        CU_ASSERT_EQUAL(fx.req[a].n_close_notify, 1);
+        CU_ASSERT_EQUAL(fx.req[b].n_close_notify, 1);
+    }
+}
+
+/* during the connection's destruction the decoder stream is gone before the
+ * requests; a request closed from a close callback finds no pointer to it */
+static int h3bb_dec_gone_seen;
+
+static void
+h3bb_test_close_sibling_dec_gone(h3bb_fx_t *fx, int idx)
+{
+    if (idx != 0) {
+        return;
+    }
+    CU_ASSERT_PTR_NULL(fx->h3c->qdec_stream);
+    CU_ASSERT_PTR_NULL(fx->h3c->qenc_stream);
+    CU_ASSERT_PTR_NULL(fx->h3c->control_stream_out);
+    CU_ASSERT_EQUAL(xqc_h3_request_close(fx->req[1].h3r), XQC_OK);
+    h3bb_dec_gone_seen = 1;
+}
+
+void
+xqc_test_h3bb_teardown_close_after_decoder_destroyed(void)
+{
+    h3bb_fx_t fx;
+    int       i, j;
+
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    j = h3bb_add_request(&fx);
+    CU_ASSERT_EQUAL_FATAL(j, 1);
+    h3bb_feed_headers(&fx, i);
+    h3bb_feed_headers(&fx, j);
+    h3bb_turn(&fx);
+
+    fx.req[i].on_close = h3bb_test_close_sibling_dec_gone;
+    h3bb_dec_gone_seen = 0;
+    h3bb_teardown(&fx);
+
+    CU_ASSERT_EQUAL(h3bb_dec_gone_seen, 1);
+    CU_ASSERT_EQUAL(fx.req[i].n_close_notify, 1);
+    CU_ASSERT_EQUAL(fx.req[j].n_close_notify, 1);
+}
+
+/* decoder side of a qpack pair: the written instruction bytes are kept */
+typedef struct {
+    xqc_var_buf_t *enc;
+    xqc_var_buf_t *dec;
+    int            n_dec_writes;
+} h3bb_qp_t;
+
+static xqc_var_buf_t *
+h3bb_qp_get_buf(xqc_qpack_ins_type_t type, void *ud)
+{
+    h3bb_qp_t *q = (h3bb_qp_t *)ud;
+
+    return type == XQC_INS_TYPE_ENCODER ? q->enc : q->dec;
+}
+
+static ssize_t
+h3bb_qp_write(xqc_qpack_ins_type_t type, xqc_var_buf_t *buf, void *ud)
+{
+    h3bb_qp_t *q = (h3bb_qp_t *)ud;
+
+    if (type == XQC_INS_TYPE_DECODER) {
+        q->n_dec_writes++;
+    }
+    return buf->data_len;
+}
+
+static const xqc_qpack_ins_cb_t h3bb_qp_cb = {h3bb_qp_get_buf, h3bb_qp_write};
+
+/* the instruction a qpack with the given max capacity writes for a cancel */
+static void
+h3bb_qp_cancel(xqc_engine_t *engine, uint64_t dec_max_cap, h3bb_qp_t *q)
+{
+    xqc_qpack_t *qpk;
+
+    q->enc = xqc_var_buf_create(64);
+    q->dec = xqc_var_buf_create(64);
+    q->n_dec_writes = 0;
+    qpk = xqc_qpack_create(4096, dec_max_cap, engine->log, &h3bb_qp_cb, q);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(qpk);
+    CU_ASSERT_EQUAL(xqc_qpack_notify_stream_cancel(qpk, 0), XQC_OK);
+    xqc_qpack_destroy(qpk);
+}
+
+void
+xqc_test_h3bb_stream_cancel_emission(void)
+{
+    h3bb_fx_t     fx;
+    int           i;
+    uint64_t      before;
+    xqc_engine_t *engine;
+
+    /* variant 1: a decoder whose maximum capacity is 0 may omit it (RFC 9204
+     * Section 2.2.2.2) */
+    {
+        h3bb_qp_t q;
+
+        engine = test_create_engine();
+        CU_ASSERT_PTR_NOT_NULL_FATAL(engine);
+        h3bb_qp_cancel(engine, 0, &q);
+        CU_ASSERT_EQUAL(q.n_dec_writes, 0);
+        CU_ASSERT_EQUAL(q.dec->data_len, 0);
+        xqc_var_buf_free(q.enc);
+        xqc_var_buf_free(q.dec);
+
+        /* a nonzero maximum writes 01 + stream id (6-bit prefix) */
+        h3bb_qp_cancel(engine, 4096, &q);
+        CU_ASSERT_EQUAL(q.n_dec_writes, 1);
+        CU_ASSERT_EQUAL_FATAL(q.dec->data_len, 1);
+        CU_ASSERT_EQUAL(q.dec->data[0], 0x40);
+        xqc_var_buf_free(q.enc);
+        xqc_var_buf_free(q.dec);
+        xqc_engine_destroy(engine);
+    }
+
+    /* the peer's encoder drops its record of the section on cancel */
+    {
+        h3bb_qp_t          qe, qd;
+        xqc_qpack_t       *enc_q;
+        xqc_var_buf_t     *efs;
+        xqc_http_header_t  h[2] = {
+            {.name = {.iov_base = ":method", .iov_len = 7},
+             .value = {.iov_base = "POST", .iov_len = 4}},
+            {.name = {.iov_base = "x-cancel-test", .iov_len = 13},
+             .value = {.iov_base = "value", .iov_len = 5}},
+        };
+        xqc_http_headers_t hdrs = {h, 2, 2};
+        unsigned char      ack = 0x80;
+        int                pass;
+
+        engine = test_create_engine();
+        CU_ASSERT_PTR_NOT_NULL_FATAL(engine);
+        for (pass = 0; pass < 2; pass++) {
+            qe.enc = xqc_var_buf_create(512);
+            qe.dec = xqc_var_buf_create(64);
+            enc_q = xqc_qpack_create(4096, 4096, engine->log, &h3bb_qp_cb, &qe);
+            CU_ASSERT_PTR_NOT_NULL_FATAL(enc_q);
+            CU_ASSERT_EQUAL(xqc_qpack_set_enc_max_dtable_cap(enc_q, 4096),
+                            XQC_OK);
+            CU_ASSERT_EQUAL(xqc_qpack_set_max_blocked_stream(enc_q, 8), XQC_OK);
+            CU_ASSERT_EQUAL(xqc_qpack_set_dtable_cap(enc_q, 4096), XQC_OK);
+            efs = xqc_var_buf_create(512);
+            CU_ASSERT_EQUAL(xqc_qpack_enc_headers(enc_q, 0, &hdrs, efs), XQC_OK);
+
+            if (pass == 0) {
+                /* the decoder cancels stream 0 */
+                h3bb_qp_cancel(engine, 4096, &qd);
+                CU_ASSERT_EQUAL_FATAL(qd.dec->data_len, 1);
+                CU_ASSERT_EQUAL(xqc_qpack_process_decoder(enc_q, qd.dec->data,
+                                                          qd.dec->data_len), 1);
+                xqc_var_buf_free(qd.enc);
+                xqc_var_buf_free(qd.dec);
+                /* nothing is left for a Section Acknowledgment to find */
+                CU_ASSERT(xqc_qpack_process_decoder(enc_q, &ack, 1) < 0);
+
+            } else {
+                /* control: without the cancel the section is still there */
+                CU_ASSERT_EQUAL(xqc_qpack_process_decoder(enc_q, &ack, 1), 1);
+            }
+            xqc_var_buf_free(efs);
+            xqc_var_buf_free(qe.enc);
+            xqc_var_buf_free(qe.dec);
+            xqc_qpack_destroy(enc_q);
+        }
+        xqc_engine_destroy(engine);
+    }
+
+    /* variant 2: the maximum is nonzero, the current capacity still 0 (a
+     * section blocked before any encoder instruction): the cancel is due */
+    i = h3bb_open_blocked_request(&fx);
+    h3bb_feed_data(&fx, i, 3000, 1000, 0);
+    h3bb_read(&fx, i);
+    CU_ASSERT_EQUAL_FATAL(fx.h3c->block_stream_count, 1);
+    before = h3bb_dec_bytes(&fx);
+    h3bb_enter_pass(&fx);
+    CU_ASSERT_EQUAL(xqc_h3_request_close(fx.req[i].h3r), XQC_OK);
+    h3bb_leave_pass(&fx);
+    CU_ASSERT_EQUAL(h3bb_dec_bytes(&fx) - before, 1);
+    h3bb_teardown(&fx);
+
+    /* variant 3: after the first insert, both nonzero */
+    i = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
+    h3bb_feed_headers(&fx, i);
+    h3bb_turn(&fx);
+    before = h3bb_dec_bytes(&fx);
+    h3bb_enter_pass(&fx);
+    CU_ASSERT_EQUAL(xqc_h3_request_close(fx.req[i].h3r), XQC_OK);
+    h3bb_leave_pass(&fx);
+    CU_ASSERT_EQUAL(h3bb_dec_bytes(&fx) - before, 1);
+    h3bb_teardown(&fx);
 }

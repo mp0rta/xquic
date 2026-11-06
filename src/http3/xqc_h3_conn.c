@@ -1112,18 +1112,39 @@ xqc_int_t
 xqc_h3_conn_process_blocked_stream(xqc_h3_conn_t *h3c)
 {
     uint64_t known_received_count = xqc_qpack_get_dec_insert_count(h3c->qpack);
-    xqc_list_head_t *pos, *next;
-    xqc_list_for_each_safe(pos, next, &h3c->block_stream_head)
-    {
-        xqc_h3_blocked_stream_t *blocked_stream =
-            xqc_list_entry(pos, xqc_h3_blocked_stream_t, head);
-        if (blocked_stream->ricnt <= known_received_count) {
-            xqc_int_t ret = xqc_h3_stream_process_blocked_stream(blocked_stream->h3s);
-            if (ret < 0) {
-                return ret;
-            }
 
-        } else {
+    /*
+     * A replay runs application callbacks, and a callback may close and so
+     * destroy another blocked request (one whose transport stream is gone is
+     * destroyed at once). Hence no entry is kept across a replay: the entry
+     * leaves the list first and the next one is taken from the front.
+     */
+    while (!xqc_list_empty(&h3c->block_stream_head)) {
+        xqc_h3_blocked_stream_t *blocked_stream = xqc_list_entry(
+            h3c->block_stream_head.next, xqc_h3_blocked_stream_t, head);
+        xqc_h3_stream_t *h3s;
+
+        if (blocked_stream->ricnt > known_received_count) {
+            break;
+        }
+
+        h3s = blocked_stream->h3s;
+        xqc_list_del_init(&blocked_stream->head);
+
+        if (xqc_h3_stream_in_discard(h3s)) {
+            /* the application closed it: never replayed */
+            xqc_h3_stream_release_blocked(h3s);
+            continue;
+        }
+
+        xqc_int_t ret = xqc_h3_stream_process_blocked_stream(h3s);
+        if (ret < 0) {
+            return ret;
+        }
+
+        if (h3c->max_body_buf_per_stream > 0
+            && xqc_conn_is_tearing_down(h3c->conn))
+        {
             break;
         }
     }

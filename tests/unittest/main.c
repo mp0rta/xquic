@@ -1230,6 +1230,11 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_h3bb_teardown_close_sibling", xqc_test_h3bb_teardown_close_sibling)
         || !CU_add_test(pSuite, "xqc_test_h3bb_limit_zero_close_unchanged", xqc_test_h3bb_limit_zero_close_unchanged)
         || !CU_add_test(pSuite, "xqc_test_h3bb_close_in_create_notify", xqc_test_h3bb_close_in_create_notify)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_qpack_blocked_bounded", xqc_test_h3bb_close_qpack_blocked_bounded)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_self_in_replay_headers_cb", xqc_test_h3bb_close_self_in_replay_headers_cb)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_blocked_walk_sibling_close", xqc_test_h3bb_blocked_walk_sibling_close)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_teardown_close_after_decoder_destroyed", xqc_test_h3bb_teardown_close_after_decoder_destroyed)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_stream_cancel_emission", xqc_test_h3bb_stream_cancel_emission)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();

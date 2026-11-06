@@ -38,5 +38,10 @@ void xqc_test_h3bb_close_then_conn_close_in_callback(void);
 void xqc_test_h3bb_teardown_close_sibling(void);
 void xqc_test_h3bb_limit_zero_close_unchanged(void);
 void xqc_test_h3bb_close_in_create_notify(void);
+void xqc_test_h3bb_close_qpack_blocked_bounded(void);
+void xqc_test_h3bb_close_self_in_replay_headers_cb(void);
+void xqc_test_h3bb_blocked_walk_sibling_close(void);
+void xqc_test_h3bb_teardown_close_after_decoder_destroyed(void);
+void xqc_test_h3bb_stream_cancel_emission(void);
 
 #endif
