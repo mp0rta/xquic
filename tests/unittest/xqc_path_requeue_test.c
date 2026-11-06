@@ -54,6 +54,9 @@ requeue_test_add_path(requeue_test_t *t, unsigned pto_count)
     path->parent_conn = t->conn;
     path->path_state = XQC_PATH_STATE_ACTIVE;
     path->app_path_status = XQC_APP_PATH_STATUS_AVAILABLE;
+    for (xqc_send_type_t type = 0; type < XQC_SEND_TYPE_N; type++) {
+        xqc_init_list_head(&path->path_schedule_buf[type]);
+    }
     path->path_send_ctl = xqc_send_ctl_create(path);
     if (path->path_send_ctl == NULL) {
         return NULL;
@@ -589,8 +592,11 @@ requeue_test_dead_probe_waits(const xqc_scheduler_callback_t *cb,
                                         XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
     CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 0);
 
-    /* the third PTO fired: the path is probed */
+    /* the third PTO fired and moved the data: the path is probed */
+    ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH - 1;
+    xqc_path_requeue_unacked_on_pto(t.dead);
     ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 0);
     cb->xqc_scheduler_handle_conn_event(state, t.conn,
                                         XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
     CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
@@ -621,4 +627,233 @@ xqc_test_dead_probe_waits_for_fired_ptos(void)
                                   XQC_APP_PATH_STATUS_AVAILABLE);
     requeue_test_dead_probe_waits(&xqc_backup_scheduler_cb,
                                   XQC_APP_PATH_STATUS_STANDBY);
+}
+
+/* The third PTO of the dead path finds no working path, so its data stays
+ * on it: the other path is silent too, or frozen. Once the other path
+ * works, the PING that the dead path gets would re-arm its loss detection
+ * timer and hold off the PTO that moves that data, so the data is moved
+ * first, and the stream does not wait for the dead path to come back. */
+static void
+requeue_test_dead_probe_without_alternative(const xqc_scheduler_callback_t *cb,
+                                            xqc_app_path_status_t alt_status,
+                                            xqc_bool_t alt_frozen)
+{
+    requeue_test_t t;
+    char state[64] = {0};
+    CU_ASSERT_FATAL(cb->xqc_scheduler_size() <= sizeof(state));
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    xqc_path_ctx_t *alt = requeue_test_add_path(
+        &t, alt_frozen ? 0 : XQC_PATH_REQUEUE_PTO_THRESH);
+    CU_ASSERT_FATAL(alt != NULL);
+    alt->app_path_status = alt_frozen ? XQC_APP_PATH_STATUS_FROZEN : alt_status;
+    xqc_send_queue_t *sq = t.conn->conn_send_queue;
+    xqc_send_ctl_t *ctl = t.dead->path_send_ctl;
+    CU_ASSERT_FATAL(requeue_test_stream_in_flight(&t, t.dead, 1) != NULL);
+
+    /* the third PTO, with no working path: nothing moves */
+    ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH - 1;
+    xqc_path_requeue_unacked_on_pto(t.dead);
+    ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 1200);
+
+    /* the other path works: the data moves, then the dead path is probed */
+    alt->app_path_status = alt_status;
+    alt->path_send_ctl->ctl_pto_count = 0;
+    CU_ASSERT_FATAL(xqc_path_is_dead_with_alternative(t.dead));
+    cb->xqc_scheduler_handle_conn_event(state, t.conn,
+                                        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_list_len(&sq->sndq_lost_packets), 1);
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 0);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
+
+    requeue_test_teardown(&t);
+}
+
+void
+xqc_test_dead_probe_waits_for_requeue(void)
+{
+    for (int frozen = 0; frozen <= 1; frozen++) {
+        requeue_test_dead_probe_without_alternative(
+            &xqc_minrtt_scheduler_cb, XQC_APP_PATH_STATUS_AVAILABLE, frozen);
+        requeue_test_dead_probe_without_alternative(
+            &xqc_backup_scheduler_cb, XQC_APP_PATH_STATUS_STANDBY, frozen);
+    }
+}
+
+/* The third PTO of the dead path moved its data, and then the other path
+ * stopped working too (silent or frozen): new data went on the dead path,
+ * the only one left. Once the other path works again, that new data moves
+ * before the dead path is probed. */
+static void
+requeue_test_dead_probe_after_new_data(const xqc_scheduler_callback_t *cb,
+                                       xqc_app_path_status_t alt_status,
+                                       xqc_bool_t alt_frozen)
+{
+    requeue_test_t t;
+    char state[64] = {0};
+    CU_ASSERT_FATAL(cb->xqc_scheduler_size() <= sizeof(state));
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    xqc_path_ctx_t *alt = requeue_test_add_path(&t, 0);
+    CU_ASSERT_FATAL(alt != NULL);
+    alt->app_path_status = alt_status;
+    xqc_send_queue_t *sq = t.conn->conn_send_queue;
+    xqc_send_ctl_t *ctl = t.dead->path_send_ctl;
+    CU_ASSERT_FATAL(requeue_test_stream_in_flight(&t, t.dead, 1) != NULL);
+
+    /* the third PTO moves the data to the other path */
+    ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH - 1;
+    xqc_path_requeue_unacked_on_pto(t.dead);
+    ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    CU_ASSERT_EQUAL(requeue_test_list_len(&sq->sndq_lost_packets), 1);
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 0);
+
+    /* the other path stops working: new data goes on the dead path */
+    if (alt_frozen) {
+        alt->app_path_status = XQC_APP_PATH_STATUS_FROZEN;
+    } else {
+        alt->path_send_ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    }
+    CU_ASSERT_FATAL(!xqc_path_is_dead_with_alternative(t.dead));
+    CU_ASSERT_FATAL(requeue_test_stream_in_flight(&t, t.dead, 2) != NULL);
+
+    /* the other path works again: the new data moves, then the probe */
+    alt->app_path_status = alt_status;
+    alt->path_send_ctl->ctl_pto_count = 0;
+    CU_ASSERT_FATAL(xqc_path_is_dead_with_alternative(t.dead));
+    cb->xqc_scheduler_handle_conn_event(state, t.conn,
+                                        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_list_len(&sq->sndq_lost_packets), 2);
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 0);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
+
+    requeue_test_teardown(&t);
+}
+
+void
+xqc_test_dead_probe_waits_for_new_data(void)
+{
+    for (int frozen = 0; frozen <= 1; frozen++) {
+        requeue_test_dead_probe_after_new_data(
+            &xqc_minrtt_scheduler_cb, XQC_APP_PATH_STATUS_AVAILABLE, frozen);
+        requeue_test_dead_probe_after_new_data(
+            &xqc_backup_scheduler_cb, XQC_APP_PATH_STATUS_STANDBY, frozen);
+    }
+}
+
+/* A PTO that finds no working path sends copies of the dead path's data as
+ * its probes, down the same path, and takes the packets they copy out of
+ * flight: from then on the copies are what carries that data. Once another
+ * path works, the copies move before the dead path is probed. The probes
+ * here are those of the real PTO handler. */
+static void
+requeue_test_dead_probe_after_pto_probes(const xqc_scheduler_callback_t *cb,
+                                         xqc_app_path_status_t alt_status,
+                                         xqc_bool_t alt_frozen)
+{
+    requeue_test_t t;
+    char state[64] = {0};
+    CU_ASSERT_FATAL(cb->xqc_scheduler_size() <= sizeof(state));
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    xqc_path_ctx_t *alt = requeue_test_add_path(
+        &t, alt_frozen ? 0 : XQC_PATH_REQUEUE_PTO_THRESH);
+    CU_ASSERT_FATAL(alt != NULL);
+    alt->app_path_status = alt_frozen ? XQC_APP_PATH_STATUS_FROZEN : alt_status;
+    xqc_send_queue_t *sq = t.conn->conn_send_queue;
+    xqc_send_ctl_t *ctl = t.dead->path_send_ctl;
+    CU_ASSERT_FATAL(requeue_test_stream_in_flight(&t, t.dead, 1) != NULL);
+
+    /* the third PTO, with no working path: nothing moves, and the PTO
+     * probes are copies of the STREAM packet, which leaves flight */
+    ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH - 1;
+    xqc_path_requeue_unacked_on_pto(t.dead);
+    xqc_path_send_one_or_two_ack_elicit_pkts(t.dead, XQC_PNS_APP_DATA);
+    ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 0);
+
+    /* the copies are sent: off the probe list, in flight on the dead path */
+    int copies = 0;
+    xqc_list_head_t *pos, *next;
+    xqc_list_for_each_safe(pos, next, &sq->sndq_pto_probe_packets) {
+        xqc_packet_out_t *po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+        CU_ASSERT_FATAL(po->po_path_id == t.dead->path_id);
+        CU_ASSERT_FATAL(po->po_frame_types & XQC_FRAME_BIT_STREAM);
+        CU_ASSERT_FATAL(po->po_path_flag & XQC_PATH_SPECIFIED_BY_PTO);
+        xqc_send_queue_remove_probe(&po->po_list);
+        po->po_pkt.pkt_num = 2 + copies++;
+        po->po_sent_time = 2;
+        xqc_send_queue_insert_unacked(po,
+            &sq->sndq_unacked_packets[XQC_PNS_APP_DATA], sq);
+        xqc_send_ctl_increase_inflight(t.conn, po);
+    }
+    CU_ASSERT_EQUAL(copies, XQC_CONN_PTO_PKT_CNT_MAX);
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), copies * 1200);
+
+    /* the other path works: the copies move, then the dead path is probed */
+    alt->app_path_status = alt_status;
+    alt->path_send_ctl->ctl_pto_count = 0;
+    CU_ASSERT_FATAL(xqc_path_is_dead_with_alternative(t.dead));
+    cb->xqc_scheduler_handle_conn_event(state, t.conn,
+                                        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT(requeue_test_list_len(&sq->sndq_lost_packets) >= 1);
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 0);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
+
+    requeue_test_teardown(&t);
+}
+
+void
+xqc_test_dead_probe_moves_pto_probes(void)
+{
+    for (int frozen = 0; frozen <= 1; frozen++) {
+        requeue_test_dead_probe_after_pto_probes(
+            &xqc_minrtt_scheduler_cb, XQC_APP_PATH_STATUS_AVAILABLE, frozen);
+        requeue_test_dead_probe_after_pto_probes(
+            &xqc_backup_scheduler_cb, XQC_APP_PATH_STATUS_STANDBY, frozen);
+    }
+}
+
+/* Before its PING, a dead path's packets go where its PTO would send them:
+ * a DATAGRAM is dropped unless datagrams are always resent, and a PING whose
+ * ACK the application waits for is moved. A PING that nobody waits for
+ * stays in flight: a path slower than the probe interval may still ack it. */
+void
+xqc_test_dead_probe_waits_for_moved_packets(void)
+{
+    static const struct {
+        xqc_frame_type_bit_t  types;
+        xqc_bool_t            notify;
+        uint8_t               force_retrans;
+        int                   lost;
+        int                   inflight;
+    } cases[] = {
+        { XQC_FRAME_BIT_DATAGRAM, XQC_FALSE, 0, 0, 0 },
+        { XQC_FRAME_BIT_DATAGRAM, XQC_FALSE, 1, 1, 0 },
+        { XQC_FRAME_BIT_PING,     XQC_TRUE,  0, 1, 0 },
+        { XQC_FRAME_BIT_PING,     XQC_FALSE, 0, 0, 1200 },
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        requeue_test_t t;
+        char state[64] = {0};
+        CU_ASSERT_FATAL(xqc_minrtt_scheduler_cb.xqc_scheduler_size() <= sizeof(state));
+        CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+        CU_ASSERT_FATAL(requeue_test_add_path(&t, 0) != NULL);
+        t.conn->conn_settings.datagram_force_retrans_on = cases[i].force_retrans;
+        t.dead->path_send_ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+        xqc_packet_out_t *po = requeue_test_stream_in_flight(&t, t.dead, 1);
+        CU_ASSERT_FATAL(po != NULL);
+        po->po_frame_types = cases[i].types;
+        if (cases[i].notify) {
+            po->po_flag |= XQC_POF_NOTIFY;
+        }
+
+        xqc_minrtt_scheduler_cb.xqc_scheduler_handle_conn_event(state, t.conn,
+            XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+        CU_ASSERT_EQUAL(requeue_test_list_len(
+            &t.conn->conn_send_queue->sndq_lost_packets), cases[i].lost);
+        CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), cases[i].inflight);
+        CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
+        requeue_test_teardown(&t);
+    }
 }

@@ -34,6 +34,30 @@ xqc_scheduler_probe_fits_cwnd(xqc_path_ctx_t *path)
                                  path->path_schedule_bytes);
 }
 
+/* Does @path have a packet in flight that xqc_path_move_unack_packets_from_conn
+ * sends again or drops? A PTO probe's copy counts: once a PTO fired with no
+ * other path working, the copy is the only packet in flight with that data. */
+static xqc_bool_t
+xqc_scheduler_path_has_data_to_move(xqc_connection_t *conn, xqc_path_ctx_t *path)
+{
+    xqc_list_head_t *pos;
+    xqc_packet_out_t *po;
+
+    xqc_list_for_each(pos, &conn->conn_send_queue->sndq_unacked_packets[XQC_PNS_APP_DATA]) {
+        po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+        if (po->po_path_id == path->path_id
+            && (po->po_flag & XQC_POF_IN_FLIGHT)
+            && (XQC_NEED_REPAIR(po->po_frame_types)
+                || (po->po_flag & XQC_POF_NOTIFY)
+                || (po->po_frame_types & XQC_FRAME_BIT_DATAGRAM)))
+        {
+            return XQC_TRUE;
+        }
+    }
+
+    return XQC_FALSE;
+}
+
 /* A dead path that a scheduler skips gets no data, so only its PTO probes
  * could be acknowledged when it comes back, and those are backed off to
  * seconds apart after a few PTOs. Send it a PING once per interval instead:
@@ -83,6 +107,20 @@ xqc_scheduler_probe_dead_paths(xqc_connection_t *conn, xqc_usec_t *last_probe)
                         ->ctl_time_of_last_sent_ack_eliciting_packet[XQC_PNS_APP_DATA];
         if (now - last_sent < XQC_SCHED_DEAD_PROBE_INTERVAL_US) {
             continue;
+        }
+
+        /* The PING re-arms the loss detection timer and so holds off the
+         * PTO that would move the path's data, which still waits on it if
+         * no other path worked when its PTOs fired (all silent, or the
+         * others frozen), or if new data went on it meanwhile. Move that
+         * data now, as the PTO would (draft-ietf-quic-multipath-21 Section
+         * 5.7). Not when nothing is to move: the mover also drops an
+         * earlier PING still in flight, which a slow path may yet ack. */
+        if (xqc_scheduler_path_has_data_to_move(conn, path)) {
+            xqc_log(conn->log, XQC_LOG_INFO,
+                    "|path:%ui|inflight:%ud|requeue unacked before probe|",
+                    path->path_id, path->path_send_ctl->ctl_bytes_in_flight);
+            xqc_path_move_unack_packets_from_conn(path, conn);
         }
 
         if (xqc_path_send_ping_to_probe(path, XQC_PNS_APP_DATA,

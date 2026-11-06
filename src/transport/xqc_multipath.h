@@ -378,6 +378,8 @@ xqc_int_t xqc_path_standby_probe(xqc_path_ctx_t *path);
 
 void xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path);
 
+void xqc_path_move_unack_packets_from_conn(xqc_path_ctx_t *path, xqc_connection_t *conn);
+
 xqc_bool_t xqc_path_has_working_alternative(xqc_path_ctx_t *path);
 
 xqc_bool_t xqc_path_is_dead_with_alternative(xqc_path_ctx_t *path);

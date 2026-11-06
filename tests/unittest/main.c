@@ -975,6 +975,14 @@ main(int argc, char *argv[])
                         xqc_test_backup_probes_dead_path)
         || !CU_add_test(pSuite, "xqc_test_dead_probe_waits_for_fired_ptos",
                         xqc_test_dead_probe_waits_for_fired_ptos)
+        || !CU_add_test(pSuite, "xqc_test_dead_probe_waits_for_requeue",
+                        xqc_test_dead_probe_waits_for_requeue)
+        || !CU_add_test(pSuite, "xqc_test_dead_probe_waits_for_new_data",
+                        xqc_test_dead_probe_waits_for_new_data)
+        || !CU_add_test(pSuite, "xqc_test_dead_probe_waits_for_moved_packets",
+                        xqc_test_dead_probe_waits_for_moved_packets)
+        || !CU_add_test(pSuite, "xqc_test_dead_probe_moves_pto_probes",
+                        xqc_test_dead_probe_moves_pto_probes)
         || !CU_add_test(pSuite, "xqc_test_backup_skips_dead_primary",
                         xqc_test_backup_skips_dead_primary)
         || !CU_add_test(pSuite, "xqc_test_pmtud_smaller_ack_keeps_larger_loss",
