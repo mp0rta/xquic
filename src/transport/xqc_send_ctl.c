@@ -2063,6 +2063,7 @@ xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl,
     xqc_stream_t *stream;
     xqc_packet_out_t *packet_out = acked_packet;
     xqc_connection_t *conn = send_ctl->ctl_conn;
+    xqc_path_ctx_t *path;
     xqc_bool_t notify_ping;
 
     xqc_bool_t first_confirmed_ack = do_cc && !packet_out->po_acked;
@@ -2170,6 +2171,13 @@ xqc_send_ctl_on_packet_acked(xqc_send_ctl_t *send_ctl,
         
         if (packet_out->po_frame_types & (XQC_FRAME_BIT_NEW_CONNECTION_ID | XQC_FRAME_BIT_MP_NEW_CONNECTION_ID)) {
             xqc_cid_set_on_cid_acked(&conn->scid_set, packet_out->po_new_cid_path, packet_out->po_new_cid_seq);
+        }
+
+        if (packet_out->po_frame_types & XQC_FRAME_BIT_PATH_CHALLENGE) {
+            path = xqc_conn_find_path_by_path_id(conn, packet_out->po_path_id);
+            if (path != NULL) {
+                xqc_path_on_challenge_acked(path, now);
+            }
         }
         
 
