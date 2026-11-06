@@ -461,6 +461,9 @@ xqc_h3_conn_init_settings(xqc_h3_conn_t *h3c)
 }
 
 
+static void xqc_h3_conn_body_buf_revisit_timeout(xqc_gp_timer_id_t gp_timer_id,
+    xqc_usec_t now, void *user_data);
+
 xqc_h3_conn_t *
 xqc_h3_conn_create(xqc_connection_t *conn, void *user_data)
 {
@@ -546,6 +549,16 @@ xqc_h3_conn_create(xqc_connection_t *conn, void *user_data)
     xqc_log(h3c->log, XQC_LOG_DEBUG, "|blocked_buf_limits|per_stream:%uz|per_conn:%uz|",
             h3c->max_blocked_buf_per_stream, h3c->max_blocked_buf_per_conn);
 
+    /* registered here, so that arming it inside the engine cannot fail */
+    if (h3c->max_body_buf_per_stream > 0) {
+        h3c->body_buf_revisit_timer = xqc_conn_register_gp_timer(
+            conn, "h3_body_buf_revisit", xqc_h3_conn_body_buf_revisit_timeout, h3c);
+        if (h3c->body_buf_revisit_timer < 0) {
+            xqc_log(h3c->log, XQC_LOG_ERROR, "|register revisit timer error|");
+            goto fail;
+        }
+    }
+
     /* create qpack */
     h3c->qpack =
         xqc_qpack_create(h3c->local_h3_conn_settings.qpack_enc_max_table_capacity,
@@ -595,16 +608,6 @@ xqc_h3_conn_body_buf_revisit_timeout(xqc_gp_timer_id_t gp_timer_id, xqc_usec_t n
 void
 xqc_h3_conn_body_buf_revisit(xqc_h3_conn_t *h3c)
 {
-    if (h3c->body_buf_revisit_timer < 0) {
-        xqc_gp_timer_id_t id = xqc_conn_register_gp_timer(
-            h3c->conn, "h3_body_buf_revisit", xqc_h3_conn_body_buf_revisit_timeout, h3c);
-        if (id < 0) {
-            xqc_log(h3c->log, XQC_LOG_ERROR, "|register revisit timer error|%d|", id);
-            return;
-        }
-        h3c->body_buf_revisit_timer = id;
-    }
-
     xqc_conn_gp_timer_set(h3c->conn, h3c->body_buf_revisit_timer,
                           xqc_monotonic_timestamp());
 }

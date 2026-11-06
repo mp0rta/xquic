@@ -27,6 +27,7 @@
 #include "src/transport/xqc_timer.h"
 #include "src/common/xqc_time.h"
 #include "xqc_common_test.h"
+#include "xqc_alloc_fail_test.h"
 #include "xqc_h3_body_buf_test.h"
 
 #define H3BB_MAX_REQ    8
@@ -903,6 +904,21 @@ h3bb_drain(h3bb_fx_t *fx, int idx)
     return total;
 }
 
+/* whether the revisit timer is armed (it is registered with the connection
+ * whenever the limit is set) */
+static xqc_bool_t
+h3bb_revisit_timer_set(h3bb_fx_t *fx)
+{
+    xqc_bool_t is_set = XQC_FALSE;
+    xqc_usec_t expire = 0;
+
+    CU_ASSERT_FATAL(fx->h3c->body_buf_revisit_timer >= 0);
+    CU_ASSERT_EQUAL(xqc_conn_gp_timer_get_info(fx->conn,
+                        fx->h3c->body_buf_revisit_timer, &is_set, &expire),
+                    XQC_OK);
+    return is_set;
+}
+
 /* A drain inside the body notify is followed by more reading in the same
  * engine pass, until the transport is empty */
 void
@@ -942,7 +958,7 @@ xqc_test_h3bb_resume_in_engine_elsewhere(void)
     h3bb_fill_to_limit(&fx, i);
     CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
     off = fx.req[i].stream->stream_data_in.next_read_offset;
-    CU_ASSERT(fx.h3c->body_buf_revisit_timer < 0);
+    CU_ASSERT(fx.h3c->body_buf_revisit_timer >= 0);
 
     fx.conn->engine->eng_flag |= XQC_ENG_FLAG_RUNNING;
     CU_ASSERT(h3bb_drain(&fx, i) > 0);
@@ -983,7 +999,7 @@ xqc_test_h3bb_resume_outside_engine(void)
     CU_ASSERT(fx.last_wake_us <= 1);
     CU_ASSERT_NOT_EQUAL(fx.conn->conn_flag & XQC_CONN_FLAG_TICKING, 0);
     CU_ASSERT(fx.req[i].stream->stream_flag & XQC_STREAM_FLAG_READY_TO_READ);
-    CU_ASSERT(fx.h3c->body_buf_revisit_timer < 0);
+    CU_ASSERT(!h3bb_revisit_timer_set(&fx));
 
     h3bb_turn(&fx);
     h3bb_teardown(&fx);
@@ -1047,7 +1063,7 @@ h3bb_test_drain_in_close(h3bb_fx_t *fx, int idx)
     CU_ASSERT(h3bb_drain(fx, 1) > 0);
     CU_ASSERT(!(fx->req[1].stream->stream_flag & XQC_STREAM_FLAG_READY_TO_READ));
     CU_ASSERT_EQUAL(fx->n_wake, h3bb_destroy_wakes);
-    CU_ASSERT(fx->h3c->body_buf_revisit_timer < 0);
+    CU_ASSERT(!h3bb_revisit_timer_set(fx));
     h3bb_destroy_checked = 1;
 }
 
@@ -2955,4 +2971,133 @@ xqc_test_h3bb_small_frames_reach_frame_cap(void)
 
     xqc_free(h3);
     h3bb_teardown(&fx);
+}
+
+/*
+ * Draining a paused request from another request's notify, inside the
+ * engine, leaves the connection due even when an allocation fails there:
+ * the revisit timer is registered with the connection, so arming it
+ * allocates nothing.
+ */
+#ifdef XQC_TEST_ALLOC_WRAP
+static int h3bb_revisit_p;
+static int h3bb_revisit_done;
+
+static void
+h3bb_test_drain_p_failing_alloc(h3bb_fx_t *fx, int idx)
+{
+    if (h3bb_revisit_done) {
+        return;
+    }
+    h3bb_revisit_done = 1;
+    /* the allocation the old lazy registration needed */
+    xqc_test_af_arm(1);
+    CU_ASSERT(h3bb_drain(fx, h3bb_revisit_p) > 0);
+    xqc_test_af_disarm();
+}
+
+static xqc_bool_t
+h3bb_conn_due(h3bb_fx_t *fx)
+{
+    return fx->conn->next_tick_time != 0
+           && fx->conn->next_tick_time <= xqc_monotonic_timestamp();
+}
+#endif
+
+void
+xqc_test_h3bb_revisit_timer_cannot_fail(void)
+{
+#ifdef XQC_TEST_ALLOC_WRAP
+    h3bb_fx_t fx;
+    int       p, q;
+    uint64_t  off;
+
+    p = h3bb_open_request(&fx, H3BB_LIMIT);
+    h3bb_revisit_p = p;
+    h3bb_revisit_done = 0;
+    h3bb_fill_to_limit(&fx, p);
+    CU_ASSERT_FATAL(fx.req[p].h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED);
+    off = fx.req[p].stream->stream_data_in.next_read_offset;
+
+    /* Q is the last entry of the read list; its notify drains P */
+    q = h3bb_add_request(&fx);
+    fx.req[q].on_notify = h3bb_test_drain_p_failing_alloc;
+    h3bb_feed_headers(&fx, q);
+    h3bb_turn(&fx);
+    CU_ASSERT_FATAL(h3bb_revisit_done);
+
+    CU_ASSERT(h3bb_conn_due(&fx));
+    h3bb_turn(&fx);
+    CU_ASSERT(fx.req[p].stream->stream_data_in.next_read_offset > off);
+
+    h3bb_teardown(&fx);
+#endif
+}
+
+/* The timer exists exactly when the limit is set; a creation that fails
+ * part-way leaves nothing behind, and one that succeeds has the timer */
+void
+xqc_test_h3bb_revisit_timer_registered_at_creation(void)
+{
+#ifdef XQC_TEST_ALLOC_WRAP
+    h3bb_fx_t         fx;
+    long              n, left;
+    int               failed;
+    xqc_connection_t *conn;
+    xqc_int_t         ret;
+
+    CU_ASSERT_EQUAL_FATAL(h3bb_setup(&fx, 0, XQC_CONN_TYPE_CLIENT), 0);
+    CU_ASSERT(fx.h3c->body_buf_revisit_timer < 0);
+    h3bb_teardown(&fx);
+
+    CU_ASSERT_EQUAL_FATAL(h3bb_setup(&fx, H3BB_LIMIT, XQC_CONN_TYPE_CLIENT), 0);
+    CU_ASSERT(fx.h3c->body_buf_revisit_timer >= 0);
+    h3bb_teardown(&fx);
+
+    /* every allocation of the creation in turn; the first pass, unarmed,
+     * settles what the process allocates only once */
+    for (n = 0; n < 400; n++) {
+        xqc_test_af_live_begin();
+        conn = test_engine_connect();
+        CU_ASSERT_FATAL(conn != NULL);
+        conn->conn_settings.max_body_buf_per_stream = H3BB_LIMIT;
+        if (conn->alpn) {
+            xqc_free(conn->alpn);
+        }
+        conn->alpn_len = strlen(XQC_ALPN_H3);
+        conn->alpn = xqc_calloc(1, conn->alpn_len + 1);
+        xqc_memcpy(conn->alpn, XQC_ALPN_H3, conn->alpn_len);
+        conn->app_proto_cbs.conn_cbs = h3_conn_callbacks;
+        conn->app_proto_cbs.stream_cbs = h3_stream_callbacks;
+        conn->conn_state = XQC_CONN_STATE_ESTABED;
+        conn->conn_flag |= XQC_CONN_FLAG_CAN_SEND_1RTT;
+        conn->conn_flow_ctl.fc_max_streams_uni_can_send = 1024;
+
+        if (n > 0) {
+            xqc_test_af_arm(n);
+        }
+        ret = h3_conn_callbacks.conn_create_notify(conn, NULL, NULL, NULL);
+        failed = xqc_test_af_disarm();
+
+        if (ret == XQC_OK) {
+            CU_ASSERT(((xqc_h3_conn_t *)conn->proto_data)
+                      ->body_buf_revisit_timer >= 0);
+            conn->conn_flag |= XQC_CONN_FLAG_UPPER_CONN_EXIST;
+
+        } else {
+            CU_ASSERT(failed);
+            CU_ASSERT(conn->proto_data == NULL);
+        }
+
+        xqc_engine_destroy(conn->engine);
+        left = xqc_test_af_live_end();
+        if (n > 0) {
+            CU_ASSERT_EQUAL(left, 0);
+        }
+        if (n > 0 && !failed) {
+            break;
+        }
+    }
+    CU_ASSERT(n > 1 && n < 400);
+#endif
 }

@@ -51,5 +51,7 @@ void xqc_test_h3bb_close_cycles_exceed_window(void);
 void xqc_test_h3bb_conn_credit_on_paused_arrival(void);
 void xqc_test_h3bb_conn_credit_arrival_unread_fills_window(void);
 void xqc_test_h3bb_small_frames_reach_frame_cap(void);
+void xqc_test_h3bb_revisit_timer_cannot_fail(void);
+void xqc_test_h3bb_revisit_timer_registered_at_creation(void);
 
 #endif
