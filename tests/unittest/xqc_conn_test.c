@@ -702,11 +702,13 @@ xqc_test_conn_early_data_reject_flow_ctl()
 /*
  * One case: the peer's stream-data limits as received are bidi_local,
  * bidi_remote and uni; expect_send is the client bidi stream's send limit
- * after the reject.
+ * after the reject. With replay, one byte is buffered and the replay must
+ * send MAX_STREAM_DATA; without, the stream has nothing to replay and only
+ * its receive credit is checked.
  */
 static void
 xqc_test_early_data_reject_case(uint64_t bidi_local, uint64_t bidi_remote,
-    uint64_t uni, uint64_t expect_send)
+    uint64_t uni, uint64_t expect_send, int replay)
 {
     xqc_conn_settings_t cs;
     xqc_conn_ssl_config_t ssl;
@@ -752,11 +754,13 @@ xqc_test_early_data_reject_case(uint64_t bidi_local, uint64_t bidi_remote,
     stream->stream_flag |= XQC_STREAM_FLAG_HAS_0RTT;
     stream->stream_flow_ctl.fc_max_stream_data_can_recv = 150000;
     stream->stream_flow_ctl.fc_stream_recv_window_size = 150000;
-    CU_ASSERT_FATAL(xqc_stream_buff_data(stream, data, 1, 0) >= 0);
+    if (replay) {
+        CU_ASSERT_FATAL(xqc_stream_buff_data(stream, data, 1, 0) >= 0);
+    }
 
     CU_ASSERT_EQUAL(xqc_conn_early_data_reject(conn), XQC_OK);
     CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_max_stream_data_can_recv,
-                    150000);
+                    replay ? 150000 : 15360);
     CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_max_stream_data_can_send,
                     expect_send);
 
@@ -772,7 +776,9 @@ xqc_test_early_data_reject_case(uint64_t bidi_local, uint64_t bidi_remote,
             }
         }
     }
-    CU_ASSERT(found);
+    if (replay) {
+        CU_ASSERT(found);
+    }
 
     xqc_engine_destroy(engine);
 }
@@ -781,14 +787,14 @@ xqc_test_early_data_reject_case(uint64_t bidi_local, uint64_t bidi_remote,
  * RFC 9001 Section 4.6.2: a rejected 0-RTT stream starts again from the
  * transport-parameter limits. The server dropped the MAX_STREAM_DATA that
  * the 0-RTT write raised, so the replay's first STREAM frame must send
- * MAX_STREAM_DATA again in a 1-RTT packet. The send limit stays the peer's,
- * a 0 included.
+ * MAX_STREAM_DATA again in a 1-RTT packet. The send limit is the peer's, a 0
+ * included; a stream with nothing to replay restarts its receive credit too.
  */
 void
 xqc_test_conn_early_data_reject_resends_max_stream_data()
 {
-    xqc_test_early_data_reject_case(65536, 32768, 1024, 32768);
-    xqc_test_early_data_reject_case(0, 0, 0, 0);
+    xqc_test_early_data_reject_case(65536, 32768, 1024, 32768, 1);
+    xqc_test_early_data_reject_case(0, 0, 0, 0, 0);
 }
 
 

@@ -4999,11 +4999,9 @@ xqc_conn_early_data_reject(xqc_connection_t *conn)
             xqc_stream_send_state_update(stream, XQC_SEND_STREAM_ST_READY);
             xqc_stream_recv_state_update(stream, XQC_RECV_STREAM_ST_RECV);
             /*
-             * RFC 9001 Section 4.6.2: the server did not process the 0-RTT
-             * packets (MAX_STREAM_DATA included) and the client MUST reset
-             * the state of all streams. Receive credit and window restart
-             * from our transport parameters; the send limit is the peer's,
-             * as given, without the local substitution.
+             * RFC 9001 Section 4.6.2: the client MUST reset the state of all
+             * streams. The server did not process our 0-RTT MAX_STREAM_DATA;
+             * restart from the transport parameters, peer's send limit as sent.
              */
             xqc_stream_set_flow_ctl(stream);
             xqc_stream_update_flow_ctl(stream);
