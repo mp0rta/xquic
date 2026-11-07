@@ -855,3 +855,48 @@ xqc_test_conn_window_not_resized_by_reads_with_receive_rate(void)
 
     xqc_engine_destroy(conn->engine);
 }
+
+/* A repeated plain RESET_STREAM (a retransmission) is not checked against the
+   limits again: the first one already used its increase, and a receive rate
+   that shrank the window leaves less credit than that increase. */
+void
+xqc_test_conn_credit_repeated_reset_is_not_rechecked(void)
+{
+    xqc_connection_t    *conn = test_engine_connect();
+    xqc_stream_t        *stream;
+    xqc_conn_flow_ctl_t *fc;
+    uint64_t             read, recved, max_data;
+
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    stream = xqc_test_fc_stream(conn);
+    fc = &conn->conn_flow_ctl;
+    conn->local_settings.reset_stream_at = XQC_FALSE;
+    conn->remote_settings.reset_stream_at = XQC_FALSE;
+    conn->conn_settings.recv_rate_bytes_per_sec = 1000000;
+    conn->conn_settings.enable_stream_rate_limit = XQC_FALSE;
+    conn->conn_settings.max_body_buf_per_stream = 0;
+
+    stream->stream_flow_ctl.fc_max_stream_data_can_recv = 10000000;
+    fc->fc_recv_windows_size = 1048576;
+    fc->fc_last_window_update_time = 0;
+    fc->fc_last_window_update_read = 0;
+    fc->fc_data_read = 0;
+    fc->fc_data_recved = 0;
+    fc->fc_max_data_can_recv = 1048576;
+
+    CU_ASSERT_EQUAL(xqc_test_fc_peer_reset(conn, stream, 600000), XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    /* the rate window shrank: the credit left is below the 600000 increase */
+    CU_ASSERT(fc->fc_max_data_can_recv - fc->fc_data_recved < 600000);
+    read = fc->fc_data_read;
+    recved = fc->fc_data_recved;
+    max_data = fc->fc_max_data_can_recv;
+
+    CU_ASSERT_EQUAL(xqc_test_fc_peer_reset(conn, stream, 600000), XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_err, 0);
+    CU_ASSERT_EQUAL(fc->fc_data_read, read);
+    CU_ASSERT_EQUAL(fc->fc_data_recved, recved);
+    CU_ASSERT_EQUAL(fc->fc_max_data_can_recv, max_data);
+
+    xqc_engine_destroy(conn->engine);
+}

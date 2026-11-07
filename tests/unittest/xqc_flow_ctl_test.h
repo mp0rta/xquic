@@ -18,6 +18,7 @@ void xqc_test_conn_window_resized_by_reads_not_arrivals(void);
 void xqc_test_conn_window_doubling_from_last_resize(void);
 void xqc_test_conn_window_resized_at_half_window_read_without_credit_due(void);
 void xqc_test_conn_credit_reset_over_limit_is_flow_control_error(void);
+void xqc_test_conn_credit_repeated_reset_is_not_rechecked(void);
 void xqc_test_conn_window_resize_boundary_is_strictly_more_than_half(void);
 void xqc_test_conn_window_not_resized_by_reads_with_receive_rate(void);
 
