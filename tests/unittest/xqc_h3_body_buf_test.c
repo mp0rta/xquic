@@ -3176,6 +3176,47 @@ h3bb_replay_ric_not_met(size_t limit)
     h3bb_teardown(&fx);
 }
 
+/*
+ * HEADERS {count 1}, DATA and a trailer prefix {count 2} are buffered when
+ * insertion 1 arrives: the replay decodes the first section and blocks again
+ * on the trailer, whose count is not met. The stream stays blocked and listed
+ * (RFC 9204 Section 2.2.1) until insertion 2.
+ */
+static void
+h3bb_replay_blocks_again_below_ric(size_t limit)
+{
+    static const uint8_t data_frame[] = {0x00, 0x02, 'h', 'i'};
+    h3bb_fx_t            fx;
+    int                  i;
+
+    i = h3bb_open_request(&fx, limit);
+    h3bb_blocked_limits_off(&fx);
+    h3bb_feed(&fx, i, h3bb_ric1_prefix, sizeof(h3bb_ric1_prefix), 0);
+    h3bb_feed(&fx, i, h3bb_ric_rest, sizeof(h3bb_ric_rest), 0);
+    h3bb_feed(&fx, i, data_frame, sizeof(data_frame), 0);
+    h3bb_feed(&fx, i, h3bb_ric2_prefix, sizeof(h3bb_ric2_prefix), 0);
+    h3bb_read(&fx, i);
+    CU_ASSERT_FATAL(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED);
+
+    h3bb_feed_encoder(&fx, h3bb_first_insert, sizeof(h3bb_first_insert));
+    h3bb_turn(&fx);
+    CU_ASSERT_EQUAL(fx.req[i].h3r->completed_header_count, 1);
+    CU_ASSERT(fx.req[i].h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED);
+    CU_ASSERT_EQUAL(h3bb_blocked_list_len(&fx), 1);
+
+    h3bb_feed(&fx, i, h3bb_ric_rest, sizeof(h3bb_ric_rest), 1);
+    h3bb_turn(&fx);
+    h3bb_feed_encoder(&fx, h3bb_ric_second_insert,
+                      sizeof(h3bb_ric_second_insert));
+    h3bb_turn(&fx);
+    CU_ASSERT_EQUAL(fx.req[i].h3r->completed_header_count, 2);
+    CU_ASSERT_EQUAL(fx.req[i].h3s->flags
+                    & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED, 0);
+    CU_ASSERT_EQUAL(h3bb_blocked_list_len(&fx), 0);
+    CU_ASSERT_EQUAL(fx.conn->conn_err, 0);
+    h3bb_teardown(&fx);
+}
+
 /* a paused read ends right after a trailer section's prefix, the rest of the
  * request arrives, then the insertion: no second insertion is needed */
 static void
@@ -3222,10 +3263,17 @@ xqc_test_h3bb_replay_unblocks_when_ric_met(void)
 }
 
 void
-xqc_test_h3bb_replay_keeps_block_below_ric(void)
+xqc_test_h3bb_walk_skips_stream_below_ric(void)
 {
     h3bb_replay_ric_not_met(0);
     h3bb_replay_ric_not_met(H3BB_LIMIT);
+}
+
+void
+xqc_test_h3bb_replay_keeps_block_when_blocked_again(void)
+{
+    h3bb_replay_blocks_again_below_ric(0);
+    h3bb_replay_blocks_again_below_ric(H3BB_LIMIT);
 }
 
 /*

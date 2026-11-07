@@ -54,7 +54,8 @@ void xqc_test_h3bb_small_frames_reach_frame_cap(void);
 void xqc_test_h3bb_revisit_timer_cannot_fail(void);
 void xqc_test_h3bb_revisit_timer_registered_at_creation(void);
 void xqc_test_h3bb_replay_unblocks_when_ric_met(void);
-void xqc_test_h3bb_replay_keeps_block_below_ric(void);
+void xqc_test_h3bb_walk_skips_stream_below_ric(void);
+void xqc_test_h3bb_replay_keeps_block_when_blocked_again(void);
 void xqc_test_h3bb_body_node_freed_when_append_fails(void);
 void xqc_test_h3bb_paused_stays_unread_until_low_water(void);
 
