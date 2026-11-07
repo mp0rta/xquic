@@ -699,6 +699,80 @@ xqc_test_conn_early_data_reject_flow_ctl()
 }
 
 
+/*
+ * RFC 9001 Section 4.6.2: a rejected 0-RTT stream starts again from the
+ * transport-parameter limits. The server dropped the MAX_STREAM_DATA that
+ * the 0-RTT write raised, so the replay's first STREAM frame must raise the
+ * receive credit and send MAX_STREAM_DATA again, in a non-0-RTT packet.
+ */
+void
+xqc_test_conn_early_data_reject_resets_recv_credit()
+{
+    xqc_conn_settings_t cs;
+    xqc_conn_ssl_config_t ssl;
+    xqc_connection_t *conn;
+    xqc_engine_t *engine;
+    const xqc_cid_t *cid;
+    xqc_stream_t *stream;
+    xqc_list_head_t *pos, *heads[2];
+    xqc_packet_out_t *po;
+    unsigned char data[] = "x";
+    int found = 0, i;
+
+    engine = test_create_engine();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(engine);
+
+    memset(&cs, 0, sizeof(cs));
+    memset(&ssl, 0, sizeof(ssl));
+    cs.proto_version = XQC_VERSION_V1;
+    cs.enable_stream_rate_limit = 1;
+    cs.init_recv_window = 15360;
+    cs.recv_rate_bytes_per_sec = 10000000;
+
+    cid = xqc_connect(engine, &cs, NULL, 0, "", 0, &ssl, NULL, 0,
+                      "transport", NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(cid);
+    conn = xqc_engine_conns_hash_find(engine, cid, 's');
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    /* max srtt 400 ms: the rate window is 1000000, the share 150000 */
+    conn->conn_initial_path->path_state = XQC_PATH_STATE_ACTIVE;
+    conn->conn_initial_path->path_send_ctl->ctl_srtt = 400000;
+    conn->conn_flow_ctl.fc_recv_windows_size = 600000;
+
+    stream = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+    stream->recv_rate_bytes_per_sec = 2500000;
+
+    /* what the 0-RTT write left behind */
+    stream->stream_flag |= XQC_STREAM_FLAG_HAS_0RTT;
+    stream->stream_flow_ctl.fc_max_stream_data_can_recv = 150000;
+    stream->stream_flow_ctl.fc_stream_recv_window_size = 150000;
+    CU_ASSERT_FATAL(xqc_stream_buff_data(stream, data, 1, 0) >= 0);
+
+    CU_ASSERT_EQUAL(xqc_conn_early_data_reject(conn), XQC_OK);
+    CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_max_stream_data_can_recv,
+                    150000);
+
+    heads[0] = &conn->conn_send_queue->sndq_send_packets;
+    heads[1] = &conn->conn_send_queue->sndq_send_packets_high_pri;
+    for (i = 0; i < 2; i++) {
+        xqc_list_for_each(pos, heads[i]) {
+            po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
+            if ((po->po_frame_types & XQC_FRAME_BIT_MAX_STREAM_DATA)
+                && po->po_pkt.pkt_type != XQC_PTYPE_0RTT)
+            {
+                found = 1;
+            }
+        }
+    }
+    CU_ASSERT(found);
+
+    xqc_engine_destroy(engine);
+}
+
+
+
 /* RFC 9000 §20.1 CRYPTO_ERROR dynamic construction tests */
 
 

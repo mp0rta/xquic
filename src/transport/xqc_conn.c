@@ -4998,6 +4998,11 @@ xqc_conn_early_data_reject(xqc_connection_t *conn)
             }
             xqc_stream_send_state_update(stream, XQC_SEND_STREAM_ST_READY);
             xqc_stream_recv_state_update(stream, XQC_RECV_STREAM_ST_RECV);
+            /*
+             * RFC 9001 Section 4.6.2: the server dropped the 0-RTT
+             * MAX_STREAM_DATA; restart from the transport-parameter limits.
+             */
+            xqc_stream_set_flow_ctl(stream);
             xqc_stream_write_buffed_data_to_packets(stream);
         }
     }
