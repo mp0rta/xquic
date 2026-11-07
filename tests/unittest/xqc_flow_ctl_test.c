@@ -307,9 +307,9 @@ xqc_test_stream_fc_init_local_streams(void)
 
 
 /*
- * A peer that sent 0 for one stream limit gives streams of that type a
- * limit of 0 (RFC 9000 Section 18.2); our own limits stand in only while
- * all three are still 0, before the peer's parameters arrive.
+ * A peer that sent 0 for some stream limits gives streams of that type a
+ * limit of 0 (RFC 9000 Section 18.2); our own limits stand in only when all
+ * three are 0, as before the peer's parameters arrive.
  */
 void
 xqc_test_stream_fc_init_peer_zero_limit(void)
@@ -371,7 +371,29 @@ xqc_test_stream_fc_init_peer_zero_limit(void)
     CU_ASSERT_EQUAL(svr_bidi->stream_flow_ctl.fc_max_stream_data_can_send,
                     65536);
 
+    /* each term of the condition: one nonzero limit is enough to use the
+       peer's values, so the zeros below are not replaced by ours */
+    conn->remote_settings.max_stream_data_bidi_local = 0;
+    conn->remote_settings.max_stream_data_bidi_remote = 0;
+    conn->remote_settings.max_stream_data_uni = 1024;
+    cli_bidi = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(cli_bidi);
+    CU_ASSERT_EQUAL(cli_bidi->stream_flow_ctl.fc_max_stream_data_can_send, 0);
+
+    conn->remote_settings.max_stream_data_bidi_local = 1024;
+    conn->remote_settings.max_stream_data_uni = 0;
+    cli_bidi = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(cli_bidi);
+    CU_ASSERT_EQUAL(cli_bidi->stream_flow_ctl.fc_max_stream_data_can_send, 0);
+
+    conn->remote_settings.max_stream_data_bidi_local = 0;
+    conn->remote_settings.max_stream_data_bidi_remote = 1024;
+    cli_uni = xqc_stream_create_with_direction(conn, XQC_STREAM_UNI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(cli_uni);
+    CU_ASSERT_EQUAL(cli_uni->stream_flow_ctl.fc_max_stream_data_can_send, 0);
+
     /* all three 0 again: the substitution still applies */
+    conn->remote_settings.max_stream_data_bidi_remote = 0;
     conn->remote_settings.max_stream_data_bidi_local = 0;
     conn->remote_settings.max_stream_data_bidi_remote = 0;
     cli_bidi = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
@@ -381,7 +403,6 @@ xqc_test_stream_fc_init_peer_zero_limit(void)
 
     xqc_engine_destroy(engine);
 }
-
 
 
 /*

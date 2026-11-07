@@ -220,8 +220,9 @@ xqc_stream_set_flow_ctl(xqc_stream_t *stream)
     xqc_connection_t *conn = stream->stream_conn;
 
     /*
-     * All three are 0 only before the peer's transport parameters arrive;
-     * a single 0 is the peer's limit of 0 (RFC 9000 Section 18.2).
+     * All three are 0 before any peer parameters are known (or if the peer
+     * sent 0 for all three); otherwise a 0 is the peer's limit of 0
+     * (RFC 9000 Section 18.2).
      */
     if (!remote_settings->max_stream_data_bidi_remote &&
         !remote_settings->max_stream_data_bidi_local &&
