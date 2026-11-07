@@ -16,5 +16,6 @@ void xqc_test_conn_credit_reset_checks_once(void);
 void xqc_test_conn_window_monotone(void);
 void xqc_test_conn_window_resized_by_reads_not_arrivals(void);
 void xqc_test_conn_window_doubling_from_last_resize(void);
+void xqc_test_conn_window_resized_at_half_window_read_without_credit_due(void);
 
 #endif /* _XQC_TEST_FLOW_CTL_H_INCLUDED_ */

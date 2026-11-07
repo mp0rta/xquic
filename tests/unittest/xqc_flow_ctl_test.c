@@ -657,3 +657,43 @@ xqc_test_conn_window_doubling_from_last_resize(void)
 
     xqc_engine_destroy(conn->engine);
 }
+
+/*
+ * The resize happens at the read that passes half a window, even when the
+ * peer still has credit and no extension is due at that read.
+ */
+void
+xqc_test_conn_window_resized_at_half_window_read_without_credit_due(void)
+{
+    xqc_connection_t    *conn = test_engine_connect();
+    xqc_stream_t        *stream;
+    xqc_conn_flow_ctl_t *fc;
+    uint64_t             w = 100000;
+
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    stream = xqc_test_fc_stream(conn);
+    fc = &conn->conn_flow_ctl;
+    stream->stream_flow_ctl.fc_stream_recv_window_size = 100000;
+    conn->conn_settings.recv_rate_bytes_per_sec = 0;
+
+    fc->fc_recv_windows_size = w;
+    fc->fc_last_window_update_time = 0;
+    fc->fc_last_window_update_read = 0;
+
+    /* credit spent, under half a window read: extended, not resized */
+    fc->fc_data_read = 40000;
+    fc->fc_data_recved = 100000;
+    fc->fc_max_data_can_recv = 100000;
+    CU_ASSERT_EQUAL(xqc_stream_do_recv_conn_flow_ctl(stream), XQC_OK);
+    CU_ASSERT_EQUAL(fc->fc_max_data_can_recv, 140000);
+    CU_ASSERT_EQUAL(fc->fc_recv_windows_size, w);
+
+    /* half a window read, 40000 of credit left: resized (1.5 x the stream
+       window) and extended */
+    fc->fc_data_read = 60000;
+    CU_ASSERT_EQUAL(xqc_stream_do_recv_conn_flow_ctl(stream), XQC_OK);
+    CU_ASSERT_EQUAL(fc->fc_recv_windows_size, 150000);
+    CU_ASSERT_EQUAL(fc->fc_max_data_can_recv, 210000);
+
+    xqc_engine_destroy(conn->engine);
+}

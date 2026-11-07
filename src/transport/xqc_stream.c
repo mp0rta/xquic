@@ -482,6 +482,7 @@ xqc_stream_do_recv_conn_flow_ctl(xqc_stream_t *stream)
     xqc_usec_t max_srtt = 0;
     uint64_t old_fc_win = 0;
     uint64_t available_window;
+    xqc_bool_t resize_due;
 
     /* connection level */
     xqc_conn_flow_ctl_t *fc = &conn->conn_flow_ctl;
@@ -516,15 +517,17 @@ xqc_stream_do_recv_conn_flow_ctl(xqc_stream_t *stream)
     effective = fc->fc_recv_windows_size - unread;
     available_window = fc->fc_max_data_can_recv - fc->fc_data_recved;
 
-    if (available_window < xqc_max(1, effective / 2)) {
+    /*
+     * The window is resized once half a window was read since the last
+     * resize, whether or not credit is due; arrivals alone never resize it.
+     */
+    resize_due = !conn->conn_settings.recv_rate_bytes_per_sec
+                 && fc->fc_data_read - fc->fc_last_window_update_read
+                    > fc->fc_recv_windows_size / 2;
+
+    if (available_window < xqc_max(1, effective / 2) || resize_due) {
         if (!conn->conn_settings.recv_rate_bytes_per_sec) {
-            /*
-             * Resize only after half a window was read since the last resize;
-             * extending credit on arrival must not grow the window.
-             */
-            if (fc->fc_data_read - fc->fc_last_window_update_read
-                > fc->fc_recv_windows_size / 2)
-            {
+            if (resize_due) {
                 xqc_usec_t now = xqc_monotonic_timestamp();
                 xqc_usec_t min_srtt = xqc_conn_get_min_srtt(conn, 0);
 
