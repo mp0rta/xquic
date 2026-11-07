@@ -700,13 +700,13 @@ xqc_test_conn_early_data_reject_flow_ctl()
 
 
 /*
- * RFC 9001 Section 4.6.2: a rejected 0-RTT stream starts again from the
- * transport-parameter limits. The server dropped the MAX_STREAM_DATA that
- * the 0-RTT write raised, so the replay's first STREAM frame must raise the
- * receive credit and send MAX_STREAM_DATA again, in a non-0-RTT packet.
+ * One case: the peer's stream-data limits as received are bidi_local,
+ * bidi_remote and uni; expect_send is the client bidi stream's send limit
+ * after the reject.
  */
-void
-xqc_test_conn_early_data_reject_resets_recv_credit()
+static void
+xqc_test_early_data_reject_case(uint64_t bidi_local, uint64_t bidi_remote,
+    uint64_t uni, uint64_t expect_send)
 {
     xqc_conn_settings_t cs;
     xqc_conn_ssl_config_t ssl;
@@ -744,6 +744,10 @@ xqc_test_conn_early_data_reject_resets_recv_credit()
     CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
     stream->recv_rate_bytes_per_sec = 2500000;
 
+    conn->remote_settings.max_stream_data_bidi_local = bidi_local;
+    conn->remote_settings.max_stream_data_bidi_remote = bidi_remote;
+    conn->remote_settings.max_stream_data_uni = uni;
+
     /* what the 0-RTT write left behind */
     stream->stream_flag |= XQC_STREAM_FLAG_HAS_0RTT;
     stream->stream_flow_ctl.fc_max_stream_data_can_recv = 150000;
@@ -753,6 +757,8 @@ xqc_test_conn_early_data_reject_resets_recv_credit()
     CU_ASSERT_EQUAL(xqc_conn_early_data_reject(conn), XQC_OK);
     CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_max_stream_data_can_recv,
                     150000);
+    CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_max_stream_data_can_send,
+                    expect_send);
 
     heads[0] = &conn->conn_send_queue->sndq_send_packets;
     heads[1] = &conn->conn_send_queue->sndq_send_packets_high_pri;
@@ -760,7 +766,7 @@ xqc_test_conn_early_data_reject_resets_recv_credit()
         xqc_list_for_each(pos, heads[i]) {
             po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
             if ((po->po_frame_types & XQC_FRAME_BIT_MAX_STREAM_DATA)
-                && po->po_pkt.pkt_type != XQC_PTYPE_0RTT)
+                && po->po_pkt.pkt_type == XQC_PTYPE_SHORT_HEADER)
             {
                 found = 1;
             }
@@ -771,6 +777,19 @@ xqc_test_conn_early_data_reject_resets_recv_credit()
     xqc_engine_destroy(engine);
 }
 
+/*
+ * RFC 9001 Section 4.6.2: a rejected 0-RTT stream starts again from the
+ * transport-parameter limits. The server dropped the MAX_STREAM_DATA that
+ * the 0-RTT write raised, so the replay's first STREAM frame must send
+ * MAX_STREAM_DATA again in a 1-RTT packet. The send limit stays the peer's,
+ * a 0 included.
+ */
+void
+xqc_test_conn_early_data_reject_resends_max_stream_data()
+{
+    xqc_test_early_data_reject_case(65536, 32768, 1024, 32768);
+    xqc_test_early_data_reject_case(0, 0, 0, 0);
+}
 
 
 /* RFC 9000 §20.1 CRYPTO_ERROR dynamic construction tests */
