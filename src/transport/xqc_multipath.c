@@ -858,8 +858,6 @@ void
 xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path)
 {
     xqc_connection_t *conn = path->parent_conn;
-    xqc_list_head_t *pos, *next;
-    xqc_path_ctx_t *other;
     unsigned pto_count;
 
     if (!conn->enable_multipath || path->path_state != XQC_PATH_STATE_ACTIVE) {
@@ -877,6 +875,24 @@ xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path)
         return;
     }
 
+    if (xqc_path_has_working_alternative(path)) {
+        xqc_log(conn->log, XQC_LOG_INFO,
+                "|path:%ui|pto_count:%ud|inflight:%ud|requeue unacked|",
+                path->path_id, pto_count,
+                path->path_send_ctl->ctl_bytes_in_flight);
+        xqc_path_move_unack_packets_from_conn(path, conn);
+    }
+}
+
+/* Is another active path still working, i.e. not frozen, without a socket
+ * error, and with fewer than XQC_PATH_REQUEUE_PTO_THRESH PTOs in a row? */
+xqc_bool_t
+xqc_path_has_working_alternative(xqc_path_ctx_t *path)
+{
+    xqc_connection_t *conn = path->parent_conn;
+    xqc_list_head_t *pos, *next;
+    xqc_path_ctx_t *other;
+
     xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
         other = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
         if (other != path
@@ -886,13 +902,119 @@ xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path)
             && xqc_send_ctl_get_effective_pto_count(other->path_send_ctl)
                < XQC_PATH_REQUEUE_PTO_THRESH)
         {
-            xqc_log(conn->log, XQC_LOG_INFO,
-                    "|path:%ui|pto_count:%ud|inflight:%ud|requeue unacked|",
-                    path->path_id, pto_count,
-                    path->path_send_ctl->ctl_bytes_in_flight);
-            xqc_path_move_unack_packets_from_conn(path, conn);
-            return;
+            return XQC_TRUE;
         }
+    }
+    return XQC_FALSE;
+}
+
+/* A path that timed out XQC_PATH_REQUEUE_PTO_THRESH times in a row while
+ * another path works: its unacknowledged data was moved to the other paths
+ * (xqc_path_requeue_unacked_on_pto), and new data sent on it would most
+ * likely be lost too. Its PTO probes are sent on it directly, not through
+ * the scheduler, so it is used again once one of them is acknowledged. */
+xqc_bool_t
+xqc_path_is_dead_with_alternative(xqc_path_ctx_t *path)
+{
+    return path->parent_conn->enable_multipath
+        && xqc_send_ctl_get_effective_pto_count(path->path_send_ctl)
+           >= XQC_PATH_REQUEUE_PTO_THRESH
+        && xqc_path_has_working_alternative(path);
+}
+
+/* Is a path that is not STANDBY still working, i.e. active, not frozen,
+ * without a socket error, and with fewer than XQC_PATH_REQUEUE_PTO_THRESH
+ * PTOs in a row? Unlike xqc_path_has_working_alternative(), another STANDBY
+ * path does not count: an idle backup has a PTO count of 0 whether its
+ * link works or not. */
+static xqc_bool_t
+xqc_path_has_working_primary(xqc_path_ctx_t *path)
+{
+    xqc_connection_t *conn = path->parent_conn;
+    xqc_list_head_t *pos, *next;
+    xqc_path_ctx_t *other;
+
+    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
+        other = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+        if (other != path
+            && other->path_state == XQC_PATH_STATE_ACTIVE
+            && other->app_path_status != XQC_APP_PATH_STATUS_STANDBY
+            && other->app_path_status != XQC_APP_PATH_STATUS_FROZEN
+            && !(other->path_flag & XQC_PATH_FLAG_SOCKET_ERROR)
+            && xqc_send_ctl_get_effective_pto_count(other->path_send_ctl)
+               < XQC_PATH_REQUEUE_PTO_THRESH)
+        {
+            return XQC_TRUE;
+        }
+    }
+    return XQC_FALSE;
+}
+
+/* A STANDBY path left silent on purpose: standby probing is off
+ * (standby_path_probe_timeout == 0) and a path that is not STANDBY works.
+ * Neither the keep-alive PING nor the path idle timer touches it, so a
+ * backup on a metered or battery-bound link (cellular) can stay idle until
+ * it is needed. Another STANDBY path does not count as working: with two
+ * idle backups, each would otherwise make the other quiet, and once the
+ * primary goes silent with its link up nothing would keep the connection
+ * alive. */
+xqc_bool_t
+xqc_path_is_quiet_standby(xqc_path_ctx_t *path)
+{
+    xqc_connection_t *conn = path->parent_conn;
+
+    return conn->enable_multipath
+        && path->path_state == XQC_PATH_STATE_ACTIVE
+        && path->app_path_status == XQC_APP_PATH_STATUS_STANDBY
+        && conn->conn_settings.standby_path_probe_timeout == 0
+        && xqc_path_has_working_primary(path);
+}
+
+/* A quiet backup that stops being quiet, because its primary went silent,
+ * has heard nothing from this end for as long as it was quiet, and its NAT
+ * mapping may have expired: until this end sends on it, the peer's traffic
+ * cannot reach it. Send it a PING at the first send round after it stops
+ * being quiet, rather than at the next keep-alive, up to 15 s later. Like
+ * the other probes, only when one packet fits its congestion window, since
+ * the probe list does not check it. Its idle timer restarts only when a
+ * packet is received, and none came while it was quiet: restart it here,
+ * so that the peer has a full idle period to answer. */
+void
+xqc_conn_wake_quiet_standby(xqc_connection_t *conn)
+{
+    xqc_list_head_t *pos, *next;
+    xqc_path_ctx_t *path;
+    xqc_packet_out_t probe;
+    xqc_bool_t quiet;
+
+    if (conn->conn_state != XQC_CONN_STATE_ESTABED) {
+        return;
+    }
+
+    xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
+        path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+        quiet = xqc_path_is_quiet_standby(path);
+        if (path->path_was_quiet_standby && !quiet
+            && path->path_state == XQC_PATH_STATE_ACTIVE)
+        {
+            xqc_timer_set(&path->path_send_ctl->path_timer_manager,
+                          XQC_TIMER_PATH_IDLE, xqc_monotonic_timestamp(),
+                          xqc_path_get_idle_timeout(path) * 1000);
+
+            memset(&probe, 0, sizeof(probe));
+            probe.po_used_size = path->curr_pkt_out_size;
+            if (path->app_path_status == XQC_APP_PATH_STATUS_STANDBY
+                && xqc_send_ctl_can_send(path->path_send_ctl, &probe,
+                                         path->path_schedule_bytes)
+                && xqc_path_send_ping_to_probe(path, XQC_PNS_APP_DATA,
+                                               XQC_PATH_SPECIFIED_BY_PQP)
+                   == XQC_OK)
+            {
+                xqc_log(conn->log, XQC_LOG_INFO,
+                        "|path:%ui|quiet standby woken|", path->path_id);
+            }
+        }
+        path->path_was_quiet_standby = quiet;
     }
 }
 
