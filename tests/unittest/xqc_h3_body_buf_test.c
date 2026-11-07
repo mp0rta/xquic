@@ -3151,7 +3151,7 @@ h3bb_replay_meets_ric(size_t limit)
 
 /* the section's Required Insert Count (2) is not met by one insertion */
 static void
-h3bb_replay_ric_not_met(size_t limit)
+h3bb_walk_skips_ric_not_met(size_t limit)
 {
     h3bb_fx_t fx;
     int       i;
@@ -3265,8 +3265,8 @@ xqc_test_h3bb_replay_unblocks_when_ric_met(void)
 void
 xqc_test_h3bb_walk_skips_stream_below_ric(void)
 {
-    h3bb_replay_ric_not_met(0);
-    h3bb_replay_ric_not_met(H3BB_LIMIT);
+    h3bb_walk_skips_ric_not_met(0);
+    h3bb_walk_skips_ric_not_met(H3BB_LIMIT);
 }
 
 void

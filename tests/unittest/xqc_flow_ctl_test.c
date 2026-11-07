@@ -659,8 +659,8 @@ xqc_test_conn_window_doubling_from_last_resize(void)
 }
 
 /*
- * The resize happens at the read that passes half a window, even when the
- * peer still has credit and no extension is due at that read.
+ * The read that passes half a window is resized and extended even though the
+ * peer still has credit and the credit check alone would not extend it.
  */
 void
 xqc_test_conn_window_resized_at_half_window_read_without_credit_due(void)
@@ -674,7 +674,6 @@ xqc_test_conn_window_resized_at_half_window_read_without_credit_due(void)
     stream = xqc_test_fc_stream(conn);
     fc = &conn->conn_flow_ctl;
     stream->stream_flow_ctl.fc_stream_recv_window_size = 100000;
-    conn->conn_settings.recv_rate_bytes_per_sec = 0;
 
     fc->fc_recv_windows_size = w;
     fc->fc_last_window_update_time = 0;
