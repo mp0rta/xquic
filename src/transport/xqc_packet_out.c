@@ -1343,9 +1343,7 @@ xqc_write_stream_frame_to_packet(xqc_connection_t *conn,
         if (stream->recv_rate_bytes_per_sec) {
             /* set window according to the rate limit */
             max_srtt = xqc_conn_get_max_srtt(conn);
-            stream->stream_flow_ctl.fc_stream_recv_window_size = stream->recv_rate_bytes_per_sec * max_srtt / 1000000;
-            stream->stream_flow_ctl.fc_stream_recv_window_size = xqc_max(conn->conn_settings.init_recv_window, stream->stream_flow_ctl.fc_stream_recv_window_size);
-            stream->stream_flow_ctl.fc_stream_recv_window_size = xqc_min(XQC_MAX_RECV_WINDOW, stream->stream_flow_ctl.fc_stream_recv_window_size);
+            stream->stream_flow_ctl.fc_stream_recv_window_size = xqc_stream_rate_window(stream, max_srtt);
             xqc_log(conn->log, XQC_LOG_DEBUG, 
                     "|initial_fc_credit_update|stream:%ui|rate:%ui|srtt:%ui|old_fc_win:%ui|fc_win:%ui|",
                     stream->stream_id,

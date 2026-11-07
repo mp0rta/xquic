@@ -219,9 +219,14 @@ xqc_stream_set_flow_ctl(xqc_stream_t *stream)
     xqc_trans_settings_t *remote_settings = &stream->stream_conn->remote_settings;
     xqc_connection_t *conn = stream->stream_conn;
 
-    if ((remote_settings->max_stream_data_bidi_remote &&
-         remote_settings->max_stream_data_bidi_local &&
-         remote_settings->max_stream_data_uni) == XQC_FALSE) {
+    /*
+     * All three are 0 before any peer parameters are known (or if the peer
+     * sent 0 for all three); otherwise a 0 is the peer's limit of 0
+     * (RFC 9000 Section 18.2).
+     */
+    if (!remote_settings->max_stream_data_bidi_remote &&
+        !remote_settings->max_stream_data_bidi_local &&
+        !remote_settings->max_stream_data_uni) {
         remote_settings = &stream->stream_conn->local_settings;
     }
     /*
@@ -408,6 +413,98 @@ xqc_stream_do_send_flow_ctl(xqc_stream_t *stream)
     return ret;
 }
 
+/*
+ * floor(w * s / c) capped at cap, in exact 64-bit arithmetic (the fork builds
+ * with MSVC, which has no 128-bit integer). s = q * c + r, so the result is
+ * w * q + floor(w * r / c). The second term is computed by binary long
+ * multiplication over the bits of w with a remainder kept below c; "x + y
+ * reaches c" is tested as x >= c - y, so no sum exceeds c and nothing wraps.
+ * The quotient of the second term is below w, so acc stays within
+ * cap + w and cannot wrap for w <= XQC_MAX_RECV_WINDOW.
+ * Precondition (guaranteed by the caller): c > 0.
+ */
+static uint64_t
+xqc_mul_div_floor_capped(uint64_t w, uint64_t s, uint64_t c, uint64_t cap)
+{
+    uint64_t q, r, acc, quot, rem;
+    int i;
+
+    if (w == 0) {
+        return 0;
+    }
+
+    q = s / c;
+    r = s % c;
+    if (q > cap / w) {
+        return cap;
+    }
+
+    acc = w * q;
+    quot = 0;
+    rem = 0;
+    for (i = 63; i >= 0; i--) {
+        quot <<= 1;
+        if (rem >= c - rem) {
+            rem -= c - rem;
+            quot++;
+
+        } else {
+            rem += rem;
+        }
+
+        if ((w >> i) & 1) {
+            if (rem >= c - r) {
+                rem -= c - r;
+                quot++;
+
+            } else {
+                rem += r;
+            }
+        }
+    }
+
+    acc += quot;
+    return xqc_min(acc, cap);
+}
+
+
+/*
+ * Receive window of a rate-limited stream. Without a connection rate this is
+ * clamp(rate * max_srtt, init_recv_window, XQC_MAX_RECV_WINDOW). With one,
+ * the rate window is first capped at the stream's share of the connection
+ * window, W * stream rate / connection rate, so the window returned never
+ * exceeds max(init_recv_window, the share of the current W) (RFC 9000
+ * Section 4.1: the sender must stay within both limits; granted credit cannot
+ * be revoked, so the cap is applied each time the window is computed; a
+ * STREAM_DATA_BLOCKED reply reuses the last computed window). The floor
+ * comes after the share: a window below 2 would leave the read-side update
+ * (available < window / 2) unreachable, and credit would then follow only
+ * STREAM_DATA_BLOCKED, which a receiver MUST NOT wait for (RFC 9000
+ * Section 4.2). Covered by xqc_test_stream_rate_window_share and
+ * xqc_test_stream_rate_window_share_arith.
+ */
+uint64_t
+xqc_stream_rate_window(xqc_stream_t *stream, xqc_usec_t max_srtt)
+{
+    xqc_connection_t *conn = stream->stream_conn;
+    uint64_t win;
+
+    win = stream->recv_rate_bytes_per_sec * max_srtt / 1000000;
+
+    if (conn->conn_settings.recv_rate_bytes_per_sec) {
+        uint64_t share = xqc_mul_div_floor_capped(
+            conn->conn_flow_ctl.fc_recv_windows_size,
+            stream->recv_rate_bytes_per_sec,
+            conn->conn_settings.recv_rate_bytes_per_sec,
+            XQC_MAX_RECV_WINDOW);
+        win = xqc_min(win, share);
+    }
+
+    win = xqc_max(conn->conn_settings.init_recv_window, win);
+    return xqc_min(XQC_MAX_RECV_WINDOW, win);
+}
+
+
 int
 xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
 {
@@ -440,12 +537,7 @@ xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
 
             old_fc_win = stream->stream_flow_ctl.fc_stream_recv_window_size;
             stream->stream_flow_ctl.fc_stream_recv_window_size =
-                stream->recv_rate_bytes_per_sec * max_srtt / 1000000;
-            stream->stream_flow_ctl.fc_stream_recv_window_size =
-                xqc_max(conn->conn_settings.init_recv_window,
-                        stream->stream_flow_ctl.fc_stream_recv_window_size);
-            stream->stream_flow_ctl.fc_stream_recv_window_size = xqc_min(
-                XQC_MAX_RECV_WINDOW, stream->stream_flow_ctl.fc_stream_recv_window_size);
+                xqc_stream_rate_window(stream, max_srtt);
             xqc_log(conn->log, XQC_LOG_DEBUG,
                     "|stream_level|fc_win_update|old_fc_win:%ui|fc_win:%ui|", old_fc_win,
                     stream->stream_flow_ctl.fc_stream_recv_window_size);
@@ -706,13 +798,6 @@ xqc_create_stream_with_conn(xqc_connection_t *conn, xqc_stream_id_t stream_id,
      * on first packet/byte accounting per path. xqc_calloc'd stream zeroes
      * the pointer + counters already; no explicit reset needed. */
 
-    xqc_stream_set_flow_ctl(stream);
-
-    xqc_init_list_head(&stream->stream_data_in.frames_tailq);
-
-    xqc_init_list_head(&stream->stream_write_buff_list.write_buff_list);
-    xqc_init_list_head(&stream->stream_acked_ranges);
-
     if (stream_id == XQC_UNDEFINE_STREAM_ID) {
         stream->stream_type = stream_type;
         stream->stream_id = xqc_gen_stream_id(conn, stream->stream_type);
@@ -721,6 +806,14 @@ xqc_create_stream_with_conn(xqc_connection_t *conn, xqc_stream_id_t stream_id,
         stream->stream_id = stream_id;
         stream->stream_type = xqc_get_stream_type(stream_id);
     }
+
+    /* the limits depend on the stream type, so set them after it is known */
+    xqc_stream_set_flow_ctl(stream);
+
+    xqc_init_list_head(&stream->stream_data_in.frames_tailq);
+
+    xqc_init_list_head(&stream->stream_write_buff_list.write_buff_list);
+    xqc_init_list_head(&stream->stream_acked_ranges);
 
     xqc_id_hash_element_t e = {stream->stream_id, stream};
     if (xqc_id_hash_add(conn->streams_hash, e)) {
@@ -1197,12 +1290,7 @@ xqc_stream_update_settings(xqc_stream_t *stream, xqc_stream_settings_t *settings
             max_srtt = xqc_conn_get_max_srtt(conn);
             old_fc_win = stream->stream_flow_ctl.fc_stream_recv_window_size;
             stream->stream_flow_ctl.fc_stream_recv_window_size =
-                stream->recv_rate_bytes_per_sec * max_srtt / 1000000;
-            stream->stream_flow_ctl.fc_stream_recv_window_size =
-                xqc_max(conn->conn_settings.init_recv_window,
-                        stream->stream_flow_ctl.fc_stream_recv_window_size);
-            stream->stream_flow_ctl.fc_stream_recv_window_size = xqc_min(
-                XQC_MAX_RECV_WINDOW, stream->stream_flow_ctl.fc_stream_recv_window_size);
+                xqc_stream_rate_window(stream, max_srtt);
             xqc_log(conn->log, XQC_LOG_DEBUG, "|fc_win_update|old_fc_win:%ui|fc_win:%ui|",
                     old_fc_win, stream->stream_flow_ctl.fc_stream_recv_window_size);
             new_offset = xqc_clamp_to_max_flow_ctl(
