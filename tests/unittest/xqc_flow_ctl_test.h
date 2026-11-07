@@ -11,6 +11,7 @@ void xqc_test_conn_flow_ctl_clamp(void);
 void xqc_test_flow_ctl_normal_no_clamp(void);
 void xqc_test_stream_fc_init_by_type(void);
 void xqc_test_stream_fc_init_local_streams(void);
+void xqc_test_stream_fc_init_peer_zero_limit(void);
 void xqc_test_stream_rate_window_share(void);
 void xqc_test_stream_rate_window_share_arith(void);
 

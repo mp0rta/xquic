@@ -307,6 +307,84 @@ xqc_test_stream_fc_init_local_streams(void)
 
 
 /*
+ * A peer that sent 0 for one stream limit gives streams of that type a
+ * limit of 0 (RFC 9000 Section 18.2); our own limits stand in only while
+ * all three are still 0, before the peer's parameters arrive.
+ */
+void
+xqc_test_stream_fc_init_peer_zero_limit(void)
+{
+    xqc_conn_settings_t cs;
+    xqc_conn_ssl_config_t ssl;
+    xqc_connection_t *conn;
+    xqc_engine_t *engine;
+    const xqc_cid_t *cid;
+    xqc_stream_t *cli_bidi, *cli_uni, *svr_bidi, *early;
+
+    engine = test_create_engine();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(engine);
+
+    memset(&cs, 0, sizeof(cs));
+    memset(&ssl, 0, sizeof(ssl));
+    cs.proto_version = XQC_VERSION_V1;
+    cs.enable_stream_rate_limit = 1;
+    cs.init_recv_window = 15360;
+
+    cid = xqc_connect(engine, &cs, NULL, 0, "", 0, &ssl, NULL, 0,
+                      "transport", NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(cid);
+    conn = xqc_engine_conns_hash_find(engine, cid, 's');
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    /* before the peer's parameters: all three are 0, ours stand in */
+    CU_ASSERT_EQUAL(conn->remote_settings.max_stream_data_bidi_local, 0);
+    CU_ASSERT_EQUAL(conn->remote_settings.max_stream_data_bidi_remote, 0);
+    CU_ASSERT_EQUAL(conn->remote_settings.max_stream_data_uni, 0);
+    early = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(early);
+    CU_ASSERT_EQUAL(early->stream_flow_ctl.fc_max_stream_data_can_send,
+                    conn->local_settings.max_stream_data_bidi_remote);
+    CU_ASSERT(early->stream_flow_ctl.fc_max_stream_data_can_send != 0);
+
+    conn->remote_settings.max_stream_data_bidi_local = 65536;
+    conn->remote_settings.max_stream_data_bidi_remote = 32768;
+    conn->remote_settings.max_stream_data_uni = 0;
+    conn->remote_settings.max_streams_bidi = 100;
+    conn->remote_settings.max_streams_uni = 100;
+    conn->conn_flow_ctl.fc_max_streams_bidi_can_send = 100;
+    conn->conn_flow_ctl.fc_max_streams_uni_can_send = 100;
+
+    cli_bidi = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(cli_bidi);
+    CU_ASSERT_EQUAL(cli_bidi->stream_type, XQC_CLI_BID);
+    CU_ASSERT_EQUAL(cli_bidi->stream_flow_ctl.fc_max_stream_data_can_send,
+                    32768);
+
+    cli_uni = xqc_stream_create_with_direction(conn, XQC_STREAM_UNI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(cli_uni);
+    CU_ASSERT_EQUAL(cli_uni->stream_type, XQC_CLI_UNI);
+    CU_ASSERT_EQUAL(cli_uni->stream_flow_ctl.fc_max_stream_data_can_send, 0);
+
+    svr_bidi = xqc_passive_create_stream(conn, 1, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(svr_bidi);
+    CU_ASSERT_EQUAL(svr_bidi->stream_type, XQC_SVR_BID);
+    CU_ASSERT_EQUAL(svr_bidi->stream_flow_ctl.fc_max_stream_data_can_send,
+                    65536);
+
+    /* all three 0 again: the substitution still applies */
+    conn->remote_settings.max_stream_data_bidi_local = 0;
+    conn->remote_settings.max_stream_data_bidi_remote = 0;
+    cli_bidi = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(cli_bidi);
+    CU_ASSERT_EQUAL(cli_bidi->stream_flow_ctl.fc_max_stream_data_can_send,
+                    conn->local_settings.max_stream_data_bidi_remote);
+
+    xqc_engine_destroy(engine);
+}
+
+
+
+/*
  * Build a client connection with one active path whose smoothed RTT is
  * srtt_us, the given connection receive rate and connection window W.
  */

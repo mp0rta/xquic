@@ -219,9 +219,13 @@ xqc_stream_set_flow_ctl(xqc_stream_t *stream)
     xqc_trans_settings_t *remote_settings = &stream->stream_conn->remote_settings;
     xqc_connection_t *conn = stream->stream_conn;
 
-    if ((remote_settings->max_stream_data_bidi_remote &&
-         remote_settings->max_stream_data_bidi_local &&
-         remote_settings->max_stream_data_uni) == XQC_FALSE) {
+    /*
+     * All three are 0 only before the peer's transport parameters arrive;
+     * a single 0 is the peer's limit of 0 (RFC 9000 Section 18.2).
+     */
+    if (!remote_settings->max_stream_data_bidi_remote &&
+        !remote_settings->max_stream_data_bidi_local &&
+        !remote_settings->max_stream_data_uni) {
         remote_settings = &stream->stream_conn->local_settings;
     }
     /*
