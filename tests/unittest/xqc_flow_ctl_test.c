@@ -697,7 +697,7 @@ xqc_test_conn_window_resized_at_half_window_read_without_credit_due(void)
     xqc_engine_destroy(conn->engine);
 }
 
-/* feed a plain RESET_STREAM (final size below 2^14) for the stream */
+/* feed a plain RESET_STREAM (final size below 2^30) for the stream */
 static int
 xqc_test_fc_peer_reset(xqc_connection_t *conn, xqc_stream_t *stream,
     uint64_t final_size)
@@ -756,14 +756,15 @@ xqc_test_conn_credit_reset_over_limit_is_flow_control_error(void)
         conn->local_settings.reset_stream_at = XQC_FALSE;
         conn->remote_settings.reset_stream_at = XQC_FALSE;
 
-        /* 60000 received and read of 100000 granted: 40000 of credit left,
-           and half a window read, so a resize would extend the credit */
+        /* 60000 received, 20000 read, 100000 granted: 40000 of credit left;
+           without the check, the discarded bytes count as read and credit
+           is extended past the violation */
         stream->stream_flow_ctl.fc_max_stream_data_can_recv =
             cases[i].stream_limit;
         fc->fc_recv_windows_size = 100000;
         fc->fc_last_window_update_time = 0;
         fc->fc_last_window_update_read = 0;
-        fc->fc_data_read = 60000;
+        fc->fc_data_read = 20000;
         fc->fc_data_recved = 60000;
         fc->fc_max_data_can_recv = 100000;
 

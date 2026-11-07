@@ -1897,7 +1897,7 @@ xqc_process_reset_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
         return -XQC_EPROTO;
     }
 
-    /* RFC 9000 Section 4.1, 19.9: the final size counts against the limits */
+    /* RFC 9000 Section 4.1 and 19.9: the final size counts against limits */
     if (stream->stream_state_recv < XQC_RECV_STREAM_ST_RESET_RECVD
         && xqc_reset_final_size_exceeds_limits(conn, stream, final_size))
     {
