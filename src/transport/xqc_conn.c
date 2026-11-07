@@ -473,6 +473,9 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
 
     engine->default_conn_settings.simulate_ecn = settings->simulate_ecn;
 
+    engine->default_conn_settings.max_body_buf_per_stream =
+        settings->max_body_buf_per_stream;
+
     /* compute effective blocked buffer limits (use default if not configured) */
     if (settings->max_blocked_buf_per_stream > 0) {
         engine->default_conn_settings.max_blocked_buf_per_stream = settings->max_blocked_buf_per_stream;
@@ -579,6 +582,7 @@ static const char *const xqc_conn_flag_to_str[XQC_CONN_FLAG_SHIFT_NUM] = {
     [XQC_CONN_FLAG_HANDSHAKE_DONE_SENT_SHIFT] = "HANDSHAKE_DONE_SENT",
     [XQC_CONN_FLAG_SERVER_ACCEPT_SHIFT] = "SERVER_ACCEPT",
     [XQC_CONN_FLAG_RETRY_SENT_SHIFT] = "RETRY_PACKET_SENT",
+    [XQC_CONN_FLAG_DESTROYING_SHIFT] = "DESTROYING",
 };
 
 
@@ -799,6 +803,7 @@ xqc_conn_init_flow_ctl(xqc_connection_t *conn)
     flow_ctl->fc_data_recved = 0;
     flow_ctl->fc_recv_windows_size = settings->max_data;
     flow_ctl->fc_last_window_update_time = 0;
+    flow_ctl->fc_last_window_update_read = 0;
 }
 
 static inline void
@@ -1696,6 +1701,13 @@ xqc_conn_destroy_crypto_data_list(xqc_list_head_t *crypto_data_list)
     }
 }
 
+xqc_bool_t
+xqc_conn_is_tearing_down(const xqc_connection_t *conn)
+{
+    return conn->conn_state >= XQC_CONN_STATE_CLOSING
+           || (conn->conn_flag & XQC_CONN_FLAG_DESTROYING);
+}
+
 void
 xqc_conn_destroy(xqc_connection_t *xc)
 {
@@ -1706,6 +1718,8 @@ xqc_conn_destroy(xqc_connection_t *xc)
     if (!xc) {
         return;
     }
+
+    xc->conn_flag |= XQC_CONN_FLAG_DESTROYING;
 
     if (xc->conn_flag & XQC_CONN_FLAG_TICKING) {
         xqc_log(xc->log, XQC_LOG_ERROR, "|in XQC_CONN_FLAG_TICKING|%p|", xc);
