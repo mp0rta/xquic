@@ -699,12 +699,20 @@ xqc_test_conn_early_data_reject_flow_ctl()
 }
 
 
-/* count MAX_STREAM_DATA frames queued in packets of the given type */
+/*
+ * Count MAX_STREAM_DATA frames queued in packets of the given type; for
+ * the last one found, decode its stream ID and offset (the frame is the
+ * first in its packet) into sid and off when they are not NULL.
+ */
 static int
-xqc_test_count_max_stream_data(xqc_connection_t *conn, xqc_pkt_type_t type)
+xqc_test_count_max_stream_data(xqc_connection_t *conn, xqc_pkt_type_t type,
+    uint64_t *sid, uint64_t *off)
 {
     xqc_list_head_t *pos, *heads[2];
     xqc_packet_out_t *po;
+    const unsigned char *p, *end;
+    uint64_t v;
+    ssize_t len;
     int n = 0, i;
 
     heads[0] = &conn->conn_send_queue->sndq_send_packets;
@@ -712,11 +720,25 @@ xqc_test_count_max_stream_data(xqc_connection_t *conn, xqc_pkt_type_t type)
     for (i = 0; i < 2; i++) {
         xqc_list_for_each(pos, heads[i]) {
             po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
-            if ((po->po_frame_types & XQC_FRAME_BIT_MAX_STREAM_DATA)
-                && po->po_pkt.pkt_type == type)
+            if (!(po->po_frame_types & XQC_FRAME_BIT_MAX_STREAM_DATA)
+                || po->po_pkt.pkt_type != type)
             {
-                n++;
+                continue;
             }
+            n++;
+            if (sid == NULL || off == NULL) {
+                continue;
+            }
+            p = po->po_payload;
+            end = po->po_buf + po->po_used_size;
+            CU_ASSERT_EQUAL(*p++, 0x11);
+            len = xqc_vint_read(p, end, &v);
+            CU_ASSERT_FATAL(len > 0);
+            *sid = v;
+            p += len;
+            len = xqc_vint_read(p, end, &v);
+            CU_ASSERT_FATAL(len > 0);
+            *off = v;
         }
     }
     return n;
@@ -756,7 +778,7 @@ xqc_test_early_data_reject_case(xqc_stream_direction_t dir, uint64_t credit,
     xqc_engine_t *engine;
     xqc_stream_t *stream;
     unsigned char data[] = "x";
-    uint64_t send_limit;
+    uint64_t send_limit, sid = ~0ULL, off = ~0ULL;
 
     engine = test_create_engine();
     CU_ASSERT_PTR_NOT_NULL_FATAL(engine);
@@ -781,7 +803,7 @@ xqc_test_early_data_reject_case(xqc_stream_direction_t dir, uint64_t credit,
     /* what the 0-RTT write left behind */
     stream->stream_flag |= XQC_STREAM_FLAG_HAS_0RTT;
     stream->stream_flow_ctl.fc_max_stream_data_can_recv = credit;
-    stream->stream_flow_ctl.fc_stream_recv_window_size = 150000;
+    stream->stream_flow_ctl.fc_stream_recv_window_size = 120000;
     if (replay) {
         CU_ASSERT_FATAL(xqc_stream_buff_data(stream, data, 1, 0) >= 0);
     }
@@ -791,8 +813,11 @@ xqc_test_early_data_reject_case(xqc_stream_direction_t dir, uint64_t credit,
     CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_max_stream_data_can_send,
                     send_limit);
     CU_ASSERT_EQUAL(xqc_test_count_max_stream_data(conn,
-                                                   XQC_PTYPE_SHORT_HEADER),
-                    expect_msd);
+                        XQC_PTYPE_SHORT_HEADER, &sid, &off), expect_msd);
+    if (expect_msd) {
+        CU_ASSERT_EQUAL(sid, stream->stream_id);
+        CU_ASSERT_EQUAL(off, credit);
+    }
 
     xqc_engine_destroy(engine);
 }
@@ -810,14 +835,17 @@ xqc_test_conn_early_data_reject_resends_max_stream_data()
     xqc_test_early_data_reject_case(XQC_STREAM_BIDI, 150000, 1, 1);
     xqc_test_early_data_reject_case(XQC_STREAM_BIDI, 150000, 0, 1);
     xqc_test_early_data_reject_case(XQC_STREAM_BIDI, 15360, 0, 0);
+    /* above ours, below the peer's 32768: still advertised */
+    xqc_test_early_data_reject_case(XQC_STREAM_BIDI, 20000, 0, 1);
     xqc_test_early_data_reject_case(XQC_STREAM_UNI, 150000, 1, 0);
 }
 
 /*
  * Credit advertised outside 0-RTT (xqc_stream_update_settings() before the
- * handshake completes puts MAX_STREAM_DATA in an Initial packet, which the
- * rejection does not drop) must survive the rejection: a server that sends
- * up to it is not at fault, even when the replay's window is smaller.
+ * handshake completes puts MAX_STREAM_DATA in an Initial or Handshake
+ * packet, which the rejection does not drop) must survive the rejection: a
+ * server that sends up to it is not at fault, even when the replay's window
+ * is smaller.
  */
 void
 xqc_test_conn_early_data_reject_keeps_credit_advertised_before()
@@ -852,7 +880,8 @@ xqc_test_conn_early_data_reject_keeps_credit_advertised_before()
     CU_ASSERT_EQUAL(xqc_stream_update_settings(stream, &st), XQC_OK);
     advertised = stream->stream_flow_ctl.fc_max_stream_data_can_recv;
     CU_ASSERT(advertised > 125000);
-    CU_ASSERT_EQUAL(xqc_test_count_max_stream_data(conn, XQC_PTYPE_INIT), 1);
+    CU_ASSERT_EQUAL(xqc_test_count_max_stream_data(conn, XQC_PTYPE_INIT,
+                                                   NULL, NULL), 1);
 
     /* the replay's window shrinks: a first RTT sample arrives */
     conn->conn_initial_path->path_send_ctl->ctl_srtt = 30000;
@@ -865,9 +894,11 @@ xqc_test_conn_early_data_reject_keeps_credit_advertised_before()
     conn->conn_flow_ctl.fc_max_data_can_recv = 100000000; /* not under test */
     n = 0;
     buf[n++] = 0x0e; /* STREAM, OFF and LEN */
+    CU_ASSERT_FATAL(stream->stream_id == 0 && advertised < (1ULL << 30));
     buf[n++] = 0x00; /* stream 0 */
     for (i = 0; i < 4; i++) { /* 4-byte varint */
-        buf[n++] = (i == 0 ? 0x80 : 0) | (unsigned char)((advertised - 1) >> (24 - 8 * i));
+        buf[n++] = (i == 0 ? 0x80 : 0)
+                   | (unsigned char)((advertised - 1) >> (24 - 8 * i));
     }
     buf[n++] = 1;
     buf[n++] = 'x';

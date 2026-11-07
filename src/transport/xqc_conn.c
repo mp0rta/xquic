@@ -5001,7 +5001,7 @@ xqc_conn_early_data_reject(xqc_connection_t *conn)
             xqc_stream_recv_state_update(stream, XQC_RECV_STREAM_ST_RECV);
             /*
              * RFC 9001 Section 4.6.2: the server did not process our 0-RTT
-             * packets and may not know this credit; send it again. Never
+             * packets, so it may not know this credit; send it again. Never
              * lower it: a MAX_STREAM_DATA outside 0-RTT may have arrived.
              */
             if (stream->stream_type == XQC_CLI_BID
@@ -5012,6 +5012,7 @@ xqc_conn_early_data_reject(xqc_connection_t *conn)
                     stream->stream_flow_ctl.fc_max_stream_data_can_recv,
                     XQC_PTYPE_SHORT_HEADER);
                 if (ret != XQC_OK) {
+                    XQC_CONN_ERR(conn, TRA_INTERNAL_ERROR);
                     return ret;
                 }
             }
