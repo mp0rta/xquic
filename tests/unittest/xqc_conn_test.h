@@ -17,6 +17,7 @@ void xqc_test_conn_pmtud_legacy_compatibility();
 void xqc_test_conn_early_data_reject();
 void xqc_test_conn_early_data_reject_flow_ctl();
 void xqc_test_conn_early_data_reject_resends_max_stream_data();
+void xqc_test_conn_early_data_reject_keeps_credit_advertised_before();
 void xqc_test_conn_stream_unsent_cap();
 void xqc_test_conn_closed_path_perf_class(void);
 void xqc_test_conn_open_path_perf_class(void);

@@ -4947,6 +4947,7 @@ xqc_conn_early_data_reject(xqc_connection_t *conn)
 {
     xqc_list_head_t *pos, *next;
     xqc_stream_t *stream;
+    xqc_int_t ret;
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|reject|");
 
@@ -4999,12 +5000,21 @@ xqc_conn_early_data_reject(xqc_connection_t *conn)
             xqc_stream_send_state_update(stream, XQC_SEND_STREAM_ST_READY);
             xqc_stream_recv_state_update(stream, XQC_RECV_STREAM_ST_RECV);
             /*
-             * RFC 9001 Section 4.6.2: the client MUST reset the state of all
-             * streams. The server did not process our 0-RTT MAX_STREAM_DATA;
-             * restart from the transport parameters, peer's send limit as sent.
+             * RFC 9001 Section 4.6.2: the server did not process our 0-RTT
+             * packets and may not know this credit; send it again. Never
+             * lower it: a MAX_STREAM_DATA outside 0-RTT may have arrived.
              */
-            xqc_stream_set_flow_ctl(stream);
-            xqc_stream_update_flow_ctl(stream);
+            if (stream->stream_type == XQC_CLI_BID
+                && stream->stream_flow_ctl.fc_max_stream_data_can_recv
+                   > conn->local_settings.max_stream_data_bidi_local)
+            {
+                ret = xqc_write_max_stream_data_to_packet(conn, stream->stream_id,
+                    stream->stream_flow_ctl.fc_max_stream_data_can_recv,
+                    XQC_PTYPE_SHORT_HEADER);
+                if (ret != XQC_OK) {
+                    return ret;
+                }
+            }
             xqc_stream_write_buffed_data_to_packets(stream);
         }
     }
