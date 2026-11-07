@@ -459,6 +459,7 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_conn_window_resized_by_reads_not_arrivals", xqc_test_conn_window_resized_by_reads_not_arrivals)
         || !CU_add_test(pSuite, "xqc_test_conn_window_doubling_from_last_resize", xqc_test_conn_window_doubling_from_last_resize)
         || !CU_add_test(pSuite, "xqc_test_conn_window_resized_at_half_window_read_without_credit_due", xqc_test_conn_window_resized_at_half_window_read_without_credit_due)
+        || !CU_add_test(pSuite, "xqc_test_conn_credit_reset_over_limit_is_flow_control_error", xqc_test_conn_credit_reset_over_limit_is_flow_control_error)
         || !CU_add_test(pSuite, "xqc_test_recv_record", xqc_test_recv_record)
         || !CU_add_test(pSuite, "xqc_test_reno", xqc_test_reno)
         || !CU_add_test(pSuite, "xqc_test_reno_loss_ssthresh",

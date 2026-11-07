@@ -1699,6 +1699,22 @@ xqc_process_conn_close_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     return XQC_OK;
 }
 
+/*
+ * RFC 9000 Section 4.1 and 19.9: a final size past the stream limit, or an
+ * increase past the connection's remaining credit, is a violation.
+ */
+static xqc_bool_t
+xqc_reset_final_size_exceeds_limits(xqc_connection_t *conn,
+    xqc_stream_t *stream, uint64_t final_size)
+{
+    return final_size > stream->stream_flow_ctl.fc_max_stream_data_can_recv
+        || conn->conn_flow_ctl.fc_data_recved
+            > conn->conn_flow_ctl.fc_max_data_can_recv
+        || final_size - stream->stream_max_recv_offset
+            > conn->conn_flow_ctl.fc_max_data_can_recv
+              - conn->conn_flow_ctl.fc_data_recved;
+}
+
 static xqc_int_t
 xqc_stream_account_reset_final_size(xqc_connection_t *conn,
     xqc_stream_t *stream, uint64_t final_size)
@@ -1713,18 +1729,13 @@ xqc_stream_account_reset_final_size(xqc_connection_t *conn,
         return -XQC_EPROTO;
     }
 
-    uint64_t increase = final_size - stream->stream_max_recv_offset;
-    if (final_size > stream->stream_flow_ctl.fc_max_stream_data_can_recv
-        || conn->conn_flow_ctl.fc_data_recved
-            > conn->conn_flow_ctl.fc_max_data_can_recv
-        || increase > conn->conn_flow_ctl.fc_max_data_can_recv
-            - conn->conn_flow_ctl.fc_data_recved)
-    {
+    if (xqc_reset_final_size_exceeds_limits(conn, stream, final_size)) {
         XQC_CONN_ERR(conn, TRA_FLOW_CONTROL_ERROR);
         return -XQC_EPROTO;
     }
 
-    conn->conn_flow_ctl.fc_data_recved += increase;
+    conn->conn_flow_ctl.fc_data_recved +=
+        final_size - stream->stream_max_recv_offset;
     stream->stream_max_recv_offset = final_size;
     return XQC_OK;
 }
@@ -1883,6 +1894,14 @@ xqc_process_reset_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
                 "final_size:%ui|max_recv_offset:%ui|",
                 stream_id, final_size, stream->stream_max_recv_offset);
         XQC_CONN_ERR(conn, TRA_FINAL_SIZE_ERROR);
+        return -XQC_EPROTO;
+    }
+
+    /* RFC 9000 Section 4.1, 19.9: the final size counts against the limits */
+    if (stream->stream_state_recv < XQC_RECV_STREAM_ST_RESET_RECVD
+        && xqc_reset_final_size_exceeds_limits(conn, stream, final_size))
+    {
+        XQC_CONN_ERR(conn, TRA_FLOW_CONTROL_ERROR);
         return -XQC_EPROTO;
     }
 

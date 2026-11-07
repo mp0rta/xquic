@@ -696,3 +696,92 @@ xqc_test_conn_window_resized_at_half_window_read_without_credit_due(void)
 
     xqc_engine_destroy(conn->engine);
 }
+
+/* feed a plain RESET_STREAM (final size below 2^14) for the stream */
+static int
+xqc_test_fc_peer_reset(xqc_connection_t *conn, xqc_stream_t *stream,
+    uint64_t final_size)
+{
+    xqc_packet_in_t pi;
+    uint8_t         frame[16];
+    size_t          n = 0;
+    uint64_t        id = stream->stream_id;
+
+    frame[n++] = XQC_FRAME_TYPE_RESET_STREAM;
+    frame[n++] = (uint8_t)(0x80 | (id >> 24));
+    frame[n++] = (uint8_t)(id >> 16);
+    frame[n++] = (uint8_t)(id >> 8);
+    frame[n++] = (uint8_t)id;
+    frame[n++] = 0x40;
+    frame[n++] = 0x01;                  /* error 1 */
+    frame[n++] = (uint8_t)(0x80 | (final_size >> 24));
+    frame[n++] = (uint8_t)(final_size >> 16);
+    frame[n++] = (uint8_t)(final_size >> 8);
+    frame[n++] = (uint8_t)final_size;
+    memset(&pi, 0, sizeof(pi));
+    pi.pi_pkt.pkt_type = XQC_PTYPE_SHORT_HEADER;
+    pi.pos = frame;
+    pi.last = frame + n;
+    return xqc_process_frames(conn, &pi);
+}
+
+/* A plain RESET_STREAM whose final size exceeds the connection's remaining
+   credit, or the stream's receive limit, closes the connection with
+   FLOW_CONTROL_ERROR and grants nothing (RFC 9000 Section 4.1 and 19.9); a
+   final size exactly at both limits is accepted. */
+void
+xqc_test_conn_credit_reset_over_limit_is_flow_control_error(void)
+{
+    /* stream limit, final size, expect a violation */
+    static const struct {
+        uint64_t stream_limit;
+        uint64_t final_size;
+        int      violation;
+    } cases[] = {
+        { 1000000, 40001, 1 },          /* one past the connection credit */
+        { 1000000, 40000, 0 },          /* exactly the connection credit */
+        { 30000, 30001, 1 },            /* one past the stream limit */
+        { 30000, 30000, 0 },            /* exactly the stream limit */
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        xqc_connection_t    *conn = test_engine_connect();
+        xqc_stream_t        *stream;
+        xqc_conn_flow_ctl_t *fc;
+
+        CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+        stream = xqc_test_fc_stream(conn);
+        fc = &conn->conn_flow_ctl;
+        conn->local_settings.reset_stream_at = XQC_FALSE;
+        conn->remote_settings.reset_stream_at = XQC_FALSE;
+
+        /* 60000 received and read of 100000 granted: 40000 of credit left,
+           and half a window read, so a resize would extend the credit */
+        stream->stream_flow_ctl.fc_max_stream_data_can_recv =
+            cases[i].stream_limit;
+        fc->fc_recv_windows_size = 100000;
+        fc->fc_last_window_update_time = 0;
+        fc->fc_last_window_update_read = 0;
+        fc->fc_data_read = 60000;
+        fc->fc_data_recved = 60000;
+        fc->fc_max_data_can_recv = 100000;
+
+        if (cases[i].violation) {
+            CU_ASSERT_EQUAL(xqc_test_fc_peer_reset(conn, stream,
+                                                   cases[i].final_size),
+                            -XQC_EPROTO);
+            CU_ASSERT_EQUAL(conn->conn_err, TRA_FLOW_CONTROL_ERROR);
+            CU_ASSERT_EQUAL(fc->fc_max_data_can_recv, 100000);
+            CU_ASSERT_EQUAL(fc->fc_data_recved, 60000);
+
+        } else {
+            CU_ASSERT_EQUAL(xqc_test_fc_peer_reset(conn, stream,
+                                                   cases[i].final_size),
+                            XQC_OK);
+            CU_ASSERT_EQUAL(conn->conn_err, 0);
+        }
+
+        xqc_engine_destroy(conn->engine);
+    }
+}
