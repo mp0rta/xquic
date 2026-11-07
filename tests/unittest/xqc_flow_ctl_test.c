@@ -785,3 +785,72 @@ xqc_test_conn_credit_reset_over_limit_is_flow_control_error(void)
         xqc_engine_destroy(conn->engine);
     }
 }
+
+/* Without a receive rate the window is resized only once more than half a
+   window was read since the last resize: exactly half does nothing, one more
+   byte resizes. */
+void
+xqc_test_conn_window_resize_boundary_is_strictly_more_than_half(void)
+{
+    xqc_connection_t    *conn = test_engine_connect();
+    xqc_stream_t        *stream;
+    xqc_conn_flow_ctl_t *fc;
+
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    stream = xqc_test_fc_stream(conn);
+    fc = &conn->conn_flow_ctl;
+
+    fc->fc_recv_windows_size = 100000;
+    fc->fc_last_window_update_time = 0;
+    fc->fc_last_window_update_read = 0;
+    fc->fc_data_recved = 100000;
+    fc->fc_max_data_can_recv = 150000;
+
+    /* exactly half a window read, credit not due: nothing happens */
+    fc->fc_data_read = 50000;
+    CU_ASSERT_EQUAL(xqc_stream_do_recv_conn_flow_ctl(stream), XQC_OK);
+    CU_ASSERT_EQUAL(fc->fc_last_window_update_read, 0);
+    CU_ASSERT_EQUAL(fc->fc_last_window_update_time, 0);
+    CU_ASSERT_EQUAL(fc->fc_max_data_can_recv, 150000);
+
+    /* one more byte read: resized and extended */
+    fc->fc_data_read = 50001;
+    CU_ASSERT_EQUAL(xqc_stream_do_recv_conn_flow_ctl(stream), XQC_OK);
+    CU_ASSERT_EQUAL(fc->fc_last_window_update_read, 50001);
+    CU_ASSERT_EQUAL(fc->fc_max_data_can_recv, 150001);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+/* With a receive rate set the half-window resize does not apply: more than
+   half a window read since the last resize, and no credit due, changes
+   nothing and queues no MAX_DATA. */
+void
+xqc_test_conn_window_not_resized_by_reads_with_receive_rate(void)
+{
+    xqc_connection_t    *conn = test_engine_connect();
+    xqc_stream_t        *stream;
+    xqc_conn_flow_ctl_t *fc;
+    unsigned             queued;
+
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    stream = xqc_test_fc_stream(conn);
+    fc = &conn->conn_flow_ctl;
+    conn->conn_settings.recv_rate_bytes_per_sec = 1000000;
+    conn->conn_settings.enable_stream_rate_limit = XQC_FALSE;
+
+    fc->fc_recv_windows_size = 100000;
+    fc->fc_last_window_update_time = 0;
+    fc->fc_last_window_update_read = 0;
+    fc->fc_data_read = 60000;
+    fc->fc_data_recved = 100000;
+    fc->fc_max_data_can_recv = 140000;
+    queued = xqc_test_fc_max_data_queued(conn);
+
+    CU_ASSERT_EQUAL(xqc_stream_do_recv_conn_flow_ctl(stream), XQC_OK);
+    CU_ASSERT_EQUAL(fc->fc_max_data_can_recv, 140000);
+    CU_ASSERT_EQUAL(fc->fc_recv_windows_size, 100000);
+    CU_ASSERT_EQUAL(xqc_test_fc_max_data_queued(conn), queued);
+
+    xqc_engine_destroy(conn->engine);
+}
