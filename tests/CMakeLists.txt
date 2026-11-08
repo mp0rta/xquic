@@ -120,6 +120,7 @@ if(HAVE_CUNIT)
         ${UNIT_TEST_DIR}/xqc_tls_test.c
         ${UNIT_TEST_DIR}/xqc_crypto_test.c
         ${UNIT_TEST_DIR}/xqc_h3_test.c
+        ${UNIT_TEST_DIR}/xqc_h3_body_buf_test.c
         ${UNIT_TEST_DIR}/xqc_hq_test.c
         ${CMAKE_SOURCE_DIR}/demo/xqc_hq_request.c
         ${UNIT_TEST_DIR}/xqc_stable_test.c
