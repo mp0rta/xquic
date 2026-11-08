@@ -296,6 +296,37 @@ else
 fi
 }
 
+# 747: once the handshake is done, the server issues a connection ID whose
+# Retire Prior To retires all the others, the one in use included (RFC 9000
+# Section 19.15). The client retires them, sends with the new one, forgets
+# them once the server acknowledges their RETIRE_CONNECTION_ID frames, and
+# the request completes.
+case_fork_core_retire_prior_to_all_cids()
+{
+rm -rf tp_localhost test_session xqc_token
+case_test_start_server ${SERVER_BIN} -l d -e -x 747 > svr_stdlog
+clear_log
+echo -e "Retire Prior To replaces every connection ID ...\c"
+${CLIENT_BIN} -s 1024 -l d -t 1 -E > stdlog 2>&1
+rotated=`grep "\[retire-prior-to-test\]|retire_prior_to:[1-9][0-9]*|ret:0|" svr_stdlog`
+retired=`grep "|retire_prior_to|0|increase to|" clog`
+result=`grep ">>>>>>>> pass:1" stdlog`
+conn_err_zero=`grep -E "conn_err:0[^0-9]" stdlog`
+removed=`grep "|retired dcid removed|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$rotated" ] && [ -n "$retired" ] \
+    && [ -n "$removed" ] && [ "$result" == ">>>>>>>> pass:1" ] \
+    && [ -n "$conn_err_zero" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "retire_prior_to_all_cids" "pass"
+else
+    echo ">>>>>>>> pass:0 (rotated:${rotated:+y} retired:${retired:+y}" \
+        "removed:${removed:+y} result:${result:+y}" \
+        "conn_err_zero:${conn_err_zero:+y} errlog:${errlog:+y})"
+    case_print_result "retire_prior_to_all_cids" "fail"
+fi
+}
+
 # 802 happy path: the client writes its only request before its second path
 # is validated, and that path then carries no data. The end-of-pass check
 # marks it app-limited (RFC 9002 Section 7.8); the write-time check never
@@ -807,6 +838,7 @@ case_test_case "stream_reassembly_cap_happy" --id 727 --mode self-reporting --ru
 case_test_case "stream_reassembly_cap_pressure_recovery" --id 728 --mode self-reporting --run case_fork_core_stream_reassembly_cap_pressure_recovery
 case_test_case "max_pkt_out_size_at_cap" --id 735 --mode self-reporting --run case_fork_core_max_pkt_out_size_at_cap
 case_test_case "max_pkt_out_size_above_cap" --id 736 --mode self-reporting --run case_fork_core_max_pkt_out_size_above_cap
+case_test_case "retire_prior_to_all_cids" --id 747 --mode self-reporting --run case_fork_core_retire_prior_to_all_cids
 case_test_case "MP_idle_path_marked_app_limited_after_send" --id 802 --mode self-reporting --run case_fork_core_MP_idle_path_marked_app_limited_after_send
 case_test_case "MP_unvalidated_path_never_marked_app_limited" --id 803 --mode self-reporting --run case_fork_core_MP_unvalidated_path_never_marked_app_limited
 case_test_case "lost_pmtud_probe_no_congestion_event" --id 804 --mode self-reporting --run case_fork_core_lost_pmtud_probe_no_congestion_event
