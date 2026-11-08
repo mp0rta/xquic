@@ -29,6 +29,7 @@
 #include "src/transport/xqc_send_queue.h"
 #include "src/transport/xqc_recv_record.h"
 #include "src/common/utils/vint/xqc_variable_len_int.h"
+#include "xqc_alloc_fail_test.h"
 
 extern void xqc_conn_tls_error_cb(xqc_int_t tls_err, void *user_data);
 extern xqc_int_t xqc_conn_set_remote_transport_params(
@@ -912,6 +913,41 @@ xqc_test_conn_early_data_reject_keeps_credit_advertised_before()
     CU_ASSERT_EQUAL(conn->conn_err, 0);
 
     xqc_engine_destroy(engine);
+}
+
+/*
+ * If the rejection cannot queue the MAX_STREAM_DATA it re-advertises, it
+ * returns the error and closes the connection with INTERNAL_ERROR.
+ */
+void
+xqc_test_conn_early_data_reject_msd_write_fails()
+{
+#ifdef XQC_TEST_ALLOC_WRAP
+    xqc_connection_t *conn;
+    xqc_engine_t *engine;
+    xqc_stream_t *stream;
+    xqc_int_t ret;
+
+    engine = test_create_engine();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(engine);
+    conn = xqc_test_create_rate_limited_client(engine);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    stream = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+    stream->stream_flag |= XQC_STREAM_FLAG_HAS_0RTT;
+    stream->stream_flow_ctl.fc_max_stream_data_can_recv = 150000;
+
+    /* the first allocation is the frame's new packet */
+    xqc_test_af_arm(1);
+    ret = xqc_conn_early_data_reject(conn);
+    CU_ASSERT(xqc_test_af_disarm());
+    CU_ASSERT_EQUAL(ret, -XQC_EWRITE_PKT);
+    CU_ASSERT_EQUAL(conn->conn_err, TRA_INTERNAL_ERROR);
+    CU_ASSERT(conn->conn_flag & XQC_CONN_FLAG_ERROR);
+
+    xqc_engine_destroy(engine);
+#endif
 }
 
 
