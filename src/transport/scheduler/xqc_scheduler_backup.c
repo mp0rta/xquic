@@ -8,10 +8,15 @@
 #include "src/transport/xqc_send_ctl.h"
 
 
+typedef struct {
+    /* when dead paths were last probed (xqc_scheduler_probe_dead_paths) */
+    xqc_usec_t  last_dead_probe;
+} xqc_backup_scheduler_t;
+
 static size_t
 xqc_backup_scheduler_size()
 {
-    return 0;
+    return sizeof(xqc_backup_scheduler_t);
 }
 
 static void
@@ -63,6 +68,16 @@ xqc_backup_scheduler_get_path(void *scheduler, xqc_connection_t *conn,
             || path->app_path_status == XQC_APP_PATH_STATUS_FROZEN
             || (reinject && (packet_out->po_path_id == path->path_id))) 
         {
+            goto skip_path;
+        }
+
+        /* Skip a path that stopped delivering while another one works,
+         * also when the other one is blocked by its cwnd for now: the
+         * class order would otherwise fall through to it, and the stream
+         * would wait for data sent into the outage. */
+        if (xqc_path_is_dead_with_alternative(path)) {
+            xqc_log(conn->log, XQC_LOG_DEBUG,
+                    "|path:%ui|dead path skipped|", path->path_id);
             goto skip_path;
         }
 
@@ -151,6 +166,15 @@ xqc_backup_scheduler_handle_conn_event(void *scheduler,
     xqc_path_ctx_t *path;
     xqc_send_ctl_t *send_ctl;
     xqc_usec_t now = 0, deadline;
+    xqc_backup_scheduler_t *s = scheduler;
+
+    /* A dead AVAILABLE path is not used while a STANDBY path works: probe
+     * it, so the traffic goes back to it soon after it returns. */
+    if (s != NULL && event == XQC_SCHED_EVENT_CONN_ROUND_START
+        && conn->enable_multipath)
+    {
+        xqc_scheduler_probe_dead_paths(conn, &s->last_dead_probe);
+    }
 
     if (event == XQC_SCHED_EVENT_CONN_ROUND_START 
         && conn->conn_settings.standby_path_probe_timeout

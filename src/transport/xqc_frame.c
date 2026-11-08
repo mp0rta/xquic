@@ -992,10 +992,11 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     } else if (ret == -XQC_ELIMIT
                && packet_in->pi_pkt.pkt_type == XQC_PTYPE_SHORT_HEADER)
     {
-        /* Reassembly buffer at capacity and this frame does not extend the
-         * contiguous prefix (see xqc_insert_stream_frame). Treat the whole
-         * packet as if it were lost instead of tearing down the
-         * connection: returning a tolerant error makes
+        /* Reassembly buffer at capacity (see xqc_insert_stream_frame): this
+         * frame does not extend the contiguous prefix, or the stream is at a
+         * frame cap that also refuses in-order frames until a paused HTTP/3
+         * request resumes. Treat the whole packet as if it were lost instead
+         * of tearing down the connection: returning a tolerant error makes
          * xqc_conn_process_packet skip xqc_conn_on_pkt_processed, so the
          * packet is never acknowledged — required by RFC 9000 §13.1 (a
          * packet must not be acked until its STREAM data has been
@@ -1021,8 +1022,10 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     }
 
     /* receiver flow control */
+    xqc_bool_t recved_grew = XQC_FALSE;
     if (stream->stream_max_recv_offset <
         stream_frame->data_offset + stream_frame->data_length) {
+        recved_grew = XQC_TRUE;
         conn->conn_flow_ctl.fc_data_recved += stream_frame->data_offset +
                                               stream_frame->data_length -
                                               stream->stream_max_recv_offset;
@@ -1048,6 +1051,12 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
                 stream->stream_flow_ctl.fc_max_stream_data_can_recv);
         XQC_CONN_ERR(conn, TRA_FLOW_CONTROL_ERROR);
         return -XQC_EPROTO;
+    }
+
+    if (recved_grew) {
+        /* a paused request leaves these bytes unread, and credit must not
+         * wait for DATA_BLOCKED (RFC 9000 Section 4.2) */
+        xqc_stream_do_recv_conn_flow_ctl(stream);
     }
 
     if (stream->stream_data_in.stream_determined
@@ -1690,6 +1699,22 @@ xqc_process_conn_close_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     return XQC_OK;
 }
 
+/*
+ * RFC 9000 Section 4.1 and 19.9: a final size past the stream limit, or an
+ * increase past the connection's remaining credit, is a violation.
+ */
+static xqc_bool_t
+xqc_reset_final_size_exceeds_limits(xqc_connection_t *conn,
+    xqc_stream_t *stream, uint64_t final_size)
+{
+    return final_size > stream->stream_flow_ctl.fc_max_stream_data_can_recv
+        || conn->conn_flow_ctl.fc_data_recved
+            > conn->conn_flow_ctl.fc_max_data_can_recv
+        || final_size - stream->stream_max_recv_offset
+            > conn->conn_flow_ctl.fc_max_data_can_recv
+              - conn->conn_flow_ctl.fc_data_recved;
+}
+
 static xqc_int_t
 xqc_stream_account_reset_final_size(xqc_connection_t *conn,
     xqc_stream_t *stream, uint64_t final_size)
@@ -1704,18 +1729,13 @@ xqc_stream_account_reset_final_size(xqc_connection_t *conn,
         return -XQC_EPROTO;
     }
 
-    uint64_t increase = final_size - stream->stream_max_recv_offset;
-    if (final_size > stream->stream_flow_ctl.fc_max_stream_data_can_recv
-        || conn->conn_flow_ctl.fc_data_recved
-            > conn->conn_flow_ctl.fc_max_data_can_recv
-        || increase > conn->conn_flow_ctl.fc_max_data_can_recv
-            - conn->conn_flow_ctl.fc_data_recved)
-    {
+    if (xqc_reset_final_size_exceeds_limits(conn, stream, final_size)) {
         XQC_CONN_ERR(conn, TRA_FLOW_CONTROL_ERROR);
         return -XQC_EPROTO;
     }
 
-    conn->conn_flow_ctl.fc_data_recved += increase;
+    conn->conn_flow_ctl.fc_data_recved +=
+        final_size - stream->stream_max_recv_offset;
     stream->stream_max_recv_offset = final_size;
     return XQC_OK;
 }
@@ -1877,6 +1897,14 @@ xqc_process_reset_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
         return -XQC_EPROTO;
     }
 
+    /* RFC 9000 Section 4.1 and 19.9: the final size counts against limits */
+    if (stream->stream_state_recv < XQC_RECV_STREAM_ST_RESET_RECVD
+        && xqc_reset_final_size_exceeds_limits(conn, stream, final_size))
+    {
+        XQC_CONN_ERR(conn, TRA_FLOW_CONTROL_ERROR);
+        return -XQC_EPROTO;
+    }
+
     stream->stream_err = err_code;
 
     XQC_STREAM_CLOSE_MSG(stream, "remote reset");
@@ -1921,6 +1949,8 @@ xqc_process_reset_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
             (int64_t)final_size - (int64_t)stream->stream_max_recv_offset;
         conn->conn_flow_ctl.fc_data_read +=
             (int64_t)final_size - (int64_t)stream->stream_data_in.next_read_offset;
+        /* RFC 9000 Section 4.5: the final size settles connection credit */
+        xqc_stream_do_recv_conn_flow_ctl(stream);
         xqc_destroy_frame_list(&stream->stream_data_in.frames_tailq);
         /* Both counters feed the reassembly density gate, so they have to be
          * cleared together. Nothing reaches that gate on this stream again
@@ -3411,6 +3441,10 @@ xqc_process_reset_stream_at_frame(xqc_connection_t *conn,
         stream->stream_data_in.merged_offset_end >= reliable_size
             ? XQC_RECV_STREAM_ST_DATA_RECVD
             : XQC_RECV_STREAM_ST_SIZE_KNOWN);
+    /* RFC 9000 Section 4.2: the final size may have used credit, and the
+     * reset does not complete here; the paths that complete it evaluate it
+     * once, after fc_data_read has moved. */
+    xqc_stream_do_recv_conn_flow_ctl(stream);
     xqc_stream_ready_to_read(stream);
     return XQC_OK;
 }

@@ -1,0 +1,62 @@
+/**
+ * @copyright Copyright (c) 2026, mp0rta
+ */
+
+#ifndef XQUIC_XQC_H3_BODY_BUF_TEST_H
+#define XQUIC_XQC_H3_BODY_BUF_TEST_H
+
+void xqc_test_h3bb_settings_propagate(void);
+void xqc_test_h3bb_limit_zero_reads_all(void);
+void xqc_test_h3bb_fixture_engine_turn(void);
+void xqc_test_h3bb_pause_at_limit(void);
+void xqc_test_h3bb_paused_notify_reads_nothing(void);
+void xqc_test_h3bb_tiny_data_coalesced(void);
+void xqc_test_h3bb_no_pause_after_fin(void);
+void xqc_test_h3bb_no_pause_after_reset(void);
+void xqc_test_h3bb_no_pause_reliable_prefix_read(void);
+void xqc_test_h3bb_body_bytes_accounting(void);
+void xqc_test_h3bb_resume_in_body_notify(void);
+void xqc_test_h3bb_resume_in_engine_elsewhere(void);
+void xqc_test_h3bb_resume_outside_engine(void);
+void xqc_test_h3bb_resume_loop_stops_on_conn_close(void);
+void xqc_test_h3bb_resume_during_destroy_not_queued(void);
+void xqc_test_h3bb_resume_loop_no_empty_notify(void);
+void xqc_test_h3bb_resume_loop_no_notify_after_close(void);
+void xqc_test_h3bb_resume_loop_final_empty_data_fin(void);
+void xqc_test_h3bb_qpack_blocked_pause(void);
+void xqc_test_h3bb_tiny_data_coalesced_replay(void);
+void xqc_test_h3bb_qpack_blocked_replay_resumes(void);
+void xqc_test_h3bb_qpack_blocked_trailer_bounded(void);
+void xqc_test_h3bb_close_paused_drains(void);
+void xqc_test_h3bb_close_no_callbacks_after(void);
+void xqc_test_h3bb_close_in_body_notify_last_stream(void);
+void xqc_test_h3bb_close_sibling_in_read_walk(void);
+void xqc_test_h3bb_close_before_trailer_notify(void);
+void xqc_test_h3bb_close_outside_engine_reliable_reset(void);
+void xqc_test_h3bb_close_goaway(void);
+void xqc_test_h3bb_close_then_conn_close_in_callback(void);
+void xqc_test_h3bb_teardown_close_sibling(void);
+void xqc_test_h3bb_limit_zero_close_unchanged(void);
+void xqc_test_h3bb_close_in_create_notify(void);
+void xqc_test_h3bb_close_qpack_blocked_bounded(void);
+void xqc_test_h3bb_close_self_in_replay_headers_cb(void);
+void xqc_test_h3bb_blocked_walk_sibling_close(void);
+void xqc_test_h3bb_teardown_close_after_decoder_destroyed(void);
+void xqc_test_h3bb_stream_cancel_emission(void);
+void xqc_test_h3bb_blocked_walk_unblocks_met_replay(void);
+void xqc_test_h3bb_blocked_walk_keeps_failed_replay(void);
+void xqc_test_h3bb_teardown_blocked_sibling_close(void);
+void xqc_test_h3bb_reset_while_paused(void);
+void xqc_test_h3bb_close_cycles_exceed_window(void);
+void xqc_test_h3bb_conn_credit_on_paused_arrival(void);
+void xqc_test_h3bb_conn_credit_arrival_unread_fills_window(void);
+void xqc_test_h3bb_small_frames_reach_frame_cap(void);
+void xqc_test_h3bb_revisit_timer_cannot_fail(void);
+void xqc_test_h3bb_revisit_timer_registered_at_creation(void);
+void xqc_test_h3bb_replay_unblocks_when_ric_met(void);
+void xqc_test_h3bb_walk_skips_stream_below_ric(void);
+void xqc_test_h3bb_replay_keeps_block_when_blocked_again(void);
+void xqc_test_h3bb_body_node_freed_when_append_fails(void);
+void xqc_test_h3bb_paused_stays_unread_until_low_water(void);
+
+#endif

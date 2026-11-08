@@ -81,6 +81,17 @@ xqc_h3_stream_close(xqc_h3_stream_t *h3s)
 void
 xqc_h3_stream_destroy(xqc_h3_stream_t *h3s)
 {
+    /* a later request close must not reach a destroyed critical stream */
+    if (h3s->h3c->qdec_stream == h3s) {
+        h3s->h3c->qdec_stream = NULL;
+    }
+    if (h3s->h3c->qenc_stream == h3s) {
+        h3s->h3c->qenc_stream = NULL;
+    }
+    if (h3s->h3c->control_stream_out == h3s) {
+        h3s->h3c->control_stream_out = NULL;
+    }
+
     /* if h3 stream is still blocked, remove it from h3 connection */
     if (h3s->blocked_stream) {
         xqc_h3_conn_remove_blocked_stream(h3s->h3c, h3s->blocked_stream);
@@ -1020,6 +1031,11 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
         }
     }
 
+    /* closed before or by the create notify: nothing is parsed or decoded */
+    if (xqc_h3_stream_in_discard(h3s)) {
+        return data_len;
+    }
+
     if (data == NULL) {
         return -XQC_H3_EPARAM;
     }
@@ -1168,6 +1184,11 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                         xqc_log(h3s->log, XQC_LOG_ERROR, "|recv header error|%d|", ret);
                         return ret;
                     }
+
+                    /* a callback closed the request: drop the rest */
+                    if (xqc_h3_stream_in_discard(h3s)) {
+                        return data_len;
+                    }
                 }
                 break;
 
@@ -1195,25 +1216,53 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                     || (fin_flag && processed == data_len
                         && pctx->frame.len == 0))
                 {
-                    buf = xqc_var_buf_create(len);
-                    if (buf == NULL) {
-                        return -XQC_EMALLOC;
+                    xqc_h3_request_t *h3r = h3s->h3r;
+                    xqc_var_buf_t    *tail = NULL;
+                    /* with a limit, small payloads share a node: tiny DATA
+                     * frames must not pile up list entries */
+                    xqc_bool_t        small = h3s->h3c->max_body_buf_per_stream > 0
+                                              && len > 0
+                                              && len < XQC_H3_BODY_BUF_MIN_BYTES_PER_NODE;
+
+                    if (small && !xqc_list_empty(&h3r->body_buf)) {
+                        xqc_list_buf_t *last = xqc_list_entry(
+                            h3r->body_buf.prev, xqc_list_buf_t, list_head);
+                        if (last->buf->buf_len - last->buf->data_len >= len) {
+                            tail = last->buf;
+                        }
                     }
 
-                    ret = xqc_var_buf_save_data(buf, data + processed, len);
-                    if (ret != XQC_OK) {
-                        xqc_var_buf_free(buf);
-                        xqc_h3_frm_reset_pctx(pctx);
-                        return ret;
-                    }
+                    if (tail != NULL) {
+                        ret = xqc_var_buf_save_data(tail, data + processed, len);
+                        if (ret != XQC_OK) {
+                            xqc_h3_frm_reset_pctx(pctx);
+                            return ret;
+                        }
 
-                    /* add data to buffer list */
-                    ret = xqc_list_buf_to_tail(&h3s->h3r->body_buf, buf);
-                    if (ret < 0) {
-                        xqc_h3_frm_reset_pctx(pctx);
-                        return ret;
+                    } else {
+                        buf = xqc_var_buf_create(
+                            small ? XQC_H3_BODY_BUF_MIN_BYTES_PER_NODE : len);
+                        if (buf == NULL) {
+                            return -XQC_EMALLOC;
+                        }
+
+                        ret = xqc_var_buf_save_data(buf, data + processed, len);
+                        if (ret != XQC_OK) {
+                            xqc_var_buf_free(buf);
+                            xqc_h3_frm_reset_pctx(pctx);
+                            return ret;
+                        }
+
+                        /* add data to buffer list */
+                        ret = xqc_list_buf_to_tail(&h3r->body_buf, buf);
+                        if (ret < 0) {
+                            xqc_var_buf_free(buf);
+                            xqc_h3_frm_reset_pctx(pctx);
+                            return ret;
+                        }
+                        h3r->body_buf_count++;
                     }
-                    h3s->h3r->body_buf_count++;
+                    h3r->body_buf_bytes += len;
                 }
 
                 processed += len;
@@ -1903,10 +1952,120 @@ xqc_h3_stream_get_buf(xqc_h3_stream_t *h3s, xqc_list_head_t *head, size_t expect
 }
 
 
+/*
+ * Discard state of an application-closed request. xqc_h3_stream_close() sets
+ * ACTIVELY_CLOSED for every stream type, hence the type test.
+ */
+xqc_bool_t
+xqc_h3_stream_in_discard(const xqc_h3_stream_t *h3s)
+{
+    return h3s->h3c->max_body_buf_per_stream > 0
+           && h3s->type == XQC_H3_STREAM_TYPE_REQUEST
+           && (h3s->flags & XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED)
+           && h3s->stream != NULL;
+}
+
+/*
+ * Drop all QPACK-blocked state. Call only where no iteration holds a
+ * blocked_buf element across a callback.
+ */
+void
+xqc_h3_stream_release_blocked(xqc_h3_stream_t *h3s)
+{
+    h3s->flags &= ~XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED;
+
+    if (h3s->blocked_stream) {
+        xqc_h3_conn_remove_blocked_stream(h3s->h3c, h3s->blocked_stream);
+        h3s->blocked_stream = NULL;
+    }
+
+    if (h3s->blocked_buf_size > 0) {
+        h3s->h3c->total_blocked_buf_size -= h3s->blocked_buf_size;
+        h3s->blocked_buf_size = 0;
+    }
+    xqc_list_buf_list_free(&h3s->blocked_buf);
+}
+
+/*
+ * Read turn of a discarded request: free what the application will never take,
+ * then read and drop the stream up to EAGAIN, FIN or an error. Reading keeps
+ * the connection credit flowing (RFC 9000 Section 4.5) and moves the stream to
+ * Data Read (Section 3.2). No parsing, no callbacks.
+ */
+static void
+xqc_h3_stream_discard_read(xqc_h3_stream_t *h3s)
+{
+    unsigned char buf[XQC_DATA_BUF_SIZE_4K];
+    uint8_t       fin;
+    ssize_t       n;
+
+    if (h3s->h3r != NULL) {
+        xqc_list_buf_list_free(&h3s->h3r->body_buf);
+        h3s->h3r->body_buf_count = 0;
+        h3s->h3r->body_buf_bytes = 0;
+    }
+    xqc_h3_stream_release_blocked(h3s);
+
+    while (!xqc_conn_is_tearing_down(h3s->h3c->conn)) {
+        fin = 0;
+        n = xqc_stream_recv(h3s->stream, buf, sizeof(buf), &fin);
+        if (n < 0 || fin) {
+            break;
+        }
+    }
+}
+
+/*
+ * Whether reading may be paused for the body limit. Not after FIN, nor once a
+ * reset was received or its reliable part read: the next read completes the
+ * reset (RFC 9000 Section 3.2).
+ */
+static xqc_bool_t
+xqc_h3_stream_body_buf_can_pause(xqc_h3_stream_t *h3s)
+{
+    xqc_stream_t *stream = h3s->stream;
+
+    if (h3s->type != XQC_H3_STREAM_TYPE_REQUEST || h3s->h3r == NULL
+        || stream == NULL)
+    {
+        return XQC_FALSE;
+    }
+
+    if (stream->stream_state_recv >= XQC_RECV_STREAM_ST_RESET_RECVD) {
+        return XQC_FALSE;
+    }
+
+    if (stream->reset_at.recv_state != XQC_RESET_AT_RECV_NONE
+        && stream->stream_data_in.next_read_offset
+           >= stream->reset_at.recv_size)
+    {
+        return XQC_FALSE;
+    }
+
+    return !(h3s->flags & XQC_HTTP3_STREAM_FLAG_READ_EOF);
+}
+
+/*
+ * A turn that called xqc_stream_recv already left the read list; otherwise
+ * take the stream off here, in its own read turn. xqc_stream_recv re-queues
+ * the stream after a RESET_STREAM_AT reliable read; that is safe only because
+ * can_pause refuses that state.
+ */
+static void
+xqc_h3_stream_body_buf_pause(xqc_h3_stream_t *h3s, xqc_bool_t read_called)
+{
+    h3s->flags |= XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED;
+
+    if (!read_called && (h3s->flags & XQC_HTTP3_STREAM_IN_READING)) {
+        xqc_stream_shutdown_read(h3s->stream);
+    }
+}
+
 xqc_int_t
 xqc_h3_stream_process_blocked_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s,
-                                   xqc_bool_t *fin)
+                                   xqc_bool_t *fin, xqc_bool_t read_called)
 {
+    xqc_h3_conn_t *h3c = h3s->h3c;
     ssize_t rcvd = 0;
     xqc_var_buf_t *buf = NULL;
 
@@ -1932,12 +2091,27 @@ xqc_h3_stream_process_blocked_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s,
             return -XQC_H3_EPROC_REQUEST;
         }
 
+        /*
+         * Blocked bytes become body bytes once unblocked, so they count. A
+         * paused request stays unread until it drains to the low-water mark.
+         */
+        if (h3c->max_body_buf_per_stream > 0
+            && xqc_h3_stream_body_buf_can_pause(h3s)
+            && ((h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED)
+                || h3s->blocked_buf_size + h3s->h3r->body_buf_bytes
+                   >= h3c->max_body_buf_per_stream))
+        {
+            xqc_h3_stream_body_buf_pause(h3s, read_called);
+            return XQC_OK;
+        }
+
         buf = xqc_h3_stream_get_buf(h3s, &h3s->blocked_buf, XQC_DATA_BUF_SIZE_4K);
         if (buf == NULL) {
             return -XQC_EMALLOC;
         }
 
         /* recv from transport stream, and buffer data to blocked buf list */
+        read_called = XQC_TRUE;
         rcvd = xqc_stream_recv(stream, buf->data + buf->data_len,
                                buf->buf_len - buf->data_len, fin);
         if (rcvd == -XQC_EAGAIN) {
@@ -1973,6 +2147,44 @@ xqc_h3_stream_process_blocked_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s,
 }
 
 
+/*
+ * Make the engine read the stream again. In this request's own body notify the
+ * read loop reads on; elsewhere in the engine the read-list walk may be past
+ * this stream and the active queue refuses a connection being processed, so a
+ * due timer brings it back; outside the engine the app timer fires at once.
+ */
+void
+xqc_h3_stream_ready_and_wake(xqc_h3_stream_t *h3s)
+{
+    xqc_engine_t *engine = h3s->h3c->conn->engine;
+
+    xqc_stream_ready_to_read(h3s->stream);
+
+    if (!(engine->eng_flag & XQC_ENG_FLAG_RUNNING)) {
+        xqc_engine_wakeup_once(engine);
+
+    } else if (!(h3s->flags & XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY)) {
+        xqc_h3_conn_body_buf_revisit(h3s->h3c);
+    }
+}
+
+/* A paused request is at or below the low-water mark: have it read again. */
+void
+xqc_h3_stream_body_buf_resume(xqc_h3_stream_t *h3s)
+{
+    xqc_h3_conn_t *h3c = h3s->h3c;
+
+    h3s->flags &= ~XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED;
+
+    if (h3s->stream == NULL || (h3s->flags & XQC_HTTP3_STREAM_FLAG_READ_EOF)
+        || xqc_conn_is_tearing_down(h3c->conn))
+    {
+        return;
+    }
+
+    xqc_h3_stream_ready_and_wake(h3s);
+}
+
 xqc_int_t
 xqc_h3_stream_process_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s, xqc_bool_t *fin)
 {
@@ -1982,9 +2194,26 @@ xqc_h3_stream_process_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s, xqc_bool_
     unsigned char buff[XQC_DATA_BUF_SIZE_4K];
     size_t buff_size = XQC_DATA_BUF_SIZE_4K;
     uint64_t insert_cnt = xqc_qpack_get_dec_insert_count(h3s->qpack);
+    xqc_bool_t read_called = XQC_FALSE;
 
     do {
+        /*
+         * blocked_buf_size is 0 unless the section is blocked; counting it
+         * keeps a still-blocked stream read by the resume loop inside the
+         * limit (RFC 9204 Section 2.2.1).
+         */
+        if (h3c->max_body_buf_per_stream > 0
+            && xqc_h3_stream_body_buf_can_pause(h3s)
+            && ((h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED)
+                || h3s->blocked_buf_size + h3s->h3r->body_buf_bytes
+                   >= h3c->max_body_buf_per_stream))
+        {
+            xqc_h3_stream_body_buf_pause(h3s, read_called);
+            return XQC_OK;
+        }
+
         /* recv data from transport stream */
+        read_called = XQC_TRUE;
         read = xqc_stream_recv(h3s->stream, buff, buff_size, fin);
         if (read == -XQC_EAGAIN) {
             return XQC_OK;
@@ -2016,10 +2245,15 @@ xqc_h3_stream_process_data(xqc_stream_t *stream, xqc_h3_stream_t *h3s, xqc_bool_
             return ret;
         }
 
+        /* a callback closed the request: its discard read drops the rest */
+        if (xqc_h3_stream_in_discard(h3s)) {
+            return XQC_OK;
+        }
+
         /* after process in, the stream might be blocked, read all data and add to blocked
          * list */
         if (h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED) {
-            return xqc_h3_stream_process_blocked_data(stream, h3s, fin);
+            return xqc_h3_stream_process_blocked_data(stream, h3s, fin, XQC_TRUE);
         }
 
     } while (read == buff_size && !*fin);
@@ -2057,6 +2291,7 @@ xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s)
 {
     xqc_list_head_t *pos, *next;
     xqc_list_buf_t *list_buf = NULL;
+    xqc_bool_t consumed_all;
 
     xqc_log(h3s->log, XQC_LOG_DEBUG, "|decode blocked header success|stream_id:%ui|",
             h3s->stream_id);
@@ -2121,12 +2356,46 @@ xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s)
         h3s->blocked_buf_size -= processed;
         h3s->h3c->total_blocked_buf_size -= processed;
 
-        if (buf->consumed_len == buf->data_len) {
+        consumed_all = (buf->consumed_len == buf->data_len);
+        if (consumed_all) {
             xqc_list_buf_free(list_buf);
+        }
 
-        } else {
+        if (h3s->h3c->max_body_buf_per_stream > 0) {
+            /* a callback closed the connection: no further processing */
+            if (xqc_conn_is_tearing_down(h3s->h3c->conn)) {
+                goto done;
+            }
+
+            /* a callback closed the request: drop the rest; freeing is safe
+             * at the end of the iteration */
+            if (xqc_h3_stream_in_discard(h3s)) {
+                xqc_h3_stream_release_blocked(h3s);
+                goto done;
+            }
+        }
+
+        if (!consumed_all) {
             h3s->ref_cnt--;
             return XQC_OK;
+        }
+    }
+
+    /*
+     * A replay with nothing left to decode still unblocks once the Insert
+     * Count meets the Required Insert Count (RFC 9204 Section 2.2.1), so the
+     * rest of the section is decoded on arrival. A section that blocked again
+     * carries a count that is not met yet.
+     */
+    if ((h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED)
+        && xqc_qpack_get_req_rqrd_insert_cnt(h3s->ctx)
+           <= xqc_qpack_get_dec_insert_count(h3s->qpack))
+    {
+        h3s->flags &= ~XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED;
+        if (h3s->blocked_stream) {
+            xqc_h3_conn_remove_blocked_stream(h3s->h3c, h3s->blocked_stream);
+            h3s->blocked_stream = NULL;
+            xqc_h3_request_unblocked(h3s->h3r);
         }
     }
 
@@ -2141,6 +2410,20 @@ xqc_h3_stream_process_blocked_stream(xqc_h3_stream_t *h3s)
         }
     }
 
+    /*
+     * A replay with little payload leaves the application nothing to drain,
+     * so nothing else would resume the request.
+     */
+    if ((h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED)
+        && !(h3s->flags & (XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED
+                           | XQC_HTTP3_STREAM_FLAG_CLOSED))
+        && h3s->h3r->body_buf_bytes
+           <= XQC_H3_BODY_BUF_LOW_WATER(h3s->h3c->max_body_buf_per_stream))
+    {
+        xqc_h3_stream_body_buf_resume(h3s);
+    }
+
+done:
     h3s->ref_cnt--;
 
     /*
@@ -2218,6 +2501,23 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
     }
     h3s->flags |= XQC_HTTP3_STREAM_IN_READING;
 
+    /* a callback may have closed the connection: the walk does not check */
+    if (h3c->max_body_buf_per_stream > 0 && xqc_conn_is_tearing_down(h3c->conn)) {
+        h3s->flags &= ~XQC_HTTP3_STREAM_IN_READING;
+        return XQC_OK;
+    }
+
+    /*
+     * Drain a closed request before the GOAWAY branch, which sends
+     * STOP_SENDING and reads nothing, leaving its bytes (and FIN or RESET)
+     * unprocessed.
+     */
+    if (xqc_h3_stream_in_discard(h3s)) {
+        xqc_h3_stream_discard_read(h3s);
+        h3s->flags &= ~XQC_HTTP3_STREAM_IN_READING;
+        return XQC_OK;
+    }
+
     /* check goaway */
     if (xqc_h3_conn_is_goaway_recved(h3c, stream->stream_id) == XQC_TRUE) {
         /*
@@ -2239,7 +2539,7 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
     xqc_bool_t fin = XQC_FALSE;
     /* if stream is blocked, recv and buffer data */
     if (h3s->flags & XQC_HTTP3_STREAM_FLAG_QPACK_DECODE_BLOCKED) {
-        ret = xqc_h3_stream_process_blocked_data(stream, h3s, &fin);
+        ret = xqc_h3_stream_process_blocked_data(stream, h3s, &fin, XQC_FALSE);
 
         h3s->flags &= ~XQC_HTTP3_STREAM_IN_READING;
         if (ret == -XQC_H3_STREAM_RECV_ERROR) {
@@ -2267,11 +2567,68 @@ xqc_h3_stream_read_notify(xqc_stream_t *stream, void *user_data)
         if (h3s->type == XQC_H3_STREAM_TYPE_REQUEST &&
             !xqc_list_empty(&h3s->h3r->body_buf)) {
             /* notify DATA whenever there is data */
-            ret = xqc_h3_request_on_recv_body(h3s->h3r);
-            if (ret != XQC_OK) {
-                xqc_log(h3s->log, XQC_LOG_ERROR, "|recv body error|%d|", ret);
-                return ret;
-            }
+            do {
+                size_t     buffered;
+                uint64_t   nodes;
+                xqc_bool_t was_paused =
+                    (h3s->flags & XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED) != 0;
+
+                h3s->flags |= XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY;
+                ret = xqc_h3_request_on_recv_body(h3s->h3r);
+                h3s->flags &= ~XQC_HTTP3_STREAM_FLAG_IN_BODY_NOTIFY;
+                if (ret != XQC_OK) {
+                    xqc_log(h3s->log, XQC_LOG_ERROR, "|recv body error|%d|", ret);
+                    return ret;
+                }
+
+                /*
+                 * The callback resumed the request: read on in this turn
+                 * unless it closed the request or connection. Closing here
+                 * only marks ACTIVELY_CLOSED (engine running, transport
+                 * stream alive), so nothing is freed.
+                 */
+                if (!was_paused
+                    || (h3s->flags & (XQC_HTTP3_STREAM_FLAG_BODY_BUF_PAUSED
+                                      | XQC_HTTP3_STREAM_FLAG_CLOSED
+                                      | XQC_HTTP3_STREAM_FLAG_ACTIVELY_CLOSED))
+                    || xqc_conn_is_tearing_down(h3c->conn))
+                {
+                    break;
+                }
+
+                buffered = h3s->h3r->body_buf_bytes;
+                nodes = h3s->h3r->body_buf_count;
+                h3s->flags |= XQC_HTTP3_STREAM_IN_READING;
+                ret = xqc_h3_stream_process_data(stream, h3s, &fin);
+                h3s->flags &= ~XQC_HTTP3_STREAM_IN_READING;
+                if (ret == -XQC_H3_STREAM_RECV_ERROR) {
+                    return XQC_OK;
+                } else if (ret != XQC_OK) {
+                    xqc_log(h3c->log, XQC_LOG_ERROR,
+                            "|xqc_h3_stream_process_data error|%d|", ret);
+                    return ret;
+                }
+
+                /*
+                 * Nothing new was read: do not notify the same leftover
+                 * again. A node with no bytes (the empty DATA frame carrying
+                 * FIN) counts as new: only a notify delivers it.
+                 */
+                if (h3s->h3r->body_buf_bytes == buffered
+                    && h3s->h3r->body_buf_count == nodes)
+                {
+                    break;
+                }
+            } while (!xqc_list_empty(&h3s->h3r->body_buf)
+                     && !xqc_conn_is_tearing_down(h3c->conn));
+        }
+
+        /*
+         * Closed in a callback above: drop the rest in this turn; nothing
+         * else would schedule another.
+         */
+        if (xqc_h3_stream_in_discard(h3s)) {
+            xqc_h3_stream_discard_read(h3s);
         }
 
         /* TODO: BYTESTRAM: notify DATA to application ASAP */

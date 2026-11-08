@@ -1640,12 +1640,17 @@ typedef struct xqc_conn_settings_s {
      * NOTE: the minimal rate limitation is (63000/RTT) Bps. For instance, if RTT is 60ms,
      * the minimal valid rate limitation is about 1MBps. Any recv_rate_bytes_per_sec less
      * than the minimal valid rate limitation will not be guaranteed.
+     * With enable_stream_rate_limit or max_body_buf_per_stream non-zero, the
+     * connection receive window never shrinks: after an RTT spike it stays as
+     * large as the spike made it, up to 16 MiB.
      * default: 0 (no limitation).
      */
     uint64_t recv_rate_bytes_per_sec;
 
     /**
      * The switch to enable stream-level recv rate throttling. Default: off (0)
+     * Turning it on also keeps the connection receive window from shrinking.
+     * See recv_rate_bytes_per_sec.
      */
     uint8_t enable_stream_rate_limit;
 
@@ -1864,6 +1869,52 @@ typedef struct xqc_conn_settings_s {
     uint8_t                     defer_send_flush;
     /* draft-ietf-quic-reliable-stream-reset-09 Section 3; default off. */
     xqc_bool_t                  enable_reset_stream_at;
+
+    /**
+     * Per-request limit, in bytes, on HTTP/3 DATA payload that the HTTP/3 layer
+     * has read but the application has not yet taken with
+     * xqc_h3_request_recv_body(); bytes held while the request waits for QPACK
+     * updates count too. 0, the default, means no limit.
+     *
+     * At the limit the request is no longer read (checked before each read, so
+     * it can overshoot by one read, at most 4 KiB) until the application drains
+     * it to a quarter of the limit. Its stream credit is held back meanwhile,
+     * so the peer can send only what it was already granted. A request is not
+     * paused once its FIN is read, after a RESET_STREAM, or once the reliable
+     * part of a RESET_STREAM_AT is read. Set max_blocked_buf_per_stream to at
+     * least this limit plus 4 KiB, or a QPACK-blocked request can hit that
+     * limit's connection error first.
+     *
+     * While this is non-zero, a request closed with xqc_h3_request_close() is
+     * read and dropped: the application normally gets only the close
+     * notification, and the QPACK decoder sends Stream Cancellation once, as a
+     * best effort, unless the connection is closing or the decoder's maximum
+     * table capacity is 0 (RFC 9204 Sections 2.2.2.2, 4.4.2). An application
+     * that stops taking a request's body must close the request. A request
+     * whose stream closed while it waited for QPACK is not discarded, and its
+     * replay can still notify the application.
+     *
+     * Independent of this setting, connection credit is extended net of bytes
+     * received but not yet read (RFC 9000 Section 4.2), and a peer's
+     * RESET_STREAM returns its unread bytes (Section 4.5). With this setting or
+     * enable_stream_rate_limit the connection window never shrinks
+     * (Section 4.1).
+     *
+     * Limits. A peer that writes small frames (under about 512 bytes against a
+     * 16 MiB stream window) into a paused request can reach the transport's
+     * per-stream frame cap (8192 frames averaging under 256 bytes, 32768 in any
+     * case, or max_stream_frame_buffered_cnt) before using its credit. Further
+     * frames for the request are then refused, in practice every one: each
+     * packet carrying one is not acknowledged and loses the frames after it,
+     * DATAGRAMs included, until the request drains or is closed. When the
+     * connection window is smaller than a stream's (is_interop_mode or
+     * recv_rate_bytes_per_sec), one paused request can stall every other stream
+     * on the connection until it drains or is closed.
+     *
+     * ABI: appended last; source-compatible, not binary-compatible with callers
+     * built against the previous header.
+     */
+    size_t                      max_body_buf_per_stream;
 } xqc_conn_settings_t;
 
 

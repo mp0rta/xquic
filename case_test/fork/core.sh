@@ -575,6 +575,205 @@ fi
 grep_err_log
 }
 
+case_fork_core_MP_minrtt_skips_dead_path()
+{
+case_test_start_server ${SERVER_BIN} -l d -e -M > /dev/null
+# ── Multipath: minrtt keeps new data off a dead path (case IDs 1315/1316)
+# 1315 happy path: the outage of 1313. After the server re-queues the data
+# in flight on the dead path, its minrtt scheduler skips that path, even
+# while the second path is blocked by its cwnd, so no STREAM data is sent on
+# the dead path again and the echo completes on the second path.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP minrtt keeps stream data off a dead path ...\c"
+case_test_sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -i lo -i lo -x 1315 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+requeued=`grep "|path:0|pto_count:[0-9]*|inflight:[0-9]*|requeue unacked|" slog`
+skipped=`grep "|path:0|dead path skipped|" slog`
+resent=`awk '/requeue unacked/ { r = 1 } r && /xqc_minrtt_scheduler_get_path\|best path:0\|frame_type:STREAM/ { n++ } END { print n + 0 }' slog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$requeued" ] \
+    && [ -n "$skipped" ] && [ "$resent" = "0" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_minrtt_skips_dead_path" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} requeued:${requeued:+y}" \
+        "skipped:${skipped:+y} stream_on_dead_path:${resent} errlog:${errlog:+y})"
+    case_print_result "MP_minrtt_skips_dead_path" "fail"
+fi
+grep_err_log
+}
+
+case_fork_core_MP_minrtt_keeps_only_path_through_outage()
+{
+case_test_start_server ${SERVER_BIN} -l d -e -M > /dev/null
+# 1316 abnormal path: the outage of 1314, on a multipath connection with a
+# single path. Its PTOs reach three, but no other path works, so minrtt
+# keeps using it, and the echo completes once the path is back.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP minrtt keeps the only path through an outage ...\c"
+case_test_sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -i lo -x 1316 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+ptos=`grep "xqc_timer_loss_detection_timeout|xqc_send_ctl_set_loss_detection_timer|PTO|.*|pto_count:3" slog`
+mp=`grep -E "xqc_conn_destroy.*mp_enable:1" clog`
+skipped=`grep "dead path skipped" slog clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$ptos" ] \
+    && [ -n "$mp" ] && [ -z "$skipped" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_minrtt_keeps_only_path_through_outage" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} ptos:${ptos:+y}" \
+        "mp:${mp:+y} skipped:${skipped:+y} errlog:${errlog:+y})"
+    case_print_result "MP_minrtt_keeps_only_path_through_outage" "fail"
+fi
+grep_err_log
+}
+
+case_fork_core_MP_backup_skips_dead_primary()
+{
+# ── Multipath: the backup scheduler keeps data off a dead primary and goes
+# back to it (case IDs 1317/1318). Both ends run the backup scheduler, and
+# the second path is STANDBY.
+# 1317 happy path: the outage of 1313. After the server re-queues the data
+# in flight on the dead initial path, the STANDBY path is blocked by its
+# cwnd, and the backup scheduler would reach the dead path next in its
+# class order. It skips it instead, so no STREAM data is sent on the dead
+# path again and the echo completes on the STANDBY path.
+case_test_start_server ${SERVER_BIN} -l d -e -M -y > /dev/null
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP backup scheduler keeps stream data off a dead primary ...\c"
+case_test_sudo ${CLIENT_BIN} -s 4096000 -l d -t 3 -E -T 1 -M -y -i lo -i lo -x 1317 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+requeued=`grep "|path:0|pto_count:[0-9]*|inflight:[0-9]*|requeue unacked|" slog`
+skipped=`grep "xqc_backup_scheduler_get_path|path:0|dead path skipped|" slog`
+resent=`awk '/requeue unacked/ { r = 1 } r && /xqc_backup_scheduler_get_path\|best path:0\|frame_type:STREAM/ { n++ } END { print n + 0 }' slog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$requeued" ] \
+    && [ -n "$skipped" ] && [ "$resent" = "0" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_backup_skips_dead_primary" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} requeued:${requeued:+y}" \
+        "skipped:${skipped:+y} stream_on_dead_path:${resent} errlog:${errlog:+y})"
+    case_print_result "MP_backup_skips_dead_primary" "fail"
+fi
+grep_err_log
+}
+
+case_fork_core_MP_backup_returns_to_primary_after_outage()
+{
+case_test_start_server ${SERVER_BIN} -l d -e -M -y > /dev/null
+# 1318 happy path: the initial path is dead for one second while the
+# STANDBY path works, then comes back. After the re-queue the backup
+# scheduler sends no data on the dead path, so it PINGs it; once a PING is
+# acknowledged, the PTO count clears and STREAM data goes back to the
+# initial path before the echo ends. The server's first ACK on the initial
+# path after the re-queue marks the recovery: no STREAM data goes to that
+# path between the two, and some does after it.
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP backup scheduler goes back to the primary after an outage ...\c"
+case_test_sudo ${CLIENT_BIN} -s 40960000 -l e -t 6 -E -T 1 -M -y -i lo -i lo -x 1318 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+dead=`grep "\[stream\]|dead_path|start|path:0|" stdlog`
+requeued=`grep "|path:0|pto_count:[0-9]*|inflight:[0-9]*|requeue unacked|" slog`
+probed=`grep "xqc_scheduler_probe_dead_paths|path:0|.*dead path probed|" slog`
+during=`awk '/requeue unacked/ { r = 1 } r && /xqc_send_ctl_on_ack_received\|conn:[^|]*\|path:0\|/ { exit } r && /xqc_backup_scheduler_get_path\|best path:0\|frame_type:STREAM/ { n++ } END { print n + 0 }' slog`
+again=`awk '/requeue unacked/ { r = 1 } r && /xqc_send_ctl_on_ack_received\|conn:[^|]*\|path:0\|/ { h = 1 } h && /xqc_backup_scheduler_get_path\|best path:0\|frame_type:STREAM/ { n++ } END { print n + 0 }' slog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$dead" ] && [ -n "$requeued" ] \
+    && [ -n "$probed" ] && [ "$during" = "0" ] && [ "$again" != "0" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_backup_returns_to_primary_after_outage" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} dead:${dead:+y} requeued:${requeued:+y}" \
+        "probed:${probed:+y} stream_on_dead_primary:${during}" \
+        "stream_on_primary_after_recovery:${again} errlog:${errlog:+y})"
+    case_print_result "MP_backup_returns_to_primary_after_outage" "fail"
+fi
+grep_err_log
+}
+
+case_fork_core_MP_backup_keeps_quiet_standby_path()
+{
+# ── Multipath: a quiet STANDBY path (case IDs 1319/1320). Both ends run the
+# backup scheduler, the second path is STANDBY, and the client sets a 3 s
+# idle timeout. The client sends a small stream each time the connection has
+# been quiet for 1 s, so the initial path keeps the connection up while the
+# STANDBY path carries nothing.
+# 1319 happy path: standby probing is off. The STANDBY path is a quiet
+# backup: when its path idle timer runs out it is kept, not closed.
+case_test_start_server ${SERVER_BIN} -l d -e -M -y > /dev/null
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP backup scheduler keeps a quiet standby path past its idle timeout ...\c"
+case_test_sudo ${CLIENT_BIN} -s 102400 -l d -t 1 -E -T 1 -M -y -i lo -i lo -x 1319 > stdlog
+passed=`grep -c ">>>>>>>> pass:1" stdlog`
+failed=`grep -c ">>>>>>>> pass:0" stdlog`
+validated=`grep "|path validated|path_id:1|" clog`
+kept=`grep "xqc_timer_path_idle_timeout|quiet standby path kept:1|" clog`
+closed=`grep "xqc_timer_path_idle_timeout|closed path:1|" clog`
+# the server agrees: path 1 is STANDBY there too, and kept, not closed
+srv_standby=`grep "xqc_set_application_path_status|path:1|app_path_status:2->1|" slog`
+srv_kept=`grep "xqc_timer_path_idle_timeout|quiet standby path kept:1|" slog`
+srv_closed=`grep "xqc_timer_path_idle_timeout|closed path:1|" slog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ "$passed" -gt 1 ] && [ "$failed" = "0" ] && [ -n "$validated" ] \
+    && [ -n "$kept" ] && [ -z "$closed" ] && [ -n "$srv_standby" ] \
+    && [ -n "$srv_kept" ] && [ -z "$srv_closed" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_backup_keeps_quiet_standby_path" "pass"
+else
+    echo ">>>>>>>> pass:0 (streams:${passed}/${failed} validated:${validated:+y}" \
+        "kept:${kept:+y} closed:${closed:+y} srv_standby:${srv_standby:+y}" \
+        "srv_kept:${srv_kept:+y} srv_closed:${srv_closed:+y} errlog:${errlog:+y})"
+    case_print_result "MP_backup_keeps_quiet_standby_path" "fail"
+fi
+grep_err_log
+}
+
+case_fork_core_MP_backup_probes_standby_path_when_probing_on()
+{
+# 1320 abnormal path: the same with standby probing on (500 ms). The STANDBY
+# path is probed, so it is not a quiet backup: the idle timer never takes
+# the quiet-path branch, and the probes keep the path open.
+case_test_start_server ${SERVER_BIN} -l d -e -M -y > /dev/null
+rm -rf tp_localhost test_session xqc_token
+clear_log
+echo -e "MP backup scheduler probes a standby path when probing is on ...\c"
+case_test_sudo ${CLIENT_BIN} -s 102400 -l d -t 1 -E -T 1 -M -y -i lo -i lo -x 1320 > stdlog
+passed=`grep -c ">>>>>>>> pass:1" stdlog`
+failed=`grep -c ">>>>>>>> pass:0" stdlog`
+validated=`grep "|path validated|path_id:1|" clog`
+probed=`grep "|standby_probe|path:1|.*|now>=deadline:1|" clog`
+kept=`grep "quiet standby path kept" clog`
+closed=`grep "xqc_timer_path_idle_timeout|closed path:1|" clog`
+# the server gets the probes on the STANDBY path, so it never needs to keep
+# it as quiet, and does not close it
+srv_probes=`awk '/xqc_set_application_path_status\|path:1\|app_path_status:2->1\|/ { s = 1 } s && /xqc_conn_on_pkt_processed\|.*\|path:1\|/ { n++ } END { print n + 0 }' slog`
+srv_kept=`grep "quiet standby path kept" slog`
+srv_closed=`grep "xqc_timer_path_idle_timeout|closed path:1|" slog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ "$passed" -gt 1 ] && [ "$failed" = "0" ] && [ -n "$validated" ] \
+    && [ -n "$probed" ] && [ -z "$kept" ] && [ -z "$closed" ] \
+    && [ "$srv_probes" != "0" ] && [ -z "$srv_kept" ] && [ -z "$srv_closed" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_backup_probes_standby_path_when_probing_on" "pass"
+else
+    echo ">>>>>>>> pass:0 (streams:${passed}/${failed} validated:${validated:+y}" \
+        "probed:${probed:+y} kept:${kept:+y} closed:${closed:+y} srv_probes:${srv_probes}" \
+        "srv_kept:${srv_kept:+y} srv_closed:${srv_closed:+y} errlog:${errlog:+y})"
+    case_print_result "MP_backup_probes_standby_path_when_probing_on" "fail"
+fi
+grep_err_log
+}
+
 # 811: size-specific black-hole recovery with bidirectional datagrams.
 case_fork_core_pmtud_path_shrinks_by_8_bytes()
 {
@@ -617,6 +816,12 @@ case_test_case "pmtud_path_below_base" --id 807 --mode self-reporting --run case
 case_test_case "pmtud_outage_stays_at_base" --id 808 --mode self-reporting --run case_fork_core_pmtud_outage_stays_at_base
 case_test_case "pmtud_smaller_second_path_validates" --id 809 --mode self-reporting --run case_fork_core_pmtud_smaller_second_path_validates
 case_test_case "pmtud_new_path_starts_at_base" --id 810 --mode self-reporting --run case_fork_core_pmtud_new_path_starts_at_base
+case_test_case "MP_minrtt_skips_dead_path" --id 1315 --mode self-reporting --run case_fork_core_MP_minrtt_skips_dead_path
+case_test_case "MP_minrtt_keeps_only_path_through_outage" --id 1316 --mode self-reporting --run case_fork_core_MP_minrtt_keeps_only_path_through_outage
+case_test_case "MP_backup_skips_dead_primary" --id 1317 --mode self-reporting --run case_fork_core_MP_backup_skips_dead_primary
+case_test_case "MP_backup_returns_to_primary_after_outage" --id 1318 --mode self-reporting --run case_fork_core_MP_backup_returns_to_primary_after_outage
+case_test_case "MP_backup_keeps_quiet_standby_path" --id 1319 --mode self-reporting --run case_fork_core_MP_backup_keeps_quiet_standby_path
+case_test_case "MP_backup_probes_standby_path_when_probing_on" --id 1320 --mode self-reporting --run case_fork_core_MP_backup_probes_standby_path_when_probing_on
 
 case_test_case "MP_dead_path_stream_data_resent_on_working_path" --id 1313 --mode self-reporting --run case_fork_core_MP_dead_path_stream_data_resent_on_working_path
 case_test_case "MP_only_path_stream_data_kept_through_outage" --id 1314 --mode self-reporting --run case_fork_core_MP_only_path_stream_data_kept_through_outage

@@ -35,6 +35,7 @@
 #include "xqc_tls_test.h"
 #include "xqc_crypto_test.h"
 #include "xqc_h3_test.h"
+#include "xqc_h3_body_buf_test.h"
 #include "xqc_hq_test.h"
 #include "xqc_stable_test.h"
 #include "xqc_dtable_test.h"
@@ -231,6 +232,14 @@ main(int argc, char *argv[])
                         xqc_test_wt_connect_reject)
         || !CU_add_test(pSuite, "xqc_test_wt_request_passthrough",
                         xqc_test_wt_request_passthrough)
+        || !CU_add_test(pSuite, "xqc_test_wt_request_discarded_in_create",
+                        xqc_test_wt_request_discarded_in_create)
+        || !CU_add_test(pSuite, "xqc_test_wt_request_bounded_not_discarded",
+                        xqc_test_wt_request_bounded_not_discarded)
+        || !CU_add_test(pSuite, "xqc_test_wt_failed_capsule_closes_bounded_request",
+                        xqc_test_wt_failed_capsule_closes_bounded_request)
+        || !CU_add_test(pSuite, "xqc_test_wt_failed_capsule_unbounded_request_unchanged",
+                        xqc_test_wt_failed_capsule_unbounded_request_unchanged)
         || !CU_add_test(pSuite, "xqc_test_wt_request_incomplete",
                         xqc_test_wt_request_incomplete)
         || !CU_add_test(pSuite, "xqc_test_wt_session_limit",
@@ -449,6 +458,18 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_stream_fc_init_peer_zero_limit", xqc_test_stream_fc_init_peer_zero_limit)
         || !CU_add_test(pSuite, "xqc_test_stream_rate_window_share", xqc_test_stream_rate_window_share)
         || !CU_add_test(pSuite, "xqc_test_stream_rate_window_share_arith", xqc_test_stream_rate_window_share_arith)
+        || !CU_add_test(pSuite, "xqc_test_conn_credit_reset_extends", xqc_test_conn_credit_reset_extends)
+        || !CU_add_test(pSuite, "xqc_test_conn_credit_parked_bytes", xqc_test_conn_credit_parked_bytes)
+        || !CU_add_test(pSuite, "xqc_test_conn_credit_reset_at_final_size_extends", xqc_test_conn_credit_reset_at_final_size_extends)
+        || !CU_add_test(pSuite, "xqc_test_conn_credit_reset_checks_once", xqc_test_conn_credit_reset_checks_once)
+        || !CU_add_test(pSuite, "xqc_test_conn_window_monotone", xqc_test_conn_window_monotone)
+        || !CU_add_test(pSuite, "xqc_test_conn_window_resized_by_reads_not_arrivals", xqc_test_conn_window_resized_by_reads_not_arrivals)
+        || !CU_add_test(pSuite, "xqc_test_conn_window_doubling_from_last_resize", xqc_test_conn_window_doubling_from_last_resize)
+        || !CU_add_test(pSuite, "xqc_test_conn_window_resized_at_half_window_read_without_credit_due", xqc_test_conn_window_resized_at_half_window_read_without_credit_due)
+        || !CU_add_test(pSuite, "xqc_test_conn_credit_reset_over_limit_is_flow_control_error", xqc_test_conn_credit_reset_over_limit_is_flow_control_error)
+        || !CU_add_test(pSuite, "xqc_test_conn_credit_repeated_reset_is_not_rechecked", xqc_test_conn_credit_repeated_reset_is_not_rechecked)
+        || !CU_add_test(pSuite, "xqc_test_conn_window_resize_boundary_is_strictly_more_than_half", xqc_test_conn_window_resize_boundary_is_strictly_more_than_half)
+        || !CU_add_test(pSuite, "xqc_test_conn_window_not_resized_by_reads_with_receive_rate", xqc_test_conn_window_not_resized_by_reads_with_receive_rate)
         || !CU_add_test(pSuite, "xqc_test_recv_record", xqc_test_recv_record)
         || !CU_add_test(pSuite, "xqc_test_reno", xqc_test_reno)
         || !CU_add_test(pSuite, "xqc_test_reno_loss_ssthresh",
@@ -970,12 +991,48 @@ main(int argc, char *argv[])
                         xqc_test_path_requeue_unacked_on_pto)
         || !CU_add_test(pSuite, "xqc_test_path_requeue_needs_a_working_path",
                         xqc_test_path_requeue_needs_a_working_path)
+        || !CU_add_test(pSuite, "xqc_test_minrtt_skips_dead_path",
+                        xqc_test_minrtt_skips_dead_path)
+        || !CU_add_test(pSuite, "xqc_test_minrtt_keeps_path_without_alternative",
+                        xqc_test_minrtt_keeps_path_without_alternative)
+        || !CU_add_test(pSuite, "xqc_test_minrtt_probes_dead_path",
+                        xqc_test_minrtt_probes_dead_path)
+        || !CU_add_test(pSuite, "xqc_test_backup_failover",
+                        xqc_test_backup_failover)
+        || !CU_add_test(pSuite, "xqc_test_backup_probes_dead_path",
+                        xqc_test_backup_probes_dead_path)
+        || !CU_add_test(pSuite, "xqc_test_dead_probe_waits_for_fired_ptos",
+                        xqc_test_dead_probe_waits_for_fired_ptos)
+        || !CU_add_test(pSuite, "xqc_test_dead_probe_waits_for_requeue",
+                        xqc_test_dead_probe_waits_for_requeue)
+        || !CU_add_test(pSuite, "xqc_test_dead_probe_waits_for_new_data",
+                        xqc_test_dead_probe_waits_for_new_data)
+        || !CU_add_test(pSuite, "xqc_test_dead_probe_waits_for_moved_packets",
+                        xqc_test_dead_probe_waits_for_moved_packets)
+        || !CU_add_test(pSuite, "xqc_test_dead_probe_moves_pto_probes",
+                        xqc_test_dead_probe_moves_pto_probes)
+        || !CU_add_test(pSuite, "xqc_test_backup_skips_dead_primary",
+                        xqc_test_backup_skips_dead_primary)
         || !CU_add_test(pSuite, "xqc_test_pmtud_smaller_ack_keeps_larger_loss",
                         xqc_test_pmtud_smaller_ack_keeps_larger_loss)
         || !CU_add_test(pSuite, "xqc_test_pmtud_ack_spill_losses_make_path_suspect",
                         xqc_test_pmtud_ack_spill_losses_make_path_suspect)
         || !CU_add_test(pSuite, "xqc_test_pmtud_smaller_spill_ack_keeps_larger_loss",
                         xqc_test_pmtud_smaller_spill_ack_keeps_larger_loss)
+        || !CU_add_test(pSuite, "xqc_test_quiet_standby_rule",
+                        xqc_test_quiet_standby_rule)
+        || !CU_add_test(pSuite, "xqc_test_two_backups_not_quiet_without_primary",
+                        xqc_test_two_backups_not_quiet_without_primary)
+        || !CU_add_test(pSuite, "xqc_test_quiet_standby_woken_once",
+                        xqc_test_quiet_standby_woken_once)
+        || !CU_add_test(pSuite, "xqc_test_keepalive_skips_quiet_standby",
+                        xqc_test_keepalive_skips_quiet_standby)
+        || !CU_add_test(pSuite, "xqc_test_idle_timer_keeps_quiet_standby",
+                        xqc_test_idle_timer_keeps_quiet_standby)
+        || !CU_add_test(pSuite, "xqc_test_idle_timer_keeps_waking_standby",
+                        xqc_test_idle_timer_keeps_waking_standby)
+        || !CU_add_test(pSuite, "xqc_test_woken_standby_gets_idle_period",
+                        xqc_test_woken_standby_gets_idle_period)
         /* silently failed path: PTO expiries hidden by sends */
         || !CU_add_test(pSuite, "xqc_test_effective_pto_count_silent_path",
                         xqc_test_effective_pto_count_silent_path)
@@ -1203,6 +1260,59 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_applimit_pacer_restart_credit", xqc_test_applimit_pacer_restart_credit)
         || !CU_add_test(pSuite, "xqc_test_applimit_pacer_restart_back_to_back", xqc_test_applimit_pacer_restart_back_to_back)
         || !CU_add_test(pSuite, "xqc_test_applimit_pacer_restart_write_patterns", xqc_test_applimit_pacer_restart_write_patterns)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_settings_propagate", xqc_test_h3bb_settings_propagate)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_limit_zero_reads_all", xqc_test_h3bb_limit_zero_reads_all)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_fixture_engine_turn", xqc_test_h3bb_fixture_engine_turn)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_pause_at_limit", xqc_test_h3bb_pause_at_limit)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_paused_notify_reads_nothing", xqc_test_h3bb_paused_notify_reads_nothing)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_tiny_data_coalesced", xqc_test_h3bb_tiny_data_coalesced)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_no_pause_after_fin", xqc_test_h3bb_no_pause_after_fin)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_no_pause_after_reset", xqc_test_h3bb_no_pause_after_reset)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_no_pause_reliable_prefix_read", xqc_test_h3bb_no_pause_reliable_prefix_read)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_body_bytes_accounting", xqc_test_h3bb_body_bytes_accounting)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_resume_in_body_notify", xqc_test_h3bb_resume_in_body_notify)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_resume_in_engine_elsewhere", xqc_test_h3bb_resume_in_engine_elsewhere)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_resume_outside_engine", xqc_test_h3bb_resume_outside_engine)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_resume_loop_stops_on_conn_close", xqc_test_h3bb_resume_loop_stops_on_conn_close)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_resume_during_destroy_not_queued", xqc_test_h3bb_resume_during_destroy_not_queued)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_resume_loop_no_empty_notify", xqc_test_h3bb_resume_loop_no_empty_notify)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_resume_loop_no_notify_after_close", xqc_test_h3bb_resume_loop_no_notify_after_close)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_resume_loop_final_empty_data_fin", xqc_test_h3bb_resume_loop_final_empty_data_fin)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_qpack_blocked_pause", xqc_test_h3bb_qpack_blocked_pause)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_tiny_data_coalesced_replay", xqc_test_h3bb_tiny_data_coalesced_replay)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_qpack_blocked_replay_resumes", xqc_test_h3bb_qpack_blocked_replay_resumes)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_qpack_blocked_trailer_bounded", xqc_test_h3bb_qpack_blocked_trailer_bounded)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_paused_drains", xqc_test_h3bb_close_paused_drains)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_no_callbacks_after", xqc_test_h3bb_close_no_callbacks_after)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_in_body_notify_last_stream", xqc_test_h3bb_close_in_body_notify_last_stream)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_sibling_in_read_walk", xqc_test_h3bb_close_sibling_in_read_walk)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_before_trailer_notify", xqc_test_h3bb_close_before_trailer_notify)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_outside_engine_reliable_reset", xqc_test_h3bb_close_outside_engine_reliable_reset)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_goaway", xqc_test_h3bb_close_goaway)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_then_conn_close_in_callback", xqc_test_h3bb_close_then_conn_close_in_callback)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_teardown_close_sibling", xqc_test_h3bb_teardown_close_sibling)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_limit_zero_close_unchanged", xqc_test_h3bb_limit_zero_close_unchanged)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_in_create_notify", xqc_test_h3bb_close_in_create_notify)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_qpack_blocked_bounded", xqc_test_h3bb_close_qpack_blocked_bounded)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_self_in_replay_headers_cb", xqc_test_h3bb_close_self_in_replay_headers_cb)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_blocked_walk_sibling_close", xqc_test_h3bb_blocked_walk_sibling_close)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_teardown_close_after_decoder_destroyed", xqc_test_h3bb_teardown_close_after_decoder_destroyed)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_stream_cancel_emission", xqc_test_h3bb_stream_cancel_emission)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_blocked_walk_unblocks_met_replay", xqc_test_h3bb_blocked_walk_unblocks_met_replay)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_blocked_walk_keeps_failed_replay", xqc_test_h3bb_blocked_walk_keeps_failed_replay)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_teardown_blocked_sibling_close", xqc_test_h3bb_teardown_blocked_sibling_close)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_close_cycles_exceed_window", xqc_test_h3bb_close_cycles_exceed_window)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_reset_while_paused", xqc_test_h3bb_reset_while_paused)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_conn_credit_on_paused_arrival", xqc_test_h3bb_conn_credit_on_paused_arrival)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_conn_credit_arrival_unread_fills_window", xqc_test_h3bb_conn_credit_arrival_unread_fills_window)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_small_frames_reach_frame_cap", xqc_test_h3bb_small_frames_reach_frame_cap)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_revisit_timer_cannot_fail", xqc_test_h3bb_revisit_timer_cannot_fail)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_revisit_timer_registered_at_creation", xqc_test_h3bb_revisit_timer_registered_at_creation)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_replay_unblocks_when_ric_met", xqc_test_h3bb_replay_unblocks_when_ric_met)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_walk_skips_stream_below_ric", xqc_test_h3bb_walk_skips_stream_below_ric)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_replay_keeps_block_when_blocked_again", xqc_test_h3bb_replay_keeps_block_when_blocked_again)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_body_node_freed_when_append_fails", xqc_test_h3bb_body_node_freed_when_append_fails)
+        || !CU_add_test(pSuite, "xqc_test_h3bb_paused_stays_unread_until_low_water", xqc_test_h3bb_paused_stays_unread_until_low_water)
         /* ADD TESTS HERE */)
     {
         CU_cleanup_registry();
