@@ -141,6 +141,107 @@ fi
 grep_err_log
 }
 
+# 1303 and 1304: PATHS_BLOCKED reports the server's limit.
+# draft-ietf-quic-multipath-21 Section 4.7: its Maximum Path Identifier is
+# the limit the peer set, and a value above the maximum the receiver
+# advertised is a PROTOCOL_VIOLATION. The server allows path IDs 0 and 1,
+# below the client's default limit of 8. The client opens two paths besides
+# its first, so the third one finds no path ID left.
+# 1303 happy path: the server grants more path IDs on PATHS_BLOCKED, the
+# client opens the path it was blocked on, and the transfer completes.
+case_fork_core_MP_paths_blocked_answered_by_max_path_id()
+{
+rm -rf tp_localhost test_session xqc_token
+case_test_start_server ${SERVER_BIN} -l d -e -M -x 1303 > /dev/null
+clear_log
+echo -e "MP PATHS_BLOCKED answered by MAX_PATH_ID ...\c"
+case_test_sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -i lo -i lo -x 1303 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+sent=`grep "|PATHS_BLOCKED sent|max_path_id:1|" clog`
+granted=`grep "|MAX_PATH_ID auto-grant|" slog`
+opened=`grep "create a new path. index: 2, path_id: 2" stdlog`
+cli_res=`grep -E "xqc_conn_destroy\|.*\|err:0x0\|.*\|mp_enable:1\|create:3\|validated:3\|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$sent" ] && [ -n "$granted" ] \
+    && [ -n "$opened" ] && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_paths_blocked_answered_by_max_path_id" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} sent:${sent:+y} granted:${granted:+y}" \
+        "opened:${opened:+y} cli_res:${cli_res:+y} errlog:${errlog:+y})"
+    case_print_result "MP_paths_blocked_answered_by_max_path_id" "fail"
+fi
+grep_err_log
+}
+
+# 1304 abnormal path: the server grants nothing. The client's third path is
+# refused with -XQC_EMP_NO_AVAIL_PATH_ID (-651), the server accepts its
+# PATHS_BLOCKED instead of closing the connection, and the transfer
+# completes on the two paths the server allows.
+case_fork_core_MP_paths_blocked_at_server_limit_keeps_connection()
+{
+rm -rf tp_localhost test_session xqc_token
+case_test_start_server ${SERVER_BIN} -l d -e -M -x 1304 > /dev/null
+clear_log
+echo -e "MP PATHS_BLOCKED at the server's limit keeps the connection ...\c"
+case_test_sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -i lo -i lo -x 1304 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+refused=`grep "xqc_conn_create_path err = -651" stdlog`
+accepted=`grep "|PATHS_BLOCKED received|peer_max:1|local_max:1|" slog`
+granted=`grep "|MAX_PATH_ID auto-grant|" slog`
+cli_res=`grep -E "xqc_conn_destroy\|.*\|err:0x0\|.*\|mp_enable:1\|create:2\|validated:2\|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$refused" ] && [ -n "$accepted" ] \
+    && [ -z "$granted" ] && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_paths_blocked_at_server_limit_keeps_connection" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} refused:${refused:+y} accepted:${accepted:+y}" \
+        "granted:${granted:+y} cli_res:${cli_res:+y} errlog:${errlog:+y})"
+    case_print_result "MP_paths_blocked_at_server_limit_keeps_connection" "fail"
+fi
+grep_err_log
+}
+
+# 1306: a MAX_PATH_ID grant within the client's limit.
+# draft-ietf-quic-multipath-21 Section 3.2.1: connection IDs are issued for
+# the unused path IDs up to the lower of both limits. The server keeps the
+# default limit of 8 and grants up to 16 on PATHS_BLOCKED; the client allows
+# 16 and opens nine paths besides its first, so the last one finds no path
+# ID left. The grant does not exceed the client's limit, so the client sends
+# no MAX_PATH_ID back: the server provisions the path IDs it granted itself,
+# keeps the client's connection IDs for them instead of retiring them, and
+# the client opens the path it was blocked on.
+case_fork_core_MP_max_path_id_grant_within_client_limit()
+{
+rm -rf tp_localhost test_session xqc_token
+case_test_start_server ${SERVER_BIN} -l d -e -M -x 1306 > /dev/null
+clear_log
+echo -e "MP MAX_PATH_ID grant within the client's limit ...\c"
+case_test_sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -i lo -i lo -i lo -i lo \
+    -i lo -i lo -i lo -i lo -i lo -x 1306 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+sent=`grep "|PATHS_BLOCKED sent|max_path_id:8|" clog`
+granted=`grep "|MAX_PATH_ID auto-grant|new_local_max:16|" slog`
+reciprocal=`grep "|MAX_PATH_ID reciprocal grant|" clog`
+retired=`grep "smaller than largest_retire_prior_to" slog`
+opened=`grep "create a new path. index: 9, path_id: 9" stdlog`
+cli_res=`grep -E "xqc_conn_destroy\|.*\|err:0x0\|.*\|mp_enable:1\|create:10\|validated:10\|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -n "$sent" ] && [ -n "$granted" ] \
+    && [ -z "$reciprocal" ] && [ -z "$retired" ] && [ -n "$opened" ] \
+    && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_max_path_id_grant_within_client_limit" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} sent:${sent:+y} granted:${granted:+y}" \
+        "reciprocal:${reciprocal:+y} retired:${retired:+y} opened:${opened:+y}" \
+        "cli_res:${cli_res:+y} errlog:${errlog:+y})"
+    case_print_result "MP_max_path_id_grant_within_client_limit" "fail"
+fi
+grep_err_log
+}
+
 # 1307 and 1308: both endpoints allow path IDs 0 and 1 only, and the client
 # opens two paths besides its first: the last one is refused with
 # -XQC_EMP_NO_AVAIL_PATH_ID (-651).
@@ -801,6 +902,9 @@ case_test_case "NAT_rebinding_IP_change_cwnd_reset" --id native --mode self-repo
 case_test_case "NAT_rebinding_port_only_retain" --id native --mode self-reporting --run case_fork_core_NAT_rebinding_port_only_retain
 case_test_case "MP_datagrams_leave_silently_failed_path" --id 1300 --mode self-reporting --run case_fork_core_MP_datagrams_leave_silently_failed_path
 case_test_case "MP_datagrams_resume_after_all_paths_failed_silently" --id 1301 --mode self-reporting --run case_fork_core_MP_datagrams_resume_after_all_paths_failed_silently
+case_test_case "MP_paths_blocked_answered_by_max_path_id" --id 1303 --mode self-reporting --run case_fork_core_MP_paths_blocked_answered_by_max_path_id
+case_test_case "MP_paths_blocked_at_server_limit_keeps_connection" --id 1304 --mode self-reporting --run case_fork_core_MP_paths_blocked_at_server_limit_keeps_connection
+case_test_case "MP_max_path_id_grant_within_client_limit" --id 1306 --mode self-reporting --run case_fork_core_MP_max_path_id_grant_within_client_limit
 case_test_case "MP_draft21_reports_path_blocked" --id 1307 --mode self-reporting --run case_fork_core_MP_draft21_reports_path_blocked
 case_test_case "MP_draft10_refuses_path_without_paths_blocked" --id 1308 --mode self-reporting --run case_fork_core_MP_draft10_refuses_path_without_paths_blocked
 case_test_case "stream_reassembly_cap_happy" --id 727 --mode self-reporting --run case_fork_core_stream_reassembly_cap_happy
