@@ -345,6 +345,8 @@ xqc_stream_t *xqc_find_stream_by_id(xqc_stream_id_t stream_id,
 
 void xqc_stream_set_flow_ctl(xqc_stream_t *stream);
 
+uint64_t xqc_stream_rate_window(xqc_stream_t *stream, xqc_usec_t max_srtt);
+
 void xqc_stream_update_flow_ctl(xqc_stream_t *stream);
 
 int xqc_stream_do_send_flow_ctl(xqc_stream_t *stream);
