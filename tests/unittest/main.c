@@ -629,6 +629,10 @@ main(int argc, char *argv[])
                         xqc_test_conn_close_transport_error_type_overlap)
         || !CU_add_test(pSuite, "xqc_test_conn_close_reason_truncated",
                         xqc_test_conn_close_reason_truncated)
+        || !CU_add_test(pSuite, "xqc_test_path_abandon_reason_past_packet",
+                        xqc_test_path_abandon_reason_past_packet)
+        || !CU_add_test(pSuite, "xqc_test_frame_length_past_packet",
+                        xqc_test_frame_length_past_packet)
         || !CU_add_test(pSuite, "xqc_test_conn_close_valid_packet_types",
                         xqc_test_conn_close_valid_packet_types)
         || !CU_add_test(pSuite,
@@ -1121,6 +1125,8 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_mp21_frame_type_constants", xqc_test_mp21_frame_type_constants)
         || !CU_add_test(pSuite, "xqc_test_mp21_path_abandon_recv_no_reason", xqc_test_mp21_path_abandon_recv_no_reason)
         || !CU_add_test(pSuite, "xqc_test_mp10_path_abandon_recv_with_reason_still_works", xqc_test_mp10_path_abandon_recv_with_reason_still_works)
+        || !CU_add_test(pSuite, "xqc_test_mp10_path_abandon_reason_past_packet",
+                        xqc_test_mp10_path_abandon_reason_past_packet)
         || !CU_add_test(pSuite, "xqc_test_mp21_path_abandon_gen_no_reason", xqc_test_mp21_path_abandon_gen_no_reason)
         || !CU_add_test(pSuite, "xqc_test_mp21_dual_version_dispatch", xqc_test_mp21_dual_version_dispatch)
         || !CU_add_test(pSuite, "xqc_test_mp21_path_ack_ecn_parse_skip", xqc_test_mp21_path_ack_ecn_parse_skip)
