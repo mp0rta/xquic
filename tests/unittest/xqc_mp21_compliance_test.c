@@ -71,9 +71,13 @@ xqc_test_mp21_make_conn(const xqc_test_mp21_conn_params_t *p)
     xqc_init_list_head(&conn->conn_paths_list);
     xqc_init_list_head(&conn->conn_closed_paths_list);
     /* mp21 L2: PATH_CIDS_BLOCKED handler walks conn->scid_set per-path
-     * cid_set_list; calloc-zeroed list head would crash list traversal. */
+     * cid_set_list; calloc-zeroed list head would crash list traversal.
+     * Both CID sets are valid, as after xqc_conn_create(), so that
+     * xqc_test_mp21_free_conn() can destroy what the tests add. */
     xqc_init_list_head(&conn->scid_set.cid_set_list);
     xqc_init_list_head(&conn->scid_set.abandoned_set_list);
+    xqc_init_list_head(&conn->dcid_set.cid_set_list);
+    xqc_init_list_head(&conn->dcid_set.abandoned_set_list);
 
     return conn;
 }
@@ -84,6 +88,9 @@ xqc_test_mp21_free_conn(xqc_connection_t *conn)
     if (conn == NULL) {
         return;
     }
+    /* the paths and CIDs that the tests added, as xqc_conn_destroy() */
+    xqc_destroy_cid_set(&conn->scid_set);
+    xqc_destroy_cid_set(&conn->dcid_set);
     if (conn->log) {
         free(conn->log);
     }
