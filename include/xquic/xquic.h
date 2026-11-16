@@ -1651,11 +1651,18 @@ typedef struct xqc_conn_settings_s {
      * The switch to enable stream-level recv rate throttling. Default: off (0)
      * Turning it on also keeps the connection receive window from shrinking.
      * See recv_rate_bytes_per_sec.
+     * With recv_rate_bytes_per_sec also set, a rate-limited stream's receive
+     * window is capped at its share of the connection receive window
+     * (connection window * stream rate / recv_rate_bytes_per_sec).
      */
     uint8_t enable_stream_rate_limit;
 
     /**
      * initial recv window. Default: 0 (use the internal default value)
+     * With enable_stream_rate_limit, also the smallest window of a
+     * rate-limited stream; to stay within the share, set it to at most
+     * 63000 (the smallest connection window) * stream rate /
+     * recv_rate_bytes_per_sec.
      */
     uint32_t init_recv_window;
 
