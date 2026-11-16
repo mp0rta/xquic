@@ -98,9 +98,10 @@
 #define XQC_MIN_STREAM_BUFFERED_BYTES_PER_FRAME      256
 
 /* Adjacent received STREAM frames are joined into one node up to this size.
- * Two nodes that could not be joined hold more than half of it between them,
- * so contiguous data stays above the sparse density minimum and cannot reach
- * the hard node cap within the receive window:
+ * Two neighbouring nodes that are exactly adjacent hold more than this size
+ * between them, so contiguous, non-overlapping data stays above the sparse
+ * density minimum and cannot reach the hard node cap within the receive
+ * window:
  *   XQC_STREAM_FRAME_COALESCE_BYTES / 2
  *       >= XQC_MIN_STREAM_BUFFERED_BYTES_PER_FRAME
  *   XQC_MAX_STREAM_FRAME_BUFFERED_COUNT_HARD / 2
