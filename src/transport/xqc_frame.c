@@ -1049,9 +1049,8 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
                && packet_in->pi_pkt.pkt_type == XQC_PTYPE_SHORT_HEADER)
     {
         /* Reassembly buffer at capacity (see xqc_insert_stream_frame): this
-         * frame does not extend the contiguous prefix, or the stream is at a
-         * frame cap that also refuses in-order frames until a paused HTTP/3
-         * request resumes. Treat the whole packet as if it were lost instead
+         * frame does not extend the contiguous prefix. Treat the whole packet
+         * as if it were lost instead
          * of tearing down the connection: returning a tolerant error makes
          * xqc_conn_process_packet skip xqc_conn_on_pkt_processed, so the
          * packet is never acknowledged — required by RFC 9000 §13.1 (a

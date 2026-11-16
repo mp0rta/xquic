@@ -1495,8 +1495,10 @@ typedef struct xqc_conn_settings_s {
      */
     uint32_t max_stream_unsent_packets;
     /**
-     * Max buffered out-of-order STREAM frame nodes per stream (reassembly
-     * cap, CWE-770 mitigation per RFC 9000 §21.7).
+     * Max buffered STREAM frame nodes per stream (reassembly cap, CWE-770
+     * mitigation per RFC 9000 §21.7). The cap counts every node the
+     * application has not read yet, not only out-of-order ones; adjacent
+     * frames that fit in 2048 bytes together share a node.
      *
      * 0 selects the built-in two-tier default: past 8192 nodes the density
      * budget charges 256 bytes of payload for every buffered node except one
@@ -1907,13 +1909,13 @@ typedef struct xqc_conn_settings_s {
      * enable_stream_rate_limit the connection window never shrinks
      * (Section 4.1).
      *
-     * Limits. A peer that writes small frames (under about 512 bytes against a
-     * 16 MiB stream window) into a paused request can reach the transport's
-     * per-stream frame cap (8192 frames averaging under 256 bytes, 32768 in any
-     * case, or max_stream_frame_buffered_cnt) before using its credit. Further
-     * frames for the request are then refused, in practice every one: each
-     * packet carrying one is not acknowledged and loses the frames after it,
-     * DATAGRAMs included, until the request drains or is closed. When the
+     * Limits. With the default caps, contiguous data cannot reach the
+     * transport's per-stream frame cap (8192 frames averaging under 256 bytes,
+     * 32768 in any case) before the stream's credit runs out. A peer that
+     * leaves holes or sends overlapping frames into a paused request still
+     * can; further frames that do not extend the contiguous prefix are then
+     * refused, and each packet carrying one is dropped unacknowledged,
+     * losing the frames after it, DATAGRAMs included. When the
      * connection window is smaller than a stream's (is_interop_mode or
      * recv_rate_bytes_per_sec), one paused request can stall every other stream
      * on the connection until it drains or is closed.

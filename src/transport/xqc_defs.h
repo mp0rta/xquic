@@ -86,6 +86,11 @@
  * the sender still puts every held byte on the wire -- and the previous flat
  * 8192-node cap had the same shape at ~8 MB.  Raising the ceiling raises that
  * worst case with it; it does not open a path the old cap closed.
+ *
+ * Exactly adjacent frames are joined into one node while they fit in
+ * XQC_STREAM_FRAME_COALESCE_BYTES, so contiguous data reaches neither cap
+ * before the stream's credit runs out.  Frames separated by a hole or
+ * overlapping each other stay one node each.
  */
 #define XQC_MAX_STREAM_FRAME_BUFFERED_COUNT          8192
 #define XQC_MAX_STREAM_FRAME_BUFFERED_COUNT_HARD     32768
