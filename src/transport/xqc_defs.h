@@ -87,10 +87,10 @@
  * 8192-node cap had the same shape at ~8 MB.  Raising the ceiling raises that
  * worst case with it; it does not open a path the old cap closed.
  *
- * Exactly adjacent frames are joined into one node while they fit in
- * XQC_STREAM_FRAME_COALESCE_BYTES, so contiguous data reaches neither cap
- * before the stream's credit runs out.  Frames separated by a hole or
- * overlapping each other stay one node each.
+ * Exactly adjacent non-empty frames are joined into one node while they fit
+ * in XQC_STREAM_FRAME_COALESCE_BYTES, so contiguous data reaches neither cap
+ * within XQC_MAX_RECV_WINDOW.  Frames separated by a hole or an empty frame,
+ * or overlapping each other, stay one node each.
  */
 #define XQC_MAX_STREAM_FRAME_BUFFERED_COUNT          8192
 #define XQC_MAX_STREAM_FRAME_BUFFERED_COUNT_HARD     32768
@@ -100,9 +100,10 @@
  * Two nodes that could not be joined hold more than half of it between them,
  * so contiguous data stays above the sparse density minimum and cannot reach
  * the hard node cap within the receive window:
- *   COALESCE_BYTES / 2 >= MIN_STREAM_BUFFERED_BYTES_PER_FRAME
- *   MAX_STREAM_FRAME_BUFFERED_COUNT_HARD / 2 * COALESCE_BYTES
- *       >= XQC_MAX_RECV_WINDOW */
+ *   XQC_STREAM_FRAME_COALESCE_BYTES / 2
+ *       >= XQC_MIN_STREAM_BUFFERED_BYTES_PER_FRAME
+ *   XQC_MAX_STREAM_FRAME_BUFFERED_COUNT_HARD / 2
+ *       * XQC_STREAM_FRAME_COALESCE_BYTES >= XQC_MAX_RECV_WINDOW */
 #define XQC_STREAM_FRAME_COALESCE_BYTES              2048
 
 

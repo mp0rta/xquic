@@ -1498,7 +1498,7 @@ typedef struct xqc_conn_settings_s {
      * Max buffered STREAM frame nodes per stream (reassembly cap, CWE-770
      * mitigation per RFC 9000 §21.7). The cap counts every node the
      * application has not read yet, not only out-of-order ones; adjacent
-     * frames that fit in 2048 bytes together share a node.
+     * non-empty frames that fit in 2048 bytes together share a node.
      *
      * 0 selects the built-in two-tier default: past 8192 nodes the density
      * budget charges 256 bytes of payload for every buffered node except one
@@ -1909,13 +1909,15 @@ typedef struct xqc_conn_settings_s {
      * enable_stream_rate_limit the connection window never shrinks
      * (Section 4.1).
      *
-     * Limits. With the default caps, contiguous data cannot reach the
-     * transport's per-stream frame cap (8192 frames averaging under 256 bytes,
-     * 32768 in any case) before the stream's credit runs out. A peer that
-     * leaves holes or sends overlapping frames into a paused request still
-     * can; further frames that do not extend the contiguous prefix are then
-     * refused, and each packet carrying one is dropped unacknowledged,
-     * losing the frames after it, DATAGRAMs included. When the
+     * Limits. With the default caps, a peer that sends contiguous, non-empty
+     * frames into a paused request cannot reach the transport's per-stream
+     * frame cap (8192 nodes averaging under 256 bytes, 32768 in any case)
+     * before it has used the stream's credit, because adjacent frames share a
+     * node. A peer that leaves holes, or sends overlapping or empty frames,
+     * still can. Further frames for the request are then refused, in practice
+     * every one: each packet carrying one is not acknowledged and loses the
+     * frames after it, DATAGRAMs included, until the request drains or is
+     * closed. When the
      * connection window is smaller than a stream's (is_interop_mode or
      * recv_rate_bytes_per_sec), one paused request can stall every other stream
      * on the connection until it drains or is closed.

@@ -1048,18 +1048,17 @@ xqc_process_stream_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in)
     } else if (ret == -XQC_ELIMIT
                && packet_in->pi_pkt.pkt_type == XQC_PTYPE_SHORT_HEADER)
     {
-        /* Reassembly buffer at capacity (see xqc_insert_stream_frame): this
-         * frame does not extend the contiguous prefix. Treat the whole packet
-         * as if it were lost instead
-         * of tearing down the connection: returning a tolerant error makes
-         * xqc_conn_process_packet skip xqc_conn_on_pkt_processed, so the
-         * packet is never acknowledged — required by RFC 9000 §13.1 (a
-         * packet must not be acked until its STREAM data has been
-         * enqueued) — and the peer retransmits it later, by which time
-         * the buffer has drained via prefix-extending frames. This is a
-         * §21.7 resource-exhaustion mitigation; the previous escalation
-         * closed healthy multipath connections with a bogus
-         * FRAME_ENCODING_ERROR (generic engine error path) under
+        /* Reassembly buffer at capacity (see xqc_insert_stream_frame): the
+         * frame would take the stream past a frame cap. Treat the whole
+         * packet as if it were lost instead of tearing down the connection:
+         * returning a tolerant error makes xqc_conn_process_packet skip
+         * xqc_conn_on_pkt_processed, so the packet is never acknowledged —
+         * required by RFC 9000 §13.1 (a packet must not be acked until its
+         * STREAM data has been enqueued) — and the peer retransmits it
+         * later, by which time the buffer has drained via prefix-extending
+         * frames. This is a §21.7 resource-exhaustion mitigation; the
+         * previous escalation closed healthy multipath connections with a
+         * bogus FRAME_ENCODING_ERROR (generic engine error path) under
          * cross-path reordering. Restricted to short-header packets: they
          * are always last in a UDP datagram, so the tolerant
          * skip-rest-of-datagram handling cannot drop coalesced follow-up
