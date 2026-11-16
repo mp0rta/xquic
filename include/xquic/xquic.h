@@ -1909,18 +1909,19 @@ typedef struct xqc_conn_settings_s {
      * enable_stream_rate_limit the connection window never shrinks
      * (Section 4.1).
      *
-     * Limits. With the default caps, a peer that sends contiguous, non-empty
-     * frames into a paused request cannot reach the transport's per-stream
-     * frame cap (8192 nodes averaging under 256 bytes, 32768 in any case)
-     * before it has used the stream's credit, because adjacent frames share a
-     * node. A peer that leaves holes, or sends overlapping or empty frames,
-     * still can. Further frames for the request are then refused, in practice
-     * every one: each packet carrying one is not acknowledged and loses the
-     * frames after it, DATAGRAMs included, until the request drains or is
-     * closed. When the
-     * connection window is smaller than a stream's (is_interop_mode or
-     * recv_rate_bytes_per_sec), one paused request can stall every other stream
-     * on the connection until it drains or is closed.
+     * Limits. With the default caps and a stream window of at most 16 MiB,
+     * contiguous non-empty frames sent into a paused request cannot reach the
+     * transport's per-stream frame cap (8192 nodes averaging under 256 bytes,
+     * 32768 in any case) before the stream's credit is used, because adjacent
+     * frames share a node. Frames separated by holes (for example while
+     * reordered packets are in flight), overlapping frames and empty frames
+     * stay one node each and can still reach it. Further frames for the
+     * request are then refused, in practice every one: each packet carrying
+     * one is not acknowledged and loses the frames after it, DATAGRAMs
+     * included, until the request drains or is closed. When the connection
+     * window is smaller than a stream's (is_interop_mode or
+     * recv_rate_bytes_per_sec), one paused request can stall every other
+     * stream on the connection until it drains or is closed.
      *
      * ABI: appended last; source-compatible, not binary-compatible with callers
      * built against the previous header.

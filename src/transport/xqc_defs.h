@@ -56,8 +56,9 @@
  * below the flow-control window in ordinary operation.  §4.1 requires an
  * endpoint to "buffer any data that is received out of order, up to the
  * advertised flow control limit", and nodes are freed only in
- * xqc_stream_recv, so the node count tracks undelivered bytes divided by
- * frame size whether or not anything arrived out of order.  Against the
+ * xqc_stream_recv or when joined into a neighbour, so for packet-sized
+ * frames (which do not join) the node count tracks undelivered bytes divided
+ * by frame size whether or not anything arrived out of order.  Against the
  * 16 MiB XQC_MAX_RECV_WINDOW, 1379-byte frames reach 12166 nodes -- 1.49x
  * past a flat 8192 with one path and no reordering at all.  Measured on this
  * tree: 8192 strictly in-order hole-free frames, then rejection, at 10.8 MiB

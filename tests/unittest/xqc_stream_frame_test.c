@@ -604,6 +604,7 @@ xqc_test_stream_frame_dense_buffer_budget()
     CU_ASSERT_PTR_NOT_NULL_FATAL(frame);
     frame->data_length = 1024;
     frame->data_offset = stream->stream_data_in.buffered_data_bytes + 4096;
+    const uint64_t frame_end = frame->data_offset + frame->data_length;
     frame->data = xqc_malloc(frame->data_length);
     CU_ASSERT_PTR_NOT_NULL_FATAL(frame->data);
 
@@ -614,7 +615,7 @@ xqc_test_stream_frame_dense_buffer_budget()
     xqc_stream_frame_t *hard_frame = xqc_calloc(1, sizeof(*hard_frame));
     CU_ASSERT_PTR_NOT_NULL_FATAL(hard_frame);
     hard_frame->data_length = 1024;
-    hard_frame->data_offset = frame->data_offset + frame->data_length + 4096;
+    hard_frame->data_offset = frame_end + 4096;
     hard_frame->data = xqc_malloc(hard_frame->data_length);
     CU_ASSERT_PTR_NOT_NULL_FATAL(hard_frame->data);
 

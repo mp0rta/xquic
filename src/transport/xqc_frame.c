@@ -136,7 +136,8 @@ xqc_crypto_frame_header_size(uint64_t offset, size_t length)
 /* Append right to left when they are contiguous and the result stays within
  * XQC_STREAM_FRAME_COALESCE_BYTES. One node then covers many small frames, so
  * contiguous data cannot exhaust the per-stream node cap (RFC 9000 Section
- * 21.7). Both frames are untouched when it returns XQC_FALSE. */
+ * 21.7). Both frames must be non-empty. Both frames are untouched when it
+ * returns XQC_FALSE. */
 static xqc_bool_t
 xqc_stream_frame_join(xqc_stream_frame_t *left, const xqc_stream_frame_t *right)
 {
@@ -167,7 +168,7 @@ xqc_insert_stream_frame(xqc_connection_t *conn, xqc_stream_t *stream,
                         xqc_stream_frame_t *new_frame)
 {
     /* CWE-770 mitigation (RFC 9000 §21.7 stream fragmentation attacks):
-     * bound the buffered out-of-order frame nodes per stream, with one slot
+     * bound the buffered frame nodes per stream, with one slot
      * held in reserve for a frame that extends the contiguous prefix
      * (data_offset <= merged_offset_end < data_offset + data_length).
      *
@@ -218,8 +219,9 @@ xqc_insert_stream_frame(xqc_connection_t *conn, xqc_stream_t *stream,
          * Charging the density budget at count_after keeps the exemption
          * coherent across both tiers. It is reusable but not farmable, and
          * not because a prefix-extender advances merged_offset_end -- that
-         * makes data readable but reclaims nothing; only xqc_stream_recv()
-         * decrements these counters. Two bounds hold with no application
+         * makes data readable but reclaims nothing; besides a join, which only
+         * lowers the node count, only xqc_stream_recv() decrements these
+         * counters. Two bounds hold with no application
          * drain at all. Admission under the density tier requires
          * B + L >= C*m, so after insertion B' >= (C' - 1)*m: the average can
          * sit one reserved node below the minimum and no lower, however many
@@ -254,7 +256,7 @@ xqc_insert_stream_frame(xqc_connection_t *conn, xqc_stream_t *stream,
     xqc_stream_frame_t *frame;
     xqc_stream_frame_t *cur = new_frame;
     uint64_t new_offset = new_frame->data_offset;
-    uint64_t new_len = new_frame->data_length;
+    unsigned new_len = new_frame->data_length;
     uint64_t new_end = new_offset + new_len;
     xqc_bool_t joined = XQC_FALSE;
 

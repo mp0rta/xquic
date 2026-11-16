@@ -2905,10 +2905,11 @@ h3bb_process_small_frame(h3bb_fx_t *fx, int idx, const uint8_t *data)
 }
 
 /*
- * A paused request leaves in-order frames unread, and the transport joins
- * adjacent small frames, so 200 byte frames up to the stream's credit stay
- * far below the per-stream frame cap and are all accepted; the delivered
- * body then equals what was inserted.
+ * Inserts 200 byte in-order frames into the paused request, up to 4 MiB or
+ * the available credit (about 21000 frames, well past the 8192 node cap
+ * without joining). Every insert is accepted and the node count stays under
+ * the cap; after the drain the number of body bytes delivered equals the
+ * number inserted.
  */
 void
 xqc_test_h3bb_small_frames_stay_under_frame_cap(void)
