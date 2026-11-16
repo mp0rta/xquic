@@ -701,13 +701,12 @@ xqc_test_stream_frame_dense_prefix_liveness()
     /* One that does pay for its node is admitted, and the invariant holds. */
     xqc_stream_frame_t *paid = xqc_calloc(1, sizeof(*paid));
     CU_ASSERT_PTR_NOT_NULL_FATAL(paid);
-    paid->data_offset = 1;
+    paid->data_offset = 0; /* overlaps the prefix node, so it is not joined */
     paid->data_length = (unsigned)(m - 1);
     paid->data = xqc_malloc(paid->data_length);
     CU_ASSERT_PTR_NOT_NULL_FATAL(paid->data);
     CU_ASSERT_EQUAL(xqc_insert_stream_frame(conn, stream, paid), XQC_OK);
-    /* adjacent to the prefix node, so it joins it and takes no node */
-    CU_ASSERT_EQUAL(stream->stream_data_in.buffered_frame_count, c0 + 1);
+    CU_ASSERT_EQUAL(stream->stream_data_in.buffered_frame_count, c0 + 2);
     CU_ASSERT_EQUAL(stream->stream_data_in.buffered_data_bytes, (c0 + 1) * m);
     CU_ASSERT_TRUE(stream->stream_data_in.buffered_data_bytes
                    >= (stream->stream_data_in.buffered_frame_count - 1) * m);
