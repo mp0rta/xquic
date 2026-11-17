@@ -242,3 +242,58 @@ jobs:
         # -Wno-dangling-pointer under -Werror, which clang rejects.
         cmake -DPLATFORM=mac -DCMAKE_C_FLAGS="-Wno-unknown-warning-option" -DSSL_TYPE=${SSL_TYPE_STR} -DSSL_PATH=${SSL_PATH_STR} -DSSL_INC_PATH=${SSL_INC_PATH_STR} -DSSL_LIB_PATH=${SSL_LIB_PATH_STR} ..
         make -j
+
+  build-windows:
+
+    name: Build on Windows (MSVC)
+
+    # windows-2022 = VS 2022; windows-latest moved to VS 2026, where the
+    # "Visual Studio 17 2022" generator finds no instance.
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+      with:
+        submodules: 'recursive'
+
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    # BoringSSL's MSVC build needs NASM and Go.
+    - name: Install NASM
+      uses: ilammy/setup-nasm@v1
+
+    - name: Setup Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: 'stable'
+
+    - name: Build BoringSSL
+      run: |
+        cd third_party/boringssl
+        mkdir build
+        cd build
+        cmake -G "Visual Studio 17 2022" -A x64 -DBUILD_SHARED_LIBS=0 -DCMAKE_BUILD_TYPE=Release ..
+        cmake --build . --target ssl --config Release
+        cmake --build . --target crypto --config Release
+
+    # Same configuration mqvpn's Windows job builds the pinned fork with.
+    # CMAKE_C_STANDARD=11: the MSVC enum-truncation patch uses _Static_assert.
+    - name: Build XQUIC
+      run: |
+        mkdir build
+        cd build
+        cmake -G "Visual Studio 17 2022" -A x64 `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DCMAKE_C_STANDARD=11 `
+          -DSSL_TYPE=boringssl `
+          -DXQC_ENABLE_BBR2=ON `
+          -DXQC_ENABLE_UNLIMITED=ON `
+          -DXQC_ENABLE_FEC=ON `
+          -DXQC_ENABLE_XOR=ON `
+          -DSSL_PATH="${{ github.workspace }}/third_party/boringssl" ..
+        cmake --build . --config Release
