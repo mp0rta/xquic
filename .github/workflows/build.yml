@@ -208,8 +208,11 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
 
     strategy:
+      # One image must not cancel the other: arm64 macOS runners are often
+      # short at US peak hours and the job is cancelled unassigned.
+      fail-fast: false
       matrix:
-        runs-on: [macos-latest]
+        runs-on: [macos-15, macos-15-intel]
 
     steps:
     - name: Checkout repository
