@@ -1220,11 +1220,11 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
                     xqc_var_buf_t    *tail = NULL;
                     /* with a limit, small payloads share a node: tiny DATA
                      * frames must not pile up list entries */
-                    xqc_bool_t        small = h3s->h3c->max_body_buf_per_stream > 0
+                    xqc_bool_t        share = h3s->h3c->max_body_buf_per_stream > 0
                                               && len > 0
                                               && len < XQC_H3_BODY_BUF_MIN_BYTES_PER_NODE;
 
-                    if (small && !xqc_list_empty(&h3r->body_buf)) {
+                    if (share && !xqc_list_empty(&h3r->body_buf)) {
                         xqc_list_buf_t *last = xqc_list_entry(
                             h3r->body_buf.prev, xqc_list_buf_t, list_head);
                         if (last->buf->buf_len - last->buf->data_len >= len) {
@@ -1241,7 +1241,7 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
 
                     } else {
                         buf = xqc_var_buf_create(
-                            small ? XQC_H3_BODY_BUF_MIN_BYTES_PER_NODE : len);
+                            share ? XQC_H3_BODY_BUF_MIN_BYTES_PER_NODE : len);
                         if (buf == NULL) {
                             return -XQC_EMALLOC;
                         }
