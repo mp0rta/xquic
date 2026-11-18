@@ -672,6 +672,49 @@ xqc_test_mp10_path_abandon_recv_with_reason_still_works(void)
     CU_ASSERT_EQUAL(consumed, 5);
 }
 
+void
+xqc_test_mp10_path_abandon_reason_past_packet(void)
+{
+    /* from one byte past the end of the frame to the largest varint */
+    static const uint64_t past_end[] = {3, UINT32_MAX, XQC_VINT_MAX};
+    unsigned char buf[32];
+    unsigned char *p;
+    uint64_t path_id = 0, error_code = 0;
+    size_t consumed, i;
+    int ret;
+
+    /* draft-10: a Reason Phrase that fits is skipped */
+    p = buf;
+    p = xqc_put_varint(p, XQC_TRANS_FRAME_TYPE_MP_ABANDON);
+    p = xqc_put_varint(p, 1);   /* Path ID */
+    p = xqc_put_varint(p, 0);   /* Error Code */
+    p = xqc_put_varint(p, 2);   /* Reason Phrase Length */
+    *p++ = 'o';
+    *p++ = 'k';
+    ret = xqc_test_parse_path_abandon(buf, p - buf, &path_id, &error_code,
+                                      &consumed, XQC_MULTIPATH_10);
+    CU_ASSERT_EQUAL(ret, XQC_OK);
+    CU_ASSERT_EQUAL(path_id, 1);
+    CU_ASSERT_EQUAL(consumed, (size_t)(p - buf));
+
+    /* draft-10: a Reason Phrase Length past the packet is an error */
+    for (i = 0; i < sizeof(past_end) / sizeof(past_end[0]); i++) {
+        p = buf;
+        p = xqc_put_varint(p, XQC_TRANS_FRAME_TYPE_MP_ABANDON);
+        p = xqc_put_varint(p, 1);
+        p = xqc_put_varint(p, 0);
+        p = xqc_put_varint(p, past_end[i]);
+        *p++ = 'o';
+        *p++ = 'k';
+        consumed = 1;
+        ret = xqc_test_parse_path_abandon(buf, p - buf, &path_id,
+                                          &error_code, &consumed,
+                                          XQC_MULTIPATH_10);
+        CU_ASSERT_EQUAL(ret, -XQC_EILLEGAL_FRAME);
+        CU_ASSERT_EQUAL(consumed, 0);
+    }
+}
+
 /* Test helper: drive xqc_gen_path_abandon_frame() with a minimal
  * synthetic conn + packet_out. Returns bytes written on success or a
  * negative error code.
