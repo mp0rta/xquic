@@ -14,6 +14,10 @@ void xqc_test_pto_uses_remote_max_ack_delay(void);
 void xqc_test_pto_remote_default_when_unset(void);
 
 /* RFC 9000 Section 8.2.4 path-validation timeout behavior. */
+/* RFC 9000 Sections 8.1 and 8.2: a new path before its validation */
+void xqc_test_new_path_anti_amplification(void);
+void xqc_test_new_path_mtu_validation(void);
+
 void xqc_test_path_validation_timeout_current_pto_dominates(void);
 void xqc_test_path_validation_timeout_new_path_pto_dominates(void);
 void xqc_test_path_validation_timer_not_extended_by_packet(void);

@@ -2958,7 +2958,9 @@ xqc_path_send_burst_packets(xqc_connection_t *conn, xqc_path_ctx_t *path, int co
 
             /* check the anti-amplification limit, will allow a bit larger than 3x
              * received */
-            if (xqc_send_ctl_check_anti_amplification(send_ctl, total_bytes_to_send)) {
+            if (!xqc_send_ctl_amplification_allows(send_ctl, packet_out,
+                                                   total_bytes_to_send))
+            {
                 xqc_log(conn->log, XQC_LOG_INFO,
                         "|blocked by anti amplification "
                         "limit|total_sent:%ui|3*total_recv:%ui|",
@@ -3097,7 +3099,7 @@ xqc_path_send_packets(xqc_connection_t *conn, xqc_path_ctx_t *path, xqc_list_hea
         }
 
         /* check the anti-amplification limit, will allow a bit larger than 3x received */
-        if (xqc_send_ctl_check_anti_amplification(send_ctl, 0)) {
+        if (!xqc_send_ctl_amplification_allows(send_ctl, packet_out, 0)) {
             xqc_log(
                 conn->log, XQC_LOG_INFO,
                 "|blocked by anti amplification limit|total_sent:%ui|3*total_recv:%ui|",
