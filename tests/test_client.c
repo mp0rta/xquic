@@ -76,6 +76,7 @@ printf_null(const char *format, ...)
 #define XQC_MAX_LOG_LEN 2048
 
 #define XQC_TEST_CASE_MP_FROZEN_UNNEGOTIATED 1302
+#define XQC_TEST_CASE_MP_PATH_RESPONSE_LOST 1305
 #define XQC_TEST_CASE_H3_RESERVED_UNI_STREAM 1000
 #define XQC_TEST_CASE_H3_CLIENT_PUSH_STREAM 1001
 #define XQC_TEST_CASE_H3_RESERVED_REQUEST_FRAME 1002
@@ -339,6 +340,8 @@ size_t dgram2_size = 0;
 
 int dgram_drop_pkt1 = 0;
 int path_response_drop_pkt1 = 0;
+int mp_path_response_dropped = 0;
+int mp_path1_recv_count = 0;
 static unsigned char g_retry_original_initial[XQC_PACKET_TMP_BUF_LEN];
 static size_t g_retry_original_initial_len;
 static int g_retry_original_initial_saved;
@@ -5581,6 +5584,27 @@ xqc_client_socket_read_handler(user_conn_t *user_conn, int fd)
             continue;
         }
         xqc_client_dead_path_on_recv(path_id, packet_buf, recv_size);
+
+        /*
+         * case 1305: lose the PATH_RESPONSE answering the client's first
+         * PATH_CHALLENGE on path 1. The frame type cannot be read here: -N
+         * is refused with multipath (xqc_conn_handshake_complete() requires
+         * a 12-byte AEAD nonce). The server answers a PATH_CHALLENGE on a
+         * new path with its own PATH_CHALLENGE, then the PATH_RESPONSE, then
+         * the ACK, so the second datagram received on path 1 is dropped; the
+         * case checks in slog that the server's second packet on path 1 was
+         * the response.
+         */
+        if (g_test_case == XQC_TEST_CASE_MP_PATH_RESPONSE_LOST
+            && path_id == 1 && !mp_path_response_dropped
+            && ++mp_path1_recv_count == 2)
+        {
+            mp_path_response_dropped = 1;
+            printf("[mp-path-response-lost]|drop|path:%"PRIu64"|size:%zd|\n",
+                   path_id, recv_size);
+            continue;
+        }
+
         if (g_test_case == XQC_TEST_CASE_KEY_UPDATE_STALE_DEADLINE) {
             xqc_client_key_update_copy_packet(user_conn, packet_buf,
                                               recv_size);

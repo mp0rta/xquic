@@ -93,6 +93,12 @@ uint64_t xqc_qpack_get_dec_insert_count(xqc_qpack_t *qpk);
 
 
 /**
+ * @brief write a Stream Cancellation instruction (RFC 9204 Section 4.4.2);
+ * nothing is written when the local max dynamic table capacity is 0
+ */
+xqc_int_t xqc_qpack_notify_stream_cancel(xqc_qpack_t *qpk, uint64_t stream_id);
+
+/**
  * @brief process encoder instructions
  */
 ssize_t xqc_qpack_process_encoder(xqc_qpack_t *qpk, unsigned char *data, size_t data_len);

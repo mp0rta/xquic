@@ -489,6 +489,7 @@ wt_h3_test_queue(xqc_wt_h3_test_t *test, const unsigned char *data,
     frame->data_length = len;
     frame->data_offset = stream->stream_data_in.merged_offset_end;
     frame->fin = fin;
+    uint64_t end = frame->data_offset + len;
     xqc_int_t ret = xqc_insert_stream_frame(stream->stream_conn,
                                             stream, frame);
     if (ret != XQC_OK) {
@@ -497,7 +498,7 @@ wt_h3_test_queue(xqc_wt_h3_test_t *test, const unsigned char *data,
     }
     if (fin) {
         stream->stream_data_in.stream_determined = 1;
-        stream->stream_data_in.stream_length = frame->data_offset + len;
+        stream->stream_data_in.stream_length = end;
         stream->stream_state_recv = XQC_RECV_STREAM_ST_DATA_RECVD;
     }
     return stream->stream_if->stream_read_notify(stream, stream->user_data);

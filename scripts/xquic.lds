@@ -176,6 +176,19 @@ XQUIC_VERS_1.0 {
         xqc_wt_unistream_get_recv_error_code;
         xqc_wt_bidistream_get_recv_fin;
         xqc_wt_unistream_get_recv_fin;
+        /* fork: called by libmqvpn.so */
+        xqc_conn_reapply_settings;
+        xqc_conn_set_dgram_flow_hash;
+        xqc_h3_conn_get_xqc_conn;
+        xqc_h3_ext_capsule_decode;
+        xqc_h3_ext_capsule_encode;
+        xqc_h3_ext_connectip_build_address_request;
+        xqc_h3_ext_connectip_parse_address_assign;
+        xqc_h3_ext_connectip_validate_route_advertisement;
+        xqc_h3_ext_datagram_send_on_path;
+        xqc_h3_ext_masque_frame_udp;
+        xqc_h3_ext_masque_udp_mss;
+        xqc_h3_ext_masque_unframe_udp;
     local:
         *;
 };

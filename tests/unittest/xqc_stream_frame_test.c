@@ -441,10 +441,11 @@ xqc_test_stream_frame_cap_liveness_real()
     CU_ASSERT(stream != NULL);
     if (stream == NULL) { xqc_engine_destroy(conn->engine); return; }
 
-    /* hole at [0,10); contiguous beyond-hole frames from offset 10 */
+    /* hole at [0,10); beyond-hole frames from offset 10, each overlapping
+     * the previous by one byte so that none is adjacent (and joined) */
     uint64_t i;
     for (i = 0; i + 1 < XQC_MAX_STREAM_FRAME_BUFFERED_COUNT; i++) {
-        xqc_stream_frame_t *f = test_mk_frame(10 + i * 10, 10);
+        xqc_stream_frame_t *f = test_mk_frame(10 + i * 9, 10);
         ret = xqc_insert_stream_frame(conn, stream, f);
         if (ret != XQC_OK) {
             xqc_free(f->data);
@@ -456,19 +457,19 @@ xqc_test_stream_frame_cap_liveness_real()
               == XQC_MAX_STREAM_FRAME_BUFFERED_COUNT - 1);
 
     /* beyond-hole insert now rejected */
-    xqc_stream_frame_t *bh = test_mk_frame(10 + i * 10, 10);
+    xqc_stream_frame_t *bh = test_mk_frame(10 + i * 9, 10);
     ret = xqc_insert_stream_frame(conn, stream, bh);
     CU_ASSERT(ret == -XQC_ELIMIT);
     if (ret != XQC_OK) { xqc_free(bh->data); xqc_free(bh); }
 
     /* hole filler admitted through the reserved slot; merge cascades */
-    xqc_stream_frame_t *pf = test_mk_frame(0, 10);
+    xqc_stream_frame_t *pf = test_mk_frame(0, 11);
     ret = xqc_insert_stream_frame(conn, stream, pf);
     CU_ASSERT(ret == XQC_OK);
     CU_ASSERT(stream->stream_data_in.buffered_frame_count
               == XQC_MAX_STREAM_FRAME_BUFFERED_COUNT);
     CU_ASSERT(stream->stream_data_in.merged_offset_end
-              == 10 * (uint64_t)XQC_MAX_STREAM_FRAME_BUFFERED_COUNT);
+              == 9 * (uint64_t)XQC_MAX_STREAM_FRAME_BUFFERED_COUNT + 2);
     if (ret != XQC_OK) { xqc_free(pf->data); xqc_free(pf); }
 
     /* application drain frees the nodes */
@@ -481,7 +482,7 @@ xqc_test_stream_frame_cap_liveness_real()
 
     /* admission resumes */
     xqc_stream_frame_t *nf =
-        test_mk_frame(10 * (uint64_t)XQC_MAX_STREAM_FRAME_BUFFERED_COUNT + 10, 10);
+        test_mk_frame(9 * (uint64_t)XQC_MAX_STREAM_FRAME_BUFFERED_COUNT + 12, 10);
     ret = xqc_insert_stream_frame(conn, stream, nf);
     CU_ASSERT(ret == XQC_OK);
     if (ret != XQC_OK) { xqc_free(nf->data); xqc_free(nf); }
@@ -603,6 +604,7 @@ xqc_test_stream_frame_dense_buffer_budget()
     CU_ASSERT_PTR_NOT_NULL_FATAL(frame);
     frame->data_length = 1024;
     frame->data_offset = stream->stream_data_in.buffered_data_bytes + 4096;
+    const uint64_t frame_end = frame->data_offset + frame->data_length;
     frame->data = xqc_malloc(frame->data_length);
     CU_ASSERT_PTR_NOT_NULL_FATAL(frame->data);
 
@@ -613,7 +615,7 @@ xqc_test_stream_frame_dense_buffer_budget()
     xqc_stream_frame_t *hard_frame = xqc_calloc(1, sizeof(*hard_frame));
     CU_ASSERT_PTR_NOT_NULL_FATAL(hard_frame);
     hard_frame->data_length = 1024;
-    hard_frame->data_offset = frame->data_offset + frame->data_length + 4096;
+    hard_frame->data_offset = frame_end + 4096;
     hard_frame->data = xqc_malloc(hard_frame->data_length);
     CU_ASSERT_PTR_NOT_NULL_FATAL(hard_frame->data);
 
@@ -700,7 +702,7 @@ xqc_test_stream_frame_dense_prefix_liveness()
     /* One that does pay for its node is admitted, and the invariant holds. */
     xqc_stream_frame_t *paid = xqc_calloc(1, sizeof(*paid));
     CU_ASSERT_PTR_NOT_NULL_FATAL(paid);
-    paid->data_offset = 1;
+    paid->data_offset = 0; /* overlaps the prefix node, so it is not joined */
     paid->data_length = (unsigned)(m - 1);
     paid->data = xqc_malloc(paid->data_length);
     CU_ASSERT_PTR_NOT_NULL_FATAL(paid->data);
@@ -959,6 +961,260 @@ xqc_test_stop_sending_spares_other_streams()
     /* the bystander keeps every one of its packets */
     CU_ASSERT_EQUAL(test_ss_count_stream_packets(conn, bystander->stream_id),
                     bystander_before);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+
+#ifdef XQC_TEST_ALLOC_WRAP
+#include "xqc_alloc_fail_test.h"
+#endif
+
+#define TEST_PAT(off) ((unsigned char) ((off) * 7 + 3))
+
+/* a frame whose bytes depend only on their stream offset */
+static xqc_stream_frame_t *
+test_mk_pat_frame(uint64_t offset, unsigned length)
+{
+    xqc_stream_frame_t *f = test_mk_frame(offset, length);
+    for (unsigned i = 0; i < length; i++) {
+        f->data[i] = TEST_PAT(offset + i);
+    }
+    return f;
+}
+
+/* insert a pattern frame; the frame is freed here only if not owned */
+static xqc_int_t
+test_ins(xqc_connection_t *conn, xqc_stream_t *stream, uint64_t offset,
+         unsigned length)
+{
+    xqc_stream_frame_t *f = test_mk_pat_frame(offset, length);
+    xqc_int_t ret = xqc_insert_stream_frame(conn, stream, f);
+    if (ret != XQC_OK) {
+        xqc_destroy_stream_frame(f);
+    }
+    return ret;
+}
+
+/* read until EAGAIN and compare with the pattern from `from`; returns bytes */
+static uint64_t
+test_read_all_pat(xqc_stream_t *stream, uint64_t from)
+{
+    unsigned char buf[4096];
+    uint8_t fin;
+    uint64_t total = 0;
+    xqc_int_t n;
+
+    while ((n = xqc_stream_recv(stream, buf, sizeof(buf), &fin)) > 0) {
+        for (xqc_int_t i = 0; i < n; i++) {
+            if (buf[i] != TEST_PAT(from + total + i)) {
+                CU_FAIL("stream data differs from pattern");
+                return total;
+            }
+        }
+        total += n;
+    }
+    return total;
+}
+
+static xqc_stream_t *
+test_pat_stream(xqc_connection_t *conn)
+{
+    xqc_stream_t *s = xqc_stream_create_with_direction(conn, XQC_STREAM_BIDI, NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(s);
+    return s;
+}
+
+#define TEST_CNT(s) ((s)->stream_data_in.buffered_frame_count)
+#define TEST_MOE(s) ((s)->stream_data_in.merged_offset_end)
+
+void
+xqc_test_stream_frame_join_in_order()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    xqc_stream_t *stream = test_pat_stream(conn);
+
+    for (int i = 0; i < 100; i++) {
+        CU_ASSERT(test_ins(conn, stream, i * 100, 100) == XQC_OK);
+    }
+    CU_ASSERT(TEST_CNT(stream) == 5);
+    CU_ASSERT(stream->stream_data_in.buffered_data_bytes == 10000);
+    CU_ASSERT(TEST_MOE(stream) == 10000);
+
+    CU_ASSERT(test_ins(conn, stream, 300, 100) == -XQC_EDUP_FRAME);
+    CU_ASSERT(TEST_CNT(stream) == 5);
+
+    CU_ASSERT(test_read_all_pat(stream, 0) == 10000);
+    CU_ASSERT(TEST_CNT(stream) == 0);
+    CU_ASSERT(stream->stream_data_in.buffered_data_bytes == 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_stream_frame_join_boundary()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_stream_t *a = test_pat_stream(conn);
+    CU_ASSERT(test_ins(conn, a, 0, 1024) == XQC_OK);
+    CU_ASSERT(test_ins(conn, a, 1024, 1024) == XQC_OK);
+    CU_ASSERT(TEST_CNT(a) == 1);
+
+    xqc_stream_t *b = test_pat_stream(conn);
+    CU_ASSERT(test_ins(conn, b, 0, 1024) == XQC_OK);
+    CU_ASSERT(test_ins(conn, b, 1024, 1025) == XQC_OK);
+    CU_ASSERT(TEST_CNT(b) == 2);
+
+    CU_ASSERT(test_read_all_pat(a, 0) == 2048);
+    CU_ASSERT(test_read_all_pat(b, 0) == 2049);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_stream_frame_join_heals_reorder()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+
+    xqc_stream_t *a = test_pat_stream(conn);
+    CU_ASSERT(test_ins(conn, a, 200, 100) == XQC_OK);
+    CU_ASSERT(test_ins(conn, a, 0, 100) == XQC_OK);
+    CU_ASSERT(TEST_CNT(a) == 2);
+    CU_ASSERT(TEST_MOE(a) == 100);
+    CU_ASSERT(test_ins(conn, a, 100, 100) == XQC_OK);
+    CU_ASSERT(TEST_CNT(a) == 1);
+    CU_ASSERT(TEST_MOE(a) == 300);
+    CU_ASSERT(test_read_all_pat(a, 0) == 300);
+
+    xqc_stream_t *b = test_pat_stream(conn);
+    for (int i = 0; i < 20; i += 2) {
+        CU_ASSERT(test_ins(conn, b, (i + 1) * 100, 100) == XQC_OK);
+        CU_ASSERT(test_ins(conn, b, i * 100, 100) == XQC_OK);
+    }
+    CU_ASSERT(TEST_CNT(b) == 1);
+    CU_ASSERT(TEST_MOE(b) == 2000);
+    CU_ASSERT(test_read_all_pat(b, 0) == 2000);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_stream_frame_join_partially_read()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    xqc_stream_t *stream = test_pat_stream(conn);
+
+    unsigned char buf[64];
+    uint8_t fin;
+
+    CU_ASSERT(test_ins(conn, stream, 0, 100) == XQC_OK);
+    CU_ASSERT(xqc_stream_recv(stream, buf, 40, &fin) == 40);
+    CU_ASSERT(test_ins(conn, stream, 100, 100) == XQC_OK);
+    CU_ASSERT(TEST_CNT(stream) == 1);
+    CU_ASSERT(test_read_all_pat(stream, 40) == 160);
+    CU_ASSERT(TEST_CNT(stream) == 0);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_stream_frame_join_skips_overlap_and_empty()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    xqc_stream_t *stream = test_pat_stream(conn);
+
+    CU_ASSERT(test_ins(conn, stream, 0, 100) == XQC_OK);
+    CU_ASSERT(test_ins(conn, stream, 50, 100) == XQC_OK);
+    CU_ASSERT(TEST_CNT(stream) == 2);
+
+    CU_ASSERT(test_ins(conn, stream, 150, 0) == XQC_OK);
+    CU_ASSERT(TEST_CNT(stream) == 3);
+
+    CU_ASSERT(test_ins(conn, stream, 150, 2000) == XQC_OK);
+    CU_ASSERT(test_ins(conn, stream, 2150, 100) == XQC_OK);
+    CU_ASSERT(test_ins(conn, stream, 2100, 200) == XQC_OK);
+
+    CU_ASSERT(test_read_all_pat(stream, 0) == 2300);
+
+    xqc_engine_destroy(conn->engine);
+}
+
+void
+xqc_test_stream_frame_join_realloc_failure()
+{
+#ifdef XQC_TEST_ALLOC_WRAP
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    xqc_stream_t *stream = test_pat_stream(conn);
+
+    CU_ASSERT(test_ins(conn, stream, 0, 100) == XQC_OK);
+
+    xqc_stream_frame_t *f = test_mk_pat_frame(100, 100);
+    /* the next allocation is the join's realloc */
+    xqc_test_af_arm(1);
+    xqc_int_t ret = xqc_insert_stream_frame(conn, stream, f);
+    CU_ASSERT(xqc_test_af_disarm());
+    CU_ASSERT(ret == XQC_OK);
+    CU_ASSERT(TEST_CNT(stream) == 2);
+    CU_ASSERT(test_read_all_pat(stream, 0) == 200);
+
+    xqc_engine_destroy(conn->engine);
+#endif
+}
+
+void
+xqc_test_stream_frame_coalesce_constants()
+{
+    CU_ASSERT(XQC_STREAM_FRAME_COALESCE_BYTES / 2
+              >= XQC_MIN_STREAM_BUFFERED_BYTES_PER_FRAME);
+    CU_ASSERT((uint64_t) (XQC_MAX_STREAM_FRAME_BUFFERED_COUNT_HARD / 2)
+                  * XQC_STREAM_FRAME_COALESCE_BYTES
+              >= XQC_MAX_RECV_WINDOW);
+}
+
+void
+xqc_test_stream_frame_join_accounting()
+{
+    xqc_connection_t *conn = test_engine_connect();
+    CU_ASSERT_PTR_NOT_NULL_FATAL(conn);
+    xqc_stream_t *stream = test_stream_with_fc(conn, 1 << 20, 1 << 20);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stream);
+    CU_ASSERT_FATAL(stream->stream_id < 64);
+
+    uint64_t recved0 = conn->conn_flow_ctl.fc_data_recved;
+    unsigned char buf[8 + 100];
+
+    for (int i = 0; i < 3; i++) {
+        /* STREAM with OFF|LEN (|FIN on the last), two-byte varints */
+        unsigned char *p = buf;
+        *p++ = (i == 2) ? 0x0f : 0x0e;
+        *p++ = (unsigned char) stream->stream_id;
+        *p++ = 0x40;
+        *p++ = (unsigned char) (i * 100);
+        *p++ = 0x40;
+        *p++ = 100;
+        for (int j = 0; j < 100; j++) {
+            *p++ = TEST_PAT(i * 100 + j);
+        }
+        CU_ASSERT(test_process_stream_bytes(conn, buf, p - buf,
+                                            XQC_PTYPE_SHORT_HEADER) == XQC_OK);
+    }
+
+    CU_ASSERT(TEST_CNT(stream) == 1);
+    CU_ASSERT(stream->stream_max_recv_offset == 300);
+    CU_ASSERT(conn->conn_flow_ctl.fc_data_recved == recved0 + 300);
+    CU_ASSERT(conn->conn_err == 0);
+
+    unsigned char out[512];
+    uint8_t fin = 0;
+    CU_ASSERT(xqc_stream_recv(stream, out, sizeof(out), &fin) == 300);
+    CU_ASSERT(fin == 1);
 
     xqc_engine_destroy(conn->engine);
 }

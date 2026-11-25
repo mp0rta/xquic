@@ -204,6 +204,43 @@ fail:
     return ret;
 }
 
+/*
+ * Write and notify Stream Cancellation (RFC 9204 Section 4.4.2). A decoder
+ * whose maximum table capacity is 0 may omit it (Section 2.2.2.2).
+ */
+xqc_int_t
+xqc_qpack_notify_stream_cancel(xqc_qpack_t *qpk, uint64_t stream_id)
+{
+    ssize_t cb_ret;
+    xqc_var_buf_t *buf;
+
+    if (qpk->dec_max_cap == 0) {
+        return XQC_OK;
+    }
+
+    buf = qpk->ins_cb.get_buf_cb(XQC_INS_TYPE_DECODER, qpk->user_data);
+    if (NULL == buf) {
+        xqc_log(qpk->log, XQC_LOG_ERROR, "|get decoder instruction buf error|");
+        return -XQC_ENOBUF;
+    }
+
+    xqc_int_t ret = xqc_ins_write_stream_cancel(buf, stream_id);
+    if (ret < 0) {
+        xqc_log(qpk->log, XQC_LOG_ERROR, "|write stream cancel error|ret:%d|", ret);
+        return ret;
+    }
+    xqc_log_event(qpk->log, QPACK_INSTRUCTION_CREATED, XQC_LOG_DECODER_EVENT,
+                  XQC_INS_TYPE_DEC_STREAM_CANCEL, stream_id);
+
+    cb_ret = qpk->ins_cb.write_ins_cb(XQC_INS_TYPE_DECODER, buf, qpk->user_data);
+    if (cb_ret < 0) {
+        xqc_log(qpk->log, XQC_LOG_ERROR, "|decoder instruction callback error|ret:%z|", cb_ret);
+        return cb_ret;
+    }
+
+    return XQC_OK;
+}
+
 /* write and notify Section Acknowledgement */
 static inline xqc_int_t
 xqc_qpack_notify_section_ack(xqc_qpack_t *qpk, uint64_t stream_id)

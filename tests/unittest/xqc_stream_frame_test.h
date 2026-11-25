@@ -18,6 +18,14 @@ void  xqc_test_stream_frame_dense_prefix_liveness();
 void  xqc_test_stream_frame_prefix_respects_hard_cap();
 void  xqc_test_stream_frame_fin_repair_skips_discarded();
 void  xqc_test_stream_frame_cap_setting();
+void  xqc_test_stream_frame_join_in_order();
+void  xqc_test_stream_frame_join_boundary();
+void  xqc_test_stream_frame_join_heals_reorder();
+void  xqc_test_stream_frame_join_partially_read();
+void  xqc_test_stream_frame_join_skips_overlap_and_empty();
+void  xqc_test_stream_frame_join_realloc_failure();
+void  xqc_test_stream_frame_coalesce_constants();
+void  xqc_test_stream_frame_join_accounting();
 
 void  xqc_test_stop_sending_drops_queued_stream_packets();
 void  xqc_test_stop_sending_spares_other_streams();
