@@ -72,6 +72,7 @@ void xqc_test_mp21_solo_frame_in_datagram_no_pv(void);
 /* draft-21 §4.7: PATHS_BLOCKED is sent on draft-21 connections only. */
 void xqc_test_mp21_paths_blocked_sent_on_draft21(void);
 void xqc_test_mp21_paths_blocked_not_sent_on_draft10(void);
+void xqc_test_mp21_paths_blocked_not_sent_below_limit(void);
 
 /* mp21 L2 M3 — MAX_PATH_ID credit grant gate behaviour. */
 void xqc_test_mp21_max_path_id_grant_disabled_by_default(void);
