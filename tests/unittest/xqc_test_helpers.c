@@ -40,8 +40,8 @@ xqc_test_helper_conn_destroy(xqc_connection_t *conn)
 
 /* ------------------------------------------------------------------ */
 /* CID seeding — populates scid_set and dcid_set with n UNUSED CIDs,
- * one per path_id 0..n-1. The mp21 fixture only inits scid_set's
- * cid_set_list, so we lazily init dcid_set here.
+ * one per path_id 0..n-1, in the CID sets that the mp21 fixture
+ * initialises and xqc_test_helper_conn_destroy() frees.
  *
  * Each CID is XQC_DEFAULT_CID_LEN bytes encoded as:
  *   byte 0 = path_id (low 8 bits)
@@ -70,21 +70,6 @@ xqc_test_seed_cids(xqc_connection_t *conn, size_t n)
 {
     if (conn == NULL) {
         return -XQC_EPARAM;
-    }
-
-    /* mp21 fixture initialises scid_set.cid_set_list but not dcid_set's;
-     * make sure both are valid heads before we add per-path inner sets. */
-    if (conn->dcid_set.cid_set_list.next == NULL) {
-        xqc_init_list_head(&conn->dcid_set.cid_set_list);
-    }
-    if (conn->dcid_set.abandoned_set_list.next == NULL) {
-        xqc_init_list_head(&conn->dcid_set.abandoned_set_list);
-    }
-    if (conn->scid_set.cid_set_list.next == NULL) {
-        xqc_init_list_head(&conn->scid_set.cid_set_list);
-    }
-    if (conn->scid_set.abandoned_set_list.next == NULL) {
-        xqc_init_list_head(&conn->scid_set.abandoned_set_list);
     }
 
     for (size_t i = 0; i < n; i++) {
