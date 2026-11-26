@@ -7213,7 +7213,8 @@ int main(int argc, char *argv[]) {
         conn_settings.init_max_path_id = 1;
     }
 
-    if (g_test_case == 1307) {
+    /* case 1309: draft-21 at the default path ID limits */
+    if (g_test_case == 1307 || g_test_case == 1309) {
         conn_settings.multipath_version = XQC_MULTIPATH_3E;
     }
 

@@ -1600,11 +1600,15 @@ xqc_test_mp21_solo_frame_in_datagram_no_pv(void)
 
 /*
  * A client connection that negotiated multipath with version, at limits
- * of 1 on both sides and with no connection ID for path ID 1, asks for a
- * new path: there is no path ID left. The caller destroys the engine.
+ * of 1 on both sides, asks for a new path and is refused. Without
+ * unused_path_id, path ID 1 has no connection ID sets: there is no path ID
+ * left. With it, path ID 1 has its sets, but no connection ID in them yet:
+ * the path ID is unused, and only its connection IDs are missing. The
+ * caller destroys the engine.
  */
 static xqc_connection_t *
-mp21_create_path_without_path_id(xqc_multipath_version_t version)
+mp21_create_path_without_path_id(xqc_multipath_version_t version,
+    int unused_path_id)
 {
     uint64_t            path_id = 0;
     xqc_connection_t   *conn;
@@ -1618,6 +1622,9 @@ mp21_create_path_without_path_id(xqc_multipath_version_t version)
     conn->remote_settings.init_max_path_id = 1;
     conn->remote_max_path_id = 1;
     conn->curr_max_path_id = 1;
+    if (unused_path_id) {
+        CU_ASSERT_EQUAL_FATAL(xqc_conn_add_path_cid_sets(conn, 1, 1), XQC_OK);
+    }
 
     CU_ASSERT_EQUAL(xqc_conn_create_path(conn->engine,
                                          &conn->scid_set.user_scid,
@@ -1634,10 +1641,27 @@ xqc_test_mp21_paths_blocked_sent_on_draft21(void)
 {
     xqc_connection_t   *conn;
 
-    conn = mp21_create_path_without_path_id(XQC_MULTIPATH_3E);
+    conn = mp21_create_path_without_path_id(XQC_MULTIPATH_3E, 0);
     CU_ASSERT_PTR_NOT_NULL(xqc_test_find_packet_with_frame(conn,
                                            XQC_FRAME_BIT_PATHS_BLOCKED));
     CU_ASSERT_NOT_EQUAL(conn->last_paths_blocked_sent_us, 0);
+    xqc_engine_destroy(conn->engine);
+}
+
+/* draft-ietf-quic-multipath-21 Section 3.2.1 has PATHS_BLOCKED for an
+ * endpoint that has no unused path ID left: a refusal while an unused path
+ * ID waits for its connection IDs sends none, and the ready_to_create_path
+ * notification is still due once they arrive. */
+void
+xqc_test_mp21_paths_blocked_not_sent_below_limit(void)
+{
+    xqc_connection_t   *conn;
+
+    conn = mp21_create_path_without_path_id(XQC_MULTIPATH_3E, 1);
+    CU_ASSERT_PTR_NULL(xqc_test_find_packet_with_frame(conn,
+                                       XQC_FRAME_BIT_PATHS_BLOCKED));
+    CU_ASSERT_EQUAL(conn->last_paths_blocked_sent_us, 0);
+    CU_ASSERT_TRUE((conn->conn_flag & XQC_CONN_FLAG_MP_WAIT_MP_READY) != 0);
     xqc_engine_destroy(conn->engine);
 }
 
@@ -1649,7 +1673,7 @@ xqc_test_mp21_paths_blocked_not_sent_on_draft10(void)
 {
     xqc_connection_t   *conn;
 
-    conn = mp21_create_path_without_path_id(XQC_MULTIPATH_10);
+    conn = mp21_create_path_without_path_id(XQC_MULTIPATH_10, 0);
     CU_ASSERT_PTR_NULL(xqc_test_find_packet_with_frame(conn,
                                        XQC_FRAME_BIT_PATHS_BLOCKED));
     CU_ASSERT_EQUAL(conn->last_paths_blocked_sent_us, 0);

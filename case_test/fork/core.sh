@@ -201,6 +201,37 @@ fi
 grep_err_log
 }
 
+# 1309 abnormal path, draft-21 at the default limits of 8 path IDs: the
+# client opens two paths besides its first as soon as it can, before the ACKs
+# of its connection IDs for path IDs 1 and 2 have all come back, so a path
+# can be refused while path IDs are left. Such a path waits for those ACKs;
+# it is no limit, and draft-ietf-quic-multipath-21 Section 3.2.1 has
+# PATHS_BLOCKED only for an endpoint without unused path IDs: the client
+# sends none, and the transfer completes on three paths.
+case_fork_core_MP_no_paths_blocked_while_path_ids_are_left()
+{
+rm -rf tp_localhost test_session xqc_token
+case_test_start_server ${SERVER_BIN} -l d -e -M -x 1309 > /dev/null
+clear_log
+echo -e "MP sends no PATHS_BLOCKED while path IDs are left ...\c"
+case_test_sudo ${CLIENT_BIN} -s 1024000 -l d -t 1 -E -M -i lo -i lo -i lo -x 1309 > stdlog
+result=`grep ">>>>>>>> pass:1" stdlog`
+sent=`grep "|PATHS_BLOCKED sent|" clog`
+received=`grep "|PATHS_BLOCKED received|" slog`
+cli_res=`grep -E "xqc_conn_destroy\|.*\|err:0x0\|.*\|mp_enable:1\|create:3\|validated:3\|" clog`
+errlog=`grep_err_log`
+if [ -z "$errlog" ] && [ -n "$result" ] && [ -z "$sent" ] && [ -z "$received" ] \
+    && [ -n "$cli_res" ]; then
+    echo ">>>>>>>> pass:1"
+    case_print_result "MP_no_paths_blocked_while_path_ids_are_left" "pass"
+else
+    echo ">>>>>>>> pass:0 (result:${result:+y} sent:${sent:+y} received:${received:+y}" \
+        "cli_res:${cli_res:+y} errlog:${errlog:+y})"
+    case_print_result "MP_no_paths_blocked_while_path_ids_are_left" "fail"
+fi
+grep_err_log
+}
+
 # 727 happy path: default cap, lossy echo transfer completes and the cap
 # machinery stays quiet (no buffered-count rejections logged).
 case_fork_core_stream_reassembly_cap_happy()
@@ -803,6 +834,7 @@ case_test_case "MP_datagrams_leave_silently_failed_path" --id 1300 --mode self-r
 case_test_case "MP_datagrams_resume_after_all_paths_failed_silently" --id 1301 --mode self-reporting --run case_fork_core_MP_datagrams_resume_after_all_paths_failed_silently
 case_test_case "MP_draft21_reports_path_blocked" --id 1307 --mode self-reporting --run case_fork_core_MP_draft21_reports_path_blocked
 case_test_case "MP_draft10_refuses_path_without_paths_blocked" --id 1308 --mode self-reporting --run case_fork_core_MP_draft10_refuses_path_without_paths_blocked
+case_test_case "MP_no_paths_blocked_while_path_ids_are_left" --id 1309 --mode self-reporting --run case_fork_core_MP_no_paths_blocked_while_path_ids_are_left
 case_test_case "stream_reassembly_cap_happy" --id 727 --mode self-reporting --run case_fork_core_stream_reassembly_cap_happy
 case_test_case "stream_reassembly_cap_pressure_recovery" --id 728 --mode self-reporting --run case_fork_core_stream_reassembly_cap_pressure_recovery
 case_test_case "max_pkt_out_size_at_cap" --id 735 --mode self-reporting --run case_fork_core_max_pkt_out_size_at_cap
