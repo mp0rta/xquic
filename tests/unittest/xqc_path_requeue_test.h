@@ -17,6 +17,7 @@ void xqc_test_dead_probe_waits_for_requeue(void);
 void xqc_test_dead_probe_waits_for_new_data(void);
 void xqc_test_dead_probe_waits_for_moved_packets(void);
 void xqc_test_wlb_probe_moves_data_after_all_paths_silent(void);
+void xqc_test_wlb_probe_waits_for_fired_ptos(void);
 void xqc_test_dead_probe_moves_pto_probes(void);
 void xqc_test_backup_skips_dead_primary(void);
 void xqc_test_quiet_standby_rule(void);

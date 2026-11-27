@@ -1188,7 +1188,14 @@ wlb_probe_evicted_paths(xqc_wlb_scheduler_t *s, xqc_connection_t *conn,
             xqc_path_move_unack_packets_from_conn(path, conn);
         }
 
-        if (!wlb_probe_fits_cwnd(path)) {
+        /* Nor before its third PTO has fired: the PING re-arms the loss
+         * detection timer, so on a path evicted only by expiries hidden by
+         * sends it would hold off that PTO, and the move above, while the
+         * PTO is above a quarter of the interval, as in
+         * xqc_scheduler_probe_dead_paths(). */
+        if (path->path_send_ctl->ctl_pto_count < XQC_PATH_REQUEUE_PTO_THRESH
+            || !wlb_probe_fits_cwnd(path))
+        {
             continue;
         }
         if (n < WLB_MAX_PATHS) {

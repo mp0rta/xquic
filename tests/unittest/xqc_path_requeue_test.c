@@ -990,3 +990,56 @@ xqc_test_wlb_probe_moves_data_after_all_paths_silent(void)
     requeue_test_teardown(&t);
     free(state);
 }
+
+/* WLB evicts a path from expiries hidden by sends, before its third PTO
+ * fires. No PING goes to it until then: the PING would re-arm its loss
+ * detection timer and hold off the PTO that moves its data. Once the third
+ * PTO has fired and moved the data, the path is probed. */
+void
+xqc_test_wlb_probe_waits_for_fired_ptos(void)
+{
+    requeue_test_t t;
+    xqc_timestamp_pt saved_clock = xqc_monotonic_timestamp;
+    void *state = calloc(1, xqc_wlb_scheduler_cb.xqc_scheduler_size());
+    CU_ASSERT_FATAL(state != NULL);
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    xqc_wlb_scheduler_cb.xqc_scheduler_init(state, t.conn->log, NULL);
+    CU_ASSERT_FATAL(requeue_test_add_path(&t, 0) != NULL);
+
+    /* nothing acknowledged for many PTOs, with sends hiding the expiries */
+    t.conn->conn_flag |= XQC_CONN_FLAG_HANDSHAKE_CONFIRMED;
+    t.conn->conn_settings.pto_backoff_factor = 2.0;
+    xqc_send_ctl_t *ctl = t.dead->path_send_ctl;
+    CU_ASSERT_FATAL(requeue_test_stream_in_flight(&t, t.dead, 1) != NULL);
+    ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH - 1;
+    ctl->ctl_progress_time = 1;
+    ctl->ctl_time_of_last_sent_ack_eliciting_packet[XQC_PNS_APP_DATA] =
+        ctl->ctl_progress_time + 64 * xqc_send_ctl_calc_pto(ctl);
+    CU_ASSERT_FATAL(xqc_send_ctl_get_effective_pto_count(ctl)
+                    >= XQC_PATH_REQUEUE_PTO_THRESH);
+
+    requeue_test_wlb_now = 1000000;
+    xqc_monotonic_timestamp = requeue_test_wlb_clock;
+    xqc_wlb_scheduler_cb.xqc_scheduler_handle_conn_event(state, t.conn,
+        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    for (int i = 0; i < 4; i++) {
+        requeue_test_wlb_now += 600000;
+        xqc_wlb_scheduler_cb.xqc_scheduler_handle_conn_event(state, t.conn,
+            XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    }
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 0);
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 1200);
+
+    /* the third PTO fires and moves the data: the path is probed */
+    xqc_path_requeue_unacked_on_pto(t.dead);
+    ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 0);
+    requeue_test_wlb_now += 600000;
+    xqc_wlb_scheduler_cb.xqc_scheduler_handle_conn_event(state, t.conn,
+        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
+
+    xqc_monotonic_timestamp = saved_clock;
+    requeue_test_teardown(&t);
+    free(state);
+}
