@@ -475,6 +475,9 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
 
     engine->default_conn_settings.simulate_ecn = settings->simulate_ecn;
 
+    engine->default_conn_settings.max_body_buf_per_stream =
+        settings->max_body_buf_per_stream;
+
     /* compute effective blocked buffer limits (use default if not configured) */
     if (settings->max_blocked_buf_per_stream > 0) {
         engine->default_conn_settings.max_blocked_buf_per_stream = settings->max_blocked_buf_per_stream;
@@ -581,6 +584,7 @@ static const char *const xqc_conn_flag_to_str[XQC_CONN_FLAG_SHIFT_NUM] = {
     [XQC_CONN_FLAG_HANDSHAKE_DONE_SENT_SHIFT] = "HANDSHAKE_DONE_SENT",
     [XQC_CONN_FLAG_SERVER_ACCEPT_SHIFT] = "SERVER_ACCEPT",
     [XQC_CONN_FLAG_RETRY_SENT_SHIFT] = "RETRY_PACKET_SENT",
+    [XQC_CONN_FLAG_DESTROYING_SHIFT] = "DESTROYING",
 };
 
 
@@ -801,6 +805,7 @@ xqc_conn_init_flow_ctl(xqc_connection_t *conn)
     flow_ctl->fc_data_recved = 0;
     flow_ctl->fc_recv_windows_size = settings->max_data;
     flow_ctl->fc_last_window_update_time = 0;
+    flow_ctl->fc_last_window_update_read = 0;
 }
 
 static inline void
@@ -1698,6 +1703,13 @@ xqc_conn_destroy_crypto_data_list(xqc_list_head_t *crypto_data_list)
     }
 }
 
+xqc_bool_t
+xqc_conn_is_tearing_down(const xqc_connection_t *conn)
+{
+    return conn->conn_state >= XQC_CONN_STATE_CLOSING
+           || (conn->conn_flag & XQC_CONN_FLAG_DESTROYING);
+}
+
 void
 xqc_conn_destroy(xqc_connection_t *xc)
 {
@@ -1708,6 +1720,8 @@ xqc_conn_destroy(xqc_connection_t *xc)
     if (!xc) {
         return;
     }
+
+    xc->conn_flag |= XQC_CONN_FLAG_DESTROYING;
 
     if (xc->conn_flag & XQC_CONN_FLAG_TICKING) {
         xqc_log(xc->log, XQC_LOG_ERROR, "|in XQC_CONN_FLAG_TICKING|%p|", xc);
@@ -2049,6 +2063,10 @@ xqc_conn_send_ping_internal(xqc_connection_t *conn, void *ping_user_data,
         xqc_list_for_each_safe(pos, next, &conn->conn_paths_list)
         {
             path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
+            /* the keep-alive leaves a quiet backup path alone */
+            if (!notify && xqc_path_is_quiet_standby(path)) {
+                continue;
+            }
             if (path->path_state == XQC_PATH_STATE_ACTIVE) {
                 ret = xqc_write_ping_to_packet(conn, path, ping_user_data, notify, pr);
                 if (ret < 0) {
@@ -3493,6 +3511,8 @@ xqc_conn_schedule_start(xqc_connection_t *conn)
     if (!conn->enable_multipath) {
         return;
     }
+
+    xqc_conn_wake_quiet_standby(conn);
 
     if (conn->scheduler_callback->xqc_scheduler_handle_conn_event) {
         conn->scheduler_callback->xqc_scheduler_handle_conn_event(
@@ -4949,6 +4969,7 @@ xqc_conn_early_data_reject(xqc_connection_t *conn)
 {
     xqc_list_head_t *pos, *next;
     xqc_stream_t *stream;
+    xqc_int_t ret;
 
     xqc_log(conn->log, XQC_LOG_DEBUG, "|reject|");
 
@@ -5000,6 +5021,23 @@ xqc_conn_early_data_reject(xqc_connection_t *conn)
             }
             xqc_stream_send_state_update(stream, XQC_SEND_STREAM_ST_READY);
             xqc_stream_recv_state_update(stream, XQC_RECV_STREAM_ST_RECV);
+            /*
+             * RFC 9001 Section 4.6.2: the server did not process our 0-RTT
+             * packets, so it may not know this credit; send it again. Never
+             * lower it: a MAX_STREAM_DATA outside 0-RTT may have arrived.
+             */
+            if (stream->stream_type == XQC_CLI_BID
+                && stream->stream_flow_ctl.fc_max_stream_data_can_recv
+                   > conn->local_settings.max_stream_data_bidi_local)
+            {
+                ret = xqc_write_max_stream_data_to_packet(conn, stream->stream_id,
+                    stream->stream_flow_ctl.fc_max_stream_data_can_recv,
+                    XQC_PTYPE_SHORT_HEADER);
+                if (ret != XQC_OK) {
+                    XQC_CONN_ERR(conn, TRA_INTERNAL_ERROR);
+                    return ret;
+                }
+            }
             xqc_stream_write_buffed_data_to_packets(stream);
         }
     }

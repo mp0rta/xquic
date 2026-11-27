@@ -56,8 +56,9 @@
  * below the flow-control window in ordinary operation.  §4.1 requires an
  * endpoint to "buffer any data that is received out of order, up to the
  * advertised flow control limit", and nodes are freed only in
- * xqc_stream_recv, so the node count tracks undelivered bytes divided by
- * frame size whether or not anything arrived out of order.  Against the
+ * xqc_stream_recv or when joined into a neighbour, so for packet-sized
+ * frames (which do not join) the node count tracks undelivered bytes divided
+ * by frame size whether or not anything arrived out of order.  Against the
  * 16 MiB XQC_MAX_RECV_WINDOW, 1379-byte frames reach 12166 nodes -- 1.49x
  * past a flat 8192 with one path and no reordering at all.  Measured on this
  * tree: 8192 strictly in-order hole-free frames, then rejection, at 10.8 MiB
@@ -86,10 +87,26 @@
  * the sender still puts every held byte on the wire -- and the previous flat
  * 8192-node cap had the same shape at ~8 MB.  Raising the ceiling raises that
  * worst case with it; it does not open a path the old cap closed.
+ *
+ * Exactly adjacent non-empty frames are joined into one node while they fit
+ * in XQC_STREAM_FRAME_COALESCE_BYTES, so contiguous data reaches neither cap
+ * within XQC_MAX_RECV_WINDOW.  Frames separated by a hole or an empty frame,
+ * or overlapping each other, stay one node each.
  */
 #define XQC_MAX_STREAM_FRAME_BUFFERED_COUNT          8192
 #define XQC_MAX_STREAM_FRAME_BUFFERED_COUNT_HARD     32768
 #define XQC_MIN_STREAM_BUFFERED_BYTES_PER_FRAME      256
+
+/* Adjacent received STREAM frames are joined into one node up to this size.
+ * Two neighbouring nodes that are exactly adjacent hold more than this size
+ * between them, so contiguous, non-overlapping data stays above the sparse
+ * density minimum and cannot reach the hard node cap within the receive
+ * window:
+ *   XQC_STREAM_FRAME_COALESCE_BYTES / 2
+ *       >= XQC_MIN_STREAM_BUFFERED_BYTES_PER_FRAME
+ *   XQC_MAX_STREAM_FRAME_BUFFERED_COUNT_HARD / 2
+ *       * XQC_STREAM_FRAME_COALESCE_BYTES >= XQC_MAX_RECV_WINDOW */
+#define XQC_STREAM_FRAME_COALESCE_BYTES              2048
 
 
 /* xquic will not send stateless reset to packets which are smaller than

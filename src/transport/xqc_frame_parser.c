@@ -1101,6 +1101,16 @@ xqc_parse_repair_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in,
         return -XQC_EVINTREAD;
     }
     p += vlen;
+
+    /*
+     * The sizes come from the peer: each one is compared with the bytes left
+     * (xqc_vint_read() leaves p <= end) before it is stored in a size_t or
+     * moves p, as p + size can wrap. A field that runs past the end of the
+     * packet is a frame error (RFC 9000 Sections 12.4 and 20.1).
+     */
+    if (repair_key_size > (uint64_t)(end - p)) {
+        return -XQC_EILLEGAL_FRAME;
+    }
     rpr_symbol->repair_key_size = repair_key_size;
     rpr_symbol->repair_key = p;
 
@@ -1110,6 +1120,10 @@ xqc_parse_repair_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_in,
         return -XQC_EVINTREAD;
     }
     p += vlen;
+
+    if (repair_symbol_size > (uint64_t)(end - p)) {
+        return -XQC_EILLEGAL_FRAME;
+    }
     rpr_symbol->payload_size = repair_symbol_size;
     rpr_symbol->payload = p;
 

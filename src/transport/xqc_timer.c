@@ -17,6 +17,7 @@ static const char * const timer_type_2_str[XQC_TIMER_N] = {
     [XQC_TIMER_LOSS_DETECTION]  = "LOSS_DETECTION",
     [XQC_TIMER_PACING]          = "PACING",
     [XQC_TIMER_NAT_REBINDING]   = "NAT_REBINDING",
+    [XQC_TIMER_PATH_CHALLENGE]  = "PATH_CHALLENGE",
     [XQC_TIMER_PATH_IDLE]       = "PATH_IDLE",
     [XQC_TIMER_PATH_DRAINING]   = "PATH_DRAINING",
 
@@ -155,6 +156,15 @@ xqc_timer_nat_rebinding_timeout(xqc_timer_type_t type, xqc_usec_t now, void *use
 }
 
 void
+xqc_timer_path_challenge_timeout(xqc_timer_type_t type, xqc_usec_t now,
+    void *user_data)
+{
+    xqc_send_ctl_t *send_ctl = (xqc_send_ctl_t *)user_data;
+
+    xqc_path_resend_challenge(send_ctl->ctl_path);
+}
+
+void
 xqc_timer_path_idle_timeout(xqc_timer_type_t type, xqc_usec_t now, void *user_data)
 {
     xqc_send_ctl_t *send_ctl = (xqc_send_ctl_t *)user_data;
@@ -166,6 +176,20 @@ xqc_timer_path_idle_timeout(xqc_timer_type_t type, xqc_usec_t now, void *user_da
     }
 
     if (conn->active_path_count < 2 && path->path_state == XQC_PATH_STATE_ACTIVE) {
+        return;
+    }
+
+    /* A quiet STANDBY path is silent on purpose while another path works:
+     * keep it, it is the backup. So is one that was quiet at the last send
+     * round: timers run before the next round, which wakes it
+     * (xqc_conn_wake_quiet_standby). */
+    if (xqc_path_is_quiet_standby(path)
+        || (path->path_was_quiet_standby
+            && path->path_state == XQC_PATH_STATE_ACTIVE))
+    {
+        xqc_log(conn->log, XQC_LOG_DEBUG, "|quiet standby path kept:%ui|", path->path_id);
+        xqc_timer_set(&send_ctl->path_timer_manager, XQC_TIMER_PATH_IDLE,
+                      now, xqc_path_get_idle_timeout(path) * 1000);
         return;
     }
 
@@ -426,6 +450,10 @@ xqc_timer_init(xqc_timer_manager_t *manager, xqc_log_t *log, void *user_data)
 
         } else if (type == XQC_TIMER_NAT_REBINDING) {
             timer->timeout_cb = xqc_timer_nat_rebinding_timeout;
+            timer->user_data = user_data;
+
+        } else if (type == XQC_TIMER_PATH_CHALLENGE) {
+            timer->timeout_cb = xqc_timer_path_challenge_timeout;
             timer->user_data = user_data;
 
         } else if (type == XQC_TIMER_PATH_IDLE) {

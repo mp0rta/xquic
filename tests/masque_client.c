@@ -1209,7 +1209,8 @@ main(int argc, char *argv[])
     /* ── Allocate tunnel ── */
     masque_tunnel_t tunnel = {0};
     tunnel.conn = &conn;
-    strncpy(tunnel.target_host, g_target_host, sizeof(tunnel.target_host) - 1);
+    snprintf(tunnel.target_host, sizeof(tunnel.target_host), "%s",
+             g_target_host);
     tunnel.target_port = g_target_port;
     tunnel.send_data = g_send_data;
     tunnel.send_data_len = strlen(g_send_data);

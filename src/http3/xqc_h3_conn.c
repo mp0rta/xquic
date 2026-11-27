@@ -6,6 +6,7 @@
 #include "src/http3/xqc_h3_ctx.h"
 
 #include "src/transport/xqc_engine.h"
+#include "src/common/xqc_time.h"
 #include "src/transport/xqc_stream.h"
 #include "src/transport/xqc_client.h"
 #include "src/transport/xqc_defs.h"
@@ -460,6 +461,9 @@ xqc_h3_conn_init_settings(xqc_h3_conn_t *h3c)
 }
 
 
+static void xqc_h3_conn_body_buf_revisit_timeout(xqc_gp_timer_id_t gp_timer_id,
+    xqc_usec_t now, void *user_data);
+
 xqc_h3_conn_t *
 xqc_h3_conn_create(xqc_connection_t *conn, void *user_data)
 {
@@ -472,6 +476,7 @@ xqc_h3_conn_create(xqc_connection_t *conn, void *user_data)
     h3c->conn = conn;
     h3c->log = conn->log;
     h3c->user_data = user_data;
+    h3c->body_buf_revisit_timer = -1;
 
     h3c->control_stream_out = NULL;
 
@@ -540,8 +545,19 @@ xqc_h3_conn_create(xqc_connection_t *conn, void *user_data)
     /* read effective blocked buffer limits (already computed in xqc_server_set_conn_settings) */
     h3c->max_blocked_buf_per_stream = conn->conn_settings.max_blocked_buf_per_stream;
     h3c->max_blocked_buf_per_conn = conn->conn_settings.max_blocked_buf_per_conn;
+    h3c->max_body_buf_per_stream = conn->conn_settings.max_body_buf_per_stream;
     xqc_log(h3c->log, XQC_LOG_DEBUG, "|blocked_buf_limits|per_stream:%uz|per_conn:%uz|",
             h3c->max_blocked_buf_per_stream, h3c->max_blocked_buf_per_conn);
+
+    /* registered here, so that arming it inside the engine cannot fail */
+    if (h3c->max_body_buf_per_stream > 0) {
+        h3c->body_buf_revisit_timer = xqc_conn_register_gp_timer(
+            conn, "h3_body_buf_revisit", xqc_h3_conn_body_buf_revisit_timeout, h3c);
+        if (h3c->body_buf_revisit_timer < 0) {
+            xqc_log(h3c->log, XQC_LOG_ERROR, "|register revisit timer error|");
+            goto fail;
+        }
+    }
 
     /* create qpack */
     h3c->qpack =
@@ -581,6 +597,20 @@ fail:
     return NULL;
 }
 
+/* empty: the pass its expiry causes processes the read list */
+static void
+xqc_h3_conn_body_buf_revisit_timeout(xqc_gp_timer_id_t gp_timer_id, xqc_usec_t now,
+                                     void *user_data)
+{
+}
+
+void
+xqc_h3_conn_body_buf_revisit(xqc_h3_conn_t *h3c)
+{
+    xqc_conn_gp_timer_set(h3c->conn, h3c->body_buf_revisit_timer,
+                          xqc_monotonic_timestamp());
+}
+
 void
 xqc_h3_conn_destroy(xqc_h3_conn_t *h3_conn)
 {
@@ -593,6 +623,10 @@ xqc_h3_conn_destroy(xqc_h3_conn_t *h3_conn)
 
     xqc_h3_conn_destroy_blocked_stream_list(h3_conn);
     xqc_qpack_destroy(h3_conn->qpack);
+
+    if (h3_conn->body_buf_revisit_timer >= 0) {
+        xqc_conn_unregister_gp_timer(h3_conn->conn, h3_conn->body_buf_revisit_timer);
+    }
 
     xqc_log(h3_conn->log, XQC_LOG_DEBUG, "|success|");
     xqc_free(h3_conn);
@@ -1059,20 +1093,21 @@ xqc_h3_conn_remove_blocked_stream(xqc_h3_conn_t *h3c,
 void
 xqc_h3_conn_destroy_blocked_stream_list(xqc_h3_conn_t *h3c)
 {
-    xqc_list_head_t *pos, *next;
-
-    xqc_list_for_each_safe(pos, next, &h3c->block_stream_head)
-    {
-        xqc_h3_blocked_stream_t *blocked_stream =
-            xqc_list_entry(pos, xqc_h3_blocked_stream_t, head);
+    /*
+     * A destroy runs a close notify that may destroy another entry, so keep
+     * none across it: each destroy removes its own entry, and the next is the
+     * new first.
+     */
+    while (!xqc_list_empty(&h3c->block_stream_head)) {
+        xqc_h3_blocked_stream_t *blocked_stream = xqc_list_entry(
+            h3c->block_stream_head.next, xqc_h3_blocked_stream_t, head);
 
         /**
          * when destroying h3 connection, and a h3 stream is still blocked, it means that
          * Transport stream was destroyed while h3 stream is still waiting for encoder
          * instructions, but connection was closed actively or some reason else.
          */
-        xqc_h3_stream_t *h3s = blocked_stream->h3s;
-        xqc_h3_stream_destroy(h3s);
+        xqc_h3_stream_destroy(blocked_stream->h3s);
     }
 }
 
@@ -1080,22 +1115,52 @@ xqc_int_t
 xqc_h3_conn_process_blocked_stream(xqc_h3_conn_t *h3c)
 {
     uint64_t known_received_count = xqc_qpack_get_dec_insert_count(h3c->qpack);
-    xqc_list_head_t *pos, *next;
-    xqc_list_for_each_safe(pos, next, &h3c->block_stream_head)
-    {
-        xqc_h3_blocked_stream_t *blocked_stream =
-            xqc_list_entry(pos, xqc_h3_blocked_stream_t, head);
-        if (blocked_stream->ricnt <= known_received_count) {
-            xqc_int_t ret = xqc_h3_stream_process_blocked_stream(blocked_stream->h3s);
-            if (ret < 0) {
-                return ret;
-            }
+    xqc_int_t ret = XQC_OK;
+    xqc_list_head_t replayed;
 
-        } else {
+    /*
+     * A replay runs callbacks that may destroy another blocked request, so
+     * keep no entry across it: take the next from the front. A replayed entry
+     * waits on a local list; unblock, release and destroy take an entry off
+     * whatever list it is on, so only entries still blocked go back in front,
+     * where their ricnt (not above the known count) keeps the list sorted.
+     */
+    xqc_init_list_head(&replayed);
+
+    while (!xqc_list_empty(&h3c->block_stream_head)) {
+        xqc_h3_blocked_stream_t *blocked_stream = xqc_list_entry(
+            h3c->block_stream_head.next, xqc_h3_blocked_stream_t, head);
+        xqc_h3_stream_t *h3s;
+
+        if (blocked_stream->ricnt > known_received_count) {
+            break;
+        }
+
+        h3s = blocked_stream->h3s;
+
+        if (xqc_h3_stream_in_discard(h3s)) {
+            /* the application closed it: never replayed */
+            xqc_h3_stream_release_blocked(h3s);
+            continue;
+        }
+
+        xqc_list_del(&blocked_stream->head);
+        xqc_list_add_tail(&blocked_stream->head, &replayed);
+
+        ret = xqc_h3_stream_process_blocked_stream(h3s);
+        if (ret < 0) {
+            break;
+        }
+
+        if (h3c->max_body_buf_per_stream > 0
+            && xqc_conn_is_tearing_down(h3c->conn))
+        {
             break;
         }
     }
-    return XQC_OK;
+
+    xqc_list_splice(&replayed, &h3c->block_stream_head);
+    return ret < 0 ? ret : XQC_OK;
 }
 
 void *
