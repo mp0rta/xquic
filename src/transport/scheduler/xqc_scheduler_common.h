@@ -12,4 +12,8 @@ xqc_bool_t xqc_scheduler_check_path_can_send(xqc_path_ctx_t *path, xqc_packet_ou
 #define XQC_SCHED_DEAD_PROBE_INTERVAL_US (500 * 1000)
 void xqc_scheduler_probe_dead_paths(xqc_connection_t *conn, xqc_usec_t *last_probe);
 
+/* Does @path have a packet in flight that xqc_path_move_unack_packets_from_conn
+ * sends again or drops? */
+xqc_bool_t xqc_scheduler_path_has_data_to_move(xqc_connection_t *conn, xqc_path_ctx_t *path);
+
 #endif

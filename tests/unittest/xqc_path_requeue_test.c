@@ -15,6 +15,7 @@
 #include "src/transport/xqc_multipath.h"
 #include "src/transport/scheduler/xqc_scheduler_minrtt.h"
 #include "src/transport/scheduler/xqc_scheduler_backup.h"
+#include "src/transport/scheduler/xqc_scheduler_wlb.h"
 
 /*
  * A second path on a real connection: one path silently stops delivering
@@ -916,4 +917,76 @@ xqc_test_dead_probe_waits_for_moved_packets(void)
         CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
         requeue_test_teardown(&t);
     }
+}
+
+/* WLB, both paths silent: the third PTO of each found no working path, so
+ * none moved its data, and the data fills the first path's congestion
+ * window. The second path is acknowledged again. Within one probe interval
+ * the first path gets its data moved, which frees its window, and a PING:
+ * without the move, the PING would not fit the window and the path would
+ * wait for its next PTO, backed off to seconds. */
+static xqc_usec_t requeue_test_wlb_now;
+
+static xqc_usec_t
+requeue_test_wlb_clock(void)
+{
+    return requeue_test_wlb_now;
+}
+
+void
+xqc_test_wlb_probe_moves_data_after_all_paths_silent(void)
+{
+    requeue_test_t t;
+    xqc_timestamp_pt saved_clock = xqc_monotonic_timestamp;
+    void *state = calloc(1, xqc_wlb_scheduler_cb.xqc_scheduler_size());
+    CU_ASSERT_FATAL(state != NULL);
+    CU_ASSERT_FATAL(requeue_test_setup(&t) == 0);
+    xqc_wlb_scheduler_cb.xqc_scheduler_init(state, t.conn->log, NULL);
+    xqc_path_ctx_t *alt = requeue_test_add_path(&t, XQC_PATH_REQUEUE_PTO_THRESH);
+    CU_ASSERT_FATAL(alt != NULL);
+    xqc_send_queue_t *sq = t.conn->conn_send_queue;
+    xqc_send_ctl_t *ctl = t.dead->path_send_ctl;
+
+    /* the first path's window is full of STREAM data */
+    uint64_t cwnd = ctl->ctl_cong_callback->xqc_cong_ctl_get_cwnd(ctl->ctl_cong);
+    int n = 0;
+    while (ctl->ctl_bytes_in_flight < cwnd) {
+        CU_ASSERT_FATAL(requeue_test_stream_in_flight(&t, t.dead, 1 + n) != NULL);
+        n++;
+    }
+
+    /* its third PTO, with the other path silent too: nothing moves */
+    ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH - 1;
+    xqc_path_requeue_unacked_on_pto(t.dead);
+    ctl->ctl_pto_count = XQC_PATH_REQUEUE_PTO_THRESH;
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), (uint64_t)n * 1200);
+
+    requeue_test_wlb_now = 1000000;
+    xqc_monotonic_timestamp = requeue_test_wlb_clock;
+
+    /* both silent: the first round arms the interval, and after it the
+     * first path is not probed, its window is full */
+    xqc_wlb_scheduler_cb.xqc_scheduler_handle_conn_event(state, t.conn,
+        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    requeue_test_wlb_now += 600000;
+    xqc_wlb_scheduler_cb.xqc_scheduler_handle_conn_event(state, t.conn,
+        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 0);
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), (uint64_t)n * 1200);
+
+    /* the second path is acknowledged again */
+    alt->path_send_ctl->ctl_pto_count = 0;
+    CU_ASSERT_FATAL(xqc_path_has_working_alternative(t.dead));
+
+    /* one interval later: the data moves, then the PING */
+    requeue_test_wlb_now += 600000;
+    xqc_wlb_scheduler_cb.xqc_scheduler_handle_conn_event(state, t.conn,
+        XQC_SCHED_EVENT_CONN_ROUND_START, NULL);
+    CU_ASSERT_EQUAL(requeue_test_list_len(&sq->sndq_lost_packets), n);
+    CU_ASSERT_EQUAL(APP_INFLIGHT(t.dead), 0);
+    CU_ASSERT_EQUAL(requeue_test_probe_pings(&t, t.dead), 1);
+
+    xqc_monotonic_timestamp = saved_clock;
+    requeue_test_teardown(&t);
+    free(state);
 }

@@ -1038,6 +1038,8 @@ main(int argc, char *argv[])
                         xqc_test_dead_probe_waits_for_new_data)
         || !CU_add_test(pSuite, "xqc_test_dead_probe_waits_for_moved_packets",
                         xqc_test_dead_probe_waits_for_moved_packets)
+        || !CU_add_test(pSuite, "xqc_test_wlb_probe_moves_data_after_all_paths_silent",
+                        xqc_test_wlb_probe_moves_data_after_all_paths_silent)
         || !CU_add_test(pSuite, "xqc_test_dead_probe_moves_pto_probes",
                         xqc_test_dead_probe_moves_pto_probes)
         || !CU_add_test(pSuite, "xqc_test_backup_skips_dead_primary",

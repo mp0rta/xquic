@@ -1169,9 +1169,26 @@ wlb_probe_evicted_paths(xqc_wlb_scheduler_t *s, xqc_connection_t *conn,
     int n = 0;
     xqc_list_for_each_safe(pos, next, &conn->conn_paths_list) {
         path = xqc_list_entry(pos, xqc_path_ctx_t, path_list);
-        if (!wlb_path_transport_ok(path) || !wlb_path_blackholed(path)
-            || !wlb_probe_fits_cwnd(path))
+        if (!wlb_path_transport_ok(path) || !wlb_path_blackholed(path)) {
+            continue;
+        }
+
+        /* After every path was silent, no PTO could move a path's data:
+         * there was no working path to move it to, so it can still fill the
+         * window and keep the PING out, until a PTO backed off to seconds
+         * fires. Once its third PTO has fired and another path works again,
+         * move that data first, as xqc_scheduler_probe_dead_paths() does. */
+        if (path->path_send_ctl->ctl_pto_count >= XQC_PATH_REQUEUE_PTO_THRESH
+            && xqc_path_has_working_alternative(path)
+            && xqc_scheduler_path_has_data_to_move(conn, path))
         {
+            xqc_log(s->log, XQC_LOG_INFO,
+                    "|wlb|path:%ui|inflight:%ud|requeue unacked before probe|",
+                    path->path_id, path->path_send_ctl->ctl_bytes_in_flight);
+            xqc_path_move_unack_packets_from_conn(path, conn);
+        }
+
+        if (!wlb_probe_fits_cwnd(path)) {
             continue;
         }
         if (n < WLB_MAX_PATHS) {
