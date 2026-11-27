@@ -96,6 +96,38 @@ __wrap_free(void *ptr)
     __real_free(ptr);
 }
 
+/* for tests in other files: fail the nth allocation after the call */
+void
+xqc_test_af_arm(long fail_at)
+{
+    g_alloc_failed = 0;
+    g_alloc_fail_at = fail_at;
+    g_alloc_count = 0;
+}
+
+/* returns whether the armed allocation was reached and failed */
+int
+xqc_test_af_disarm(void)
+{
+    g_alloc_count = -1;
+    return g_alloc_failed;
+}
+
+/* count the allocations not freed yet, from here to xqc_test_af_live_end() */
+void
+xqc_test_af_live_begin(void)
+{
+    g_alloc_live = 0;
+    g_alloc_counting = 1;
+}
+
+long
+xqc_test_af_live_end(void)
+{
+    g_alloc_counting = 0;
+    return g_alloc_live;
+}
+
 static unsigned char g_initial[2048];
 static size_t        g_initial_len;
 

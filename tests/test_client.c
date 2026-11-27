@@ -76,6 +76,7 @@ printf_null(const char *format, ...)
 #define XQC_MAX_LOG_LEN 2048
 
 #define XQC_TEST_CASE_MP_FROZEN_UNNEGOTIATED 1302
+#define XQC_TEST_CASE_MP_PATH_RESPONSE_LOST 1305
 #define XQC_TEST_CASE_H3_RESERVED_UNI_STREAM 1000
 #define XQC_TEST_CASE_H3_CLIENT_PUSH_STREAM 1001
 #define XQC_TEST_CASE_H3_RESERVED_REQUEST_FRAME 1002
@@ -339,6 +340,8 @@ size_t dgram2_size = 0;
 
 int dgram_drop_pkt1 = 0;
 int path_response_drop_pkt1 = 0;
+int mp_path_response_dropped = 0;
+int mp_path1_recv_count = 0;
 static unsigned char g_retry_original_initial[XQC_PACKET_TMP_BUF_LEN];
 static size_t g_retry_original_initial_len;
 static int g_retry_original_initial_saved;
@@ -677,6 +680,12 @@ xqc_client_silent_dropped(uint64_t path_id)
  *         so it is active. The initial path is dead for the rest of the
  *         run, and the second path keeps working.
  *   1314: one path; it is dead for XQC_TEST_DEAD_PATH_US, then comes back.
+ * Cases 1315 and 1316 run the same outages as 1313 and 1314, and check
+ * that the server's minrtt scheduler skips the dead path (1315) or keeps
+ * the only path (1316).
+ * Cases 1317 and 1318 use the backup scheduler, with the second path
+ * STANDBY: 1317 has the outage of 1313; in 1318 the initial path is dead
+ * for XQC_TEST_DEAD_PATH_US while the second path works, then comes back.
  */
 #define XQC_TEST_DEAD_PATH_PKTS         20
 #define XQC_TEST_DEAD_PATH_PEER_PKTS    3
@@ -689,7 +698,22 @@ static int g_dead_path_full_pkts;   /* counted on the initial path */
 static int
 xqc_client_dead_path_case(void)
 {
-    return g_test_case == 1313 || g_test_case == 1314;
+    return g_test_case >= 1313 && g_test_case <= 1318;
+}
+
+/* two paths: the count starts once the second path has answered */
+static int
+xqc_client_dead_path_two_paths(void)
+{
+    return g_test_case == 1313 || g_test_case == 1315
+           || g_test_case == 1317 || g_test_case == 1318;
+}
+
+/* the initial path is dead for the rest of the run */
+static int
+xqc_client_dead_path_forever(void)
+{
+    return g_test_case == 1313 || g_test_case == 1315 || g_test_case == 1317;
 }
 
 static int
@@ -701,7 +725,7 @@ xqc_client_dead_path_dropped(uint64_t path_id)
         return 0;
     }
 
-    return g_test_case == 1313
+    return xqc_client_dead_path_forever()
            || xqc_now() - g_dead_path_start < XQC_TEST_DEAD_PATH_US;
 }
 
@@ -718,7 +742,7 @@ xqc_client_dead_path_on_recv(uint64_t path_id, const unsigned char *buf,
         return;
     }
 
-    if ((g_test_case == 1313
+    if ((xqc_client_dead_path_two_paths()
          && g_dead_path_peer_pkts < XQC_TEST_DEAD_PATH_PEER_PKTS)
         || (buf[0] & 0x80) != 0 || size < 1000)
     {
@@ -1655,7 +1679,7 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
     memcpy(send_buf, buf, send_buf_size);
     xqc_test_record_udp_payload(size);
 
-    /* cases 1313-1314: the only path is path 0 */
+    /* cases 1313-1318: the only path is path 0 */
     if (xqc_client_dead_path_dropped(0)) {
         return size;
     }
@@ -1863,7 +1887,7 @@ xqc_client_write_socket_ex(uint64_t path_id,
         return size;
     }
 
-    /* cases 1313-1314 */
+    /* cases 1313-1318 */
     if (xqc_client_dead_path_dropped(path_id)) {
         return size;
     }
@@ -5620,11 +5644,32 @@ xqc_client_socket_read_handler(user_conn_t *user_conn, int fd)
             continue;
         }
 
-        /* cases 1313-1314 */
+        /* cases 1313-1318 */
         if (xqc_client_dead_path_dropped(path_id)) {
             continue;
         }
         xqc_client_dead_path_on_recv(path_id, packet_buf, recv_size);
+
+        /*
+         * case 1305: lose the PATH_RESPONSE answering the client's first
+         * PATH_CHALLENGE on path 1. The frame type cannot be read here: -N
+         * is refused with multipath (xqc_conn_handshake_complete() requires
+         * a 12-byte AEAD nonce). The server answers a PATH_CHALLENGE on a
+         * new path with its own PATH_CHALLENGE, then the PATH_RESPONSE, then
+         * the ACK, so the second datagram received on path 1 is dropped; the
+         * case checks in slog that the server's second packet on path 1 was
+         * the response.
+         */
+        if (g_test_case == XQC_TEST_CASE_MP_PATH_RESPONSE_LOST
+            && path_id == 1 && !mp_path_response_dropped
+            && ++mp_path1_recv_count == 2)
+        {
+            mp_path_response_dropped = 1;
+            printf("[mp-path-response-lost]|drop|path:%"PRIu64"|size:%zd|\n",
+                   path_id, recv_size);
+            continue;
+        }
+
         if (g_test_case == XQC_TEST_CASE_KEY_UPDATE_STALE_DEADLINE) {
             xqc_client_key_update_copy_packet(user_conn, packet_buf,
                                               recv_size);
@@ -5853,6 +5898,29 @@ xqc_client_timeout_callback(int fd, short what, void *arg)
     }*/
 
     if (xqc_now() - g_last_sock_op_time < (uint64_t)g_conn_timeout * 1000000) {
+        struct timeval tv;
+        tv.tv_sec = g_conn_timeout;
+        tv.tv_usec = 0;
+        event_add(user_conn->ev_timeout, &tv);
+        return;
+    }
+
+    /* cases 1319/1320: a small stream each time the connection has been
+     * quiet for g_conn_timeout, a few times over, so the initial path keeps
+     * the connection up at a light load while the STANDBY path idles past
+     * the path idle timeout. */
+    static int quiet_standby_rounds = 6;
+    if ((g_test_case == 1319 || g_test_case == 1320) && quiet_standby_rounds > 0) {
+        quiet_standby_rounds--;
+        user_stream_t *user_stream = calloc(1, sizeof(user_stream_t));
+        user_stream->user_conn = user_conn;
+        user_stream->stream = xqc_stream_create(ctx.engine, &(user_conn->cid), NULL, user_stream);
+        if (user_stream->stream == NULL) {
+            printf("xqc_stream_create error\n");
+            free(user_stream);
+            goto conn_close;
+        }
+        xqc_client_stream_send(user_stream->stream, user_stream);
         struct timeval tv;
         tv.tv_sec = g_conn_timeout;
         tv.tv_usec = 0;
@@ -7683,6 +7751,16 @@ int main(int argc, char *argv[]) {
 
     if (g_mp_backup_mode) {
         conn_settings.scheduler_callback  = xqc_backup_scheduler_cb;
+    }
+
+    /* cases 1319/1320: a 3 s idle timeout, so the path idle timer runs out
+     * on the STANDBY path while the connection is up. 1319 leaves standby
+     * probing off (a quiet backup), 1320 turns it on. */
+    if (g_test_case == 1319 || g_test_case == 1320) {
+        conn_settings.idle_time_out = 3000;
+    }
+    if (g_test_case == 1320) {
+        conn_settings.standby_path_probe_timeout = 500;
     }
 
     if (g_close_red_redundancy) {

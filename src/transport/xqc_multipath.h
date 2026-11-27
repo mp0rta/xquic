@@ -88,6 +88,18 @@ typedef enum {
 
 #define XQC_REBINDING_MAX_MTU_PROBE_RETRIES 3
 
+/* cap of the doubling of the interval between PATH_CHALLENGE resends */
+#define XQC_PATH_CHALLENGE_MAX_BACKOFF 8
+
+/*
+ * payloads kept of the PATH_CHALLENGE frames sent before the current one in a
+ * validation, which a PATH_RESPONSE still validates (RFC 9000 Section 8.2.3).
+ * Each PATH_CHALLENGE comes at least a PTO after the previous one, and the
+ * interval doubles, so a PATH_RESPONSE is only ignored when it comes more
+ * than 511 PTOs after its PATH_CHALLENGE.
+ */
+#define XQC_PATH_CHALLENGE_PREV_N 8
+
 typedef enum {
     XQC_REBINDING_IDLE = 0,
     XQC_REBINDING_ADDRESS_VALIDATING,
@@ -131,11 +143,18 @@ struct xqc_path_ctx_s {
     /* Path_state */
     xqc_path_state_t    path_state;
     unsigned char       path_challenge_data[XQC_PATH_CHALLENGE_DATA_LEN];
+    /* PATH_CHALLENGE frames sent again after an unanswered one was acked */
+    uint32_t            path_challenge_resends;
+    /* payloads of the last PATH_CHALLENGE frames before the current one */
+    unsigned char       path_challenge_prev[XQC_PATH_CHALLENGE_PREV_N]
+                                           [XQC_PATH_CHALLENGE_DATA_LEN];
 
     xqc_path_flag_t     path_flag;
 
     /* application layer path status, sync via PATH_STATUS frame */
     xqc_app_path_status_t   app_path_status;
+    /* quiet at the last send round (xqc_conn_wake_quiet_standby) */
+    xqc_bool_t              path_was_quiet_standby;
     xqc_app_path_status_t   next_app_path_state;
     uint64_t                app_path_status_send_seq_num;
     uint64_t                app_path_status_recv_seq_num;
@@ -305,6 +324,13 @@ xqc_msec_t xqc_path_get_idle_timeout(xqc_path_ctx_t *path);
 
 xqc_usec_t xqc_path_get_validation_timeout(xqc_path_ctx_t *path);
 
+void xqc_path_on_challenge_acked(xqc_path_ctx_t *path, xqc_usec_t now);
+
+void xqc_path_resend_challenge(xqc_path_ctx_t *path);
+
+xqc_bool_t xqc_path_challenge_data_match(xqc_path_ctx_t *path,
+    const unsigned char *data);
+
 void xqc_path_validate(xqc_path_ctx_t *path);
 
 xqc_int_t xqc_conn_is_current_mp_version_supported(xqc_multipath_version_t mp_version);
@@ -375,6 +401,16 @@ xqc_int_t xqc_path_standby_probe(xqc_path_ctx_t *path);
 #define XQC_PATH_REQUEUE_PTO_THRESH 3
 
 void xqc_path_requeue_unacked_on_pto(xqc_path_ctx_t *path);
+
+void xqc_path_move_unack_packets_from_conn(xqc_path_ctx_t *path, xqc_connection_t *conn);
+
+xqc_bool_t xqc_path_has_working_alternative(xqc_path_ctx_t *path);
+
+xqc_bool_t xqc_path_is_dead_with_alternative(xqc_path_ctx_t *path);
+
+xqc_bool_t xqc_path_is_quiet_standby(xqc_path_ctx_t *path);
+
+void xqc_conn_wake_quiet_standby(xqc_connection_t *conn);
 
 xqc_path_perf_class_t xqc_path_get_perf_class(xqc_path_ctx_t *path);
 

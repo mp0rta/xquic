@@ -241,6 +241,8 @@ unsigned int xqc_stream_frame_header_size(xqc_stream_id_t stream_id, uint64_t of
 
 unsigned int xqc_crypto_frame_header_size(uint64_t offset, size_t length);
 
+/* On XQC_OK the function owns new_frame and may have freed it: do not read it
+ * afterwards. On any other return the caller still owns it. */
 xqc_int_t xqc_insert_stream_frame(xqc_connection_t *conn, xqc_stream_t *stream,
                                   xqc_stream_frame_t *new_frame);
 
