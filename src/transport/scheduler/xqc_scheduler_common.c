@@ -37,7 +37,7 @@ xqc_scheduler_probe_fits_cwnd(xqc_path_ctx_t *path)
 /* Does @path have a packet in flight that xqc_path_move_unack_packets_from_conn
  * sends again or drops? A PTO probe's copy counts: once a PTO fired with no
  * other path working, the copy is the only packet in flight with that data. */
-static xqc_bool_t
+xqc_bool_t
 xqc_scheduler_path_has_data_to_move(xqc_connection_t *conn, xqc_path_ctx_t *path)
 {
     xqc_list_head_t *pos;

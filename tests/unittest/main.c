@@ -68,6 +68,7 @@
 #include "xqc_conn_reapply_test.h"
 #include "xqc_send_ctl_test.h"
 #include "xqc_pmtud_test.h"
+#include "xqc_path_outage_test.h"
 #include "xqc_path_requeue_test.h"
 #include "xqc_vn_test.h"
 #include "xqc_frame_type_bit_test.h"
@@ -1013,6 +1014,8 @@ main(int argc, char *argv[])
                         xqc_test_pmtud_no_ack_into_packet_above_path_size)
         || !CU_add_test(pSuite, "xqc_test_pmtud_pto_copy_fits_path_size",
                         xqc_test_pmtud_pto_copy_fits_path_size)
+        || !CU_add_test(pSuite, "xqc_test_wlb_evicted_paths_probed_with_ping",
+                        xqc_test_wlb_evicted_paths_probed_with_ping)
         || !CU_add_test(pSuite, "xqc_test_path_requeue_unacked_on_pto",
                         xqc_test_path_requeue_unacked_on_pto)
         || !CU_add_test(pSuite, "xqc_test_path_requeue_needs_a_working_path",
@@ -1035,6 +1038,10 @@ main(int argc, char *argv[])
                         xqc_test_dead_probe_waits_for_new_data)
         || !CU_add_test(pSuite, "xqc_test_dead_probe_waits_for_moved_packets",
                         xqc_test_dead_probe_waits_for_moved_packets)
+        || !CU_add_test(pSuite, "xqc_test_wlb_probe_moves_data_after_all_paths_silent",
+                        xqc_test_wlb_probe_moves_data_after_all_paths_silent)
+        || !CU_add_test(pSuite, "xqc_test_wlb_probe_waits_for_fired_ptos",
+                        xqc_test_wlb_probe_waits_for_fired_ptos)
         || !CU_add_test(pSuite, "xqc_test_dead_probe_moves_pto_probes",
                         xqc_test_dead_probe_moves_pto_probes)
         || !CU_add_test(pSuite, "xqc_test_backup_skips_dead_primary",
@@ -1226,8 +1233,7 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_wlb_stream_data_spills_when_primary_is_full", xqc_test_wlb_stream_data_spills_when_primary_is_full)
         || !CU_add_test(pSuite, "xqc_test_wlb_path_replacement_refreshes_cache", xqc_test_wlb_path_replacement_refreshes_cache)
         || !CU_add_test(pSuite, "xqc_test_wlb_control_packets_use_minrtt", xqc_test_wlb_control_packets_use_minrtt)
-        || !CU_add_test(pSuite, "xqc_test_wlb_evicted_path_gets_recovery_probe", xqc_test_wlb_evicted_path_gets_recovery_probe)
-        || !CU_add_test(pSuite, "xqc_test_wlb_evicted_probe_rotates_past_blocked_path", xqc_test_wlb_evicted_probe_rotates_past_blocked_path)
+        || !CU_add_test(pSuite, "xqc_test_wlb_evicted_path_gets_no_payload", xqc_test_wlb_evicted_path_gets_no_payload)
         || !CU_add_test(pSuite, "xqc_test_wlb_stream_data_never_rides_a_blackholed_path", xqc_test_wlb_stream_data_never_rides_a_blackholed_path)
         || !CU_add_test(pSuite, "xqc_test_wlb_blackholed_path_does_not_stall_rounds", xqc_test_wlb_blackholed_path_does_not_stall_rounds)
         || !CU_add_test(pSuite, "xqc_test_wlb_unpinned_blackhole_refreshes_topology", xqc_test_wlb_unpinned_blackhole_refreshes_topology)

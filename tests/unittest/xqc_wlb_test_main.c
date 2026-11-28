@@ -55,10 +55,8 @@ main(void)
                                xqc_test_wlb_path_replacement_refreshes_cache)
         || NULL == CU_add_test(s, "control_packets_use_minrtt",
                                xqc_test_wlb_control_packets_use_minrtt)
-        || NULL == CU_add_test(s, "evicted_path_gets_recovery_probe",
-                               xqc_test_wlb_evicted_path_gets_recovery_probe)
-        || NULL == CU_add_test(s, "evicted_probe_rotates_past_blocked_path",
-                               xqc_test_wlb_evicted_probe_rotates_past_blocked_path)
+        || NULL == CU_add_test(s, "evicted_path_gets_no_payload",
+                               xqc_test_wlb_evicted_path_gets_no_payload)
         || NULL == CU_add_test(s, "stream_data_never_rides_a_blackholed_path",
                                xqc_test_wlb_stream_data_never_rides_a_blackholed_path)
         || NULL == CU_add_test(s, "blackholed_path_does_not_stall_rounds",
