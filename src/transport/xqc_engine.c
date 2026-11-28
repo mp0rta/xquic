@@ -760,6 +760,7 @@ xqc_engine_process_conn(xqc_connection_t *conn, xqc_usec_t now)
                     conn->conn_flag &= ~XQC_CONN_FLAG_DGRAM_WAIT_FOR_1RTT;
                 }
             }
+            xqc_datagram_notify_backlog_drained(conn);
 
         } else {
             xqc_log(conn->log, XQC_LOG_DEBUG, "|xqc_send_queue_can_write false|");
@@ -879,6 +880,34 @@ xqc_engine_check_app_limit_after_send(xqc_connection_t *conn)
     }
 }
 
+/*
+ * The sends just made may have drained the DATAGRAM backlog: notify now
+ * rather than on the next engine pass, and send what the application wrote
+ * from the callback (it cannot run the engine itself, the engine is running).
+ * Called by both xqc_engine_main_logic() and xqc_engine_conn_logic().
+ */
+static void
+xqc_engine_dgram_notify_after_send(xqc_connection_t *conn)
+{
+    if (conn->conn_state == XQC_CONN_STATE_CLOSED) {
+        return;
+    }
+    /* the callback may fill the backlog to the cap again, and this send
+     * drain it again: notify again, until a send leaves more than half of
+     * the cap unsent (the window is full) or the application stops writing */
+    while (xqc_datagram_notify_backlog_drained(conn)) {
+        xqc_conn_schedule_packets_to_paths(conn);
+        xqc_conn_send_packets(conn);
+        /* xqc_engine_process_conn() has already cleared it, and a datagram
+         * the callback wrote with defer_send_flush set it again; it was
+         * just sent, so nothing is left to flush */
+        conn->deferred_flush_pending = 0;
+        if (conn->conn_state == XQC_CONN_STATE_CLOSED) {
+            return;
+        }
+    }
+}
+
 void 
 xqc_engine_conn_logic(xqc_engine_t *engine, xqc_connection_t *conn)
 {
@@ -915,6 +944,8 @@ xqc_engine_conn_logic(xqc_engine_t *engine, xqc_connection_t *conn)
             xqc_conn_reinject_unack_packets(conn, XQC_REINJ_UNACK_AFTER_SEND);
             xqc_conn_send_packets(conn);
         }
+
+        xqc_engine_dgram_notify_after_send(conn);
 
         if (XQC_LIKELY(conn->conn_state != XQC_CONN_STATE_CLOSED)) {
             conn->next_tick_time = xqc_conn_next_wakeup_time(conn);
@@ -1024,6 +1055,8 @@ xqc_engine_main_logic(xqc_engine_t *engine)
                 xqc_conn_reinject_unack_packets(conn, XQC_REINJ_UNACK_AFTER_SEND);
                 xqc_conn_send_packets(conn);
             }
+
+            xqc_engine_dgram_notify_after_send(conn);
 
             if (XQC_LIKELY(conn->conn_state != XQC_CONN_STATE_CLOSED)) {
                 conn->next_tick_time = xqc_conn_next_wakeup_time(conn);

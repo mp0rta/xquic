@@ -698,6 +698,8 @@ xqc_send_ctl_on_packet_sent(xqc_send_ctl_t *send_ctl, xqc_pn_ctl_t *pn_ctl, xqc_
 {
     xqc_pkt_num_space_t pns = packet_out->po_pkt.pkt_pns;
 
+    xqc_send_queue_dgram_unsent_done(send_ctl->ctl_conn->conn_send_queue, packet_out);
+
     /* a retransmission copied its original's */
     packet_out->po_acked_below = 0;
 
